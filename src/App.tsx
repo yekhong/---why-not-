@@ -2285,12 +2285,11 @@ export default function App() {
                             방장 마일스톤 제어
                           </h3>
                           <p className="text-xs text-slate-300 leading-relaxed">
-                            참여진들의 아이디어 등록이 마무리되었다면, 다음 단계인 **'평가 기준 익명 제안'**으로 진행하십시오. (최소 2개 이상의 아이디어가 등록되어야 진행이 원활합니다)
+                            참여진들의 아이디어 등록이 마무리되었다면, 다음 단계인 **'평가 기준 익명 제안'**으로 진행하십시오.
                           </p>
                           <button
                             onClick={() => handleForceChangeStatus('CRITERIA_PROPOSAL')}
-                            disabled={roomDetails.ideas.length < 2}
-                            className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-50 transition rounded-xl text-xs font-bold flex items-center justify-center gap-1"
+                            className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 transition rounded-xl text-xs font-bold flex items-center justify-center gap-1"
                           >
                             2단계: 평가 기준 제안 단계로 전환
                             <ArrowRight className="w-3.5 h-3.5" />
@@ -2437,7 +2436,7 @@ export default function App() {
                           </p>
                           <button
                             onClick={handleTriggerClustering}
-                            disabled={roomDetails.proposalsCount === 0 || loading}
+                            disabled={loading}
                             className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 transition rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm"
                           >
                             {loading ? (
