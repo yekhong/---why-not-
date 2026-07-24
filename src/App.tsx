@@ -238,8 +238,9 @@ export default function App() {
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
-  const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인' | '기타'>('기획');
-  const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(5);
+  const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인'>('기획');
+  const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(4);
+  const [newRoomTargetWinners, setNewRoomTargetWinners] = useState(1);
   const [newRoomIsPublic, setNewRoomIsPublic] = useState(true);
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
 
@@ -389,20 +390,24 @@ export default function App() {
     }
   };
 
-  // Update user nickname
+  // Update user room entry nickname (Max 6 chars)
   const handleUpdateNickname = () => {
-    if (!tempNickname.trim()) return;
-    localStorage.setItem('why_not_user_name', tempNickname);
-    setNickname(tempNickname);
+    const trimmed = tempNickname.trim().slice(0, 6);
+    if (!trimmed) return;
+    localStorage.setItem('why_not_room_nickname', trimmed);
+    setNickname(trimmed);
     setIsRegisteringUser(false);
-    triggerToast('닉네임이 성공적으로 변경되었습니다!');
+    triggerToast(`닉네임 [${trimmed}] (으)로 지정되었습니다.`);
 
-    // Notify backend if inside room
-    if (activeRoomId) {
+    if (pendingRoomId) {
+      const targetId = pendingRoomId;
+      setPendingRoomId(null);
+      handleSelectRoom(targetId, userId, trimmed);
+    } else if (activeRoomId) {
       fetch(`/api/rooms/${activeRoomId}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, nickname: tempNickname }),
+        body: JSON.stringify({ userId, nickname: trimmed }),
       });
     }
   };
@@ -428,7 +433,8 @@ export default function App() {
           title: newRoomTitle,
           description: newRoomDesc,
           category: newRoomCategory,
-          maxParticipants: newRoomMaxParticipants,
+          maxParticipants: Math.min(newRoomMaxParticipants, 6),
+          targetWinnerCount: newRoomTargetWinners,
           isPublic: newRoomIsPublic,
           hostId: userId,
           minResponseThreshold: newRoomThreshold,
@@ -445,8 +451,9 @@ export default function App() {
       setNewRoomDesc('');
       setNewRoomThreshold(3);
       
-      // Select the newly created room
+      // Select the newly created room & fetch details immediately
       setActiveRoomId(created.id);
+      fetchRoomDetails(created.id);
       fetchRooms();
     } catch (err) {
       triggerToast('방 생성 도중 오류가 발생했습니다.', 'error');
@@ -466,15 +473,27 @@ export default function App() {
     }
   };
 
-  // Join existing Room (Registers nickname internally too)
+  // Target pending room selection
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+
+  // Join existing Room (Prompt nickname modal if not specified)
   const handleSelectRoom = async (id: string, customUserId?: string, customNickname?: string) => {
     if (!isLoggedIn) {
       setShowLoginModal(true);
       return;
     }
+
+    const currentSavedNickname = localStorage.getItem('why_not_room_nickname');
+    if (!currentSavedNickname && !customNickname) {
+      setPendingRoomId(id);
+      setTempNickname('');
+      setIsRegisteringUser(true);
+      return;
+    }
+
     setActiveRoomId(id);
     const uId = customUserId || userId;
-    const nick = customNickname || nickname;
+    const nick = customNickname || currentSavedNickname || nickname;
     try {
       await fetch(`/api/rooms/${id}/join`, {
         method: 'POST',
@@ -878,18 +897,14 @@ export default function App() {
               </div>
             )}
 
-            {/* Auth / Identity badge */}
+            {/* Auth / Identity badge (이메일 정보 노출) */}
             {isLoggedIn ? (
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 py-1.5 px-3.5 rounded-full">
                   <User className="w-3.5 h-3.5 text-indigo-600" />
-                  <button 
-                    onClick={() => { setIsRegisteringUser(true); setTempNickname(nickname); }}
-                    className="text-xs font-semibold text-indigo-900 hover:text-indigo-600 flex items-center gap-1 transition"
-                  >
-                    <span>{nickname}</span>
-                    <span className="text-[10px] text-indigo-400 font-normal hover:text-indigo-600">(변경)</span>
-                  </button>
+                  <span className="text-xs font-semibold text-indigo-950">
+                    {userEmail || nickname || '사용자'}
+                  </span>
                 </div>
                 <button
                   onClick={handleLogout}
@@ -930,7 +945,7 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 md:py-8">
         
-        {/* Nickname modification Modal */}
+        {/* Nickname setting Modal for Room Entry (Max 6 Chars) */}
         <AnimatePresence>
           {isRegisteringUser && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
@@ -938,20 +953,27 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full"
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full space-y-4"
               >
-                <h3 className="text-lg font-bold text-slate-900 mb-2">실명 닉네임 설정</h3>
-                <p className="text-xs text-slate-500 mb-4">
-                  아이디어 제출 시에 다른 팀원들에게 노출될 실명을 적어주세요. (평가나 의견 제안은 완벽하게 익명 처리됩니다)
-                </p>
-                <input
-                  type="text"
-                  maxLength={15}
-                  value={tempNickname}
-                  onChange={e => setTempNickname(e.target.value)}
-                  className="w-full px-4 py-2 border border-slate-200 rounded-xl mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-slate-950 font-medium"
-                  placeholder="예: 김지현 대리"
-                />
+                <div className="space-y-1">
+                  <h3 className="text-lg font-bold text-slate-900">방 입장 닉네임 설정</h3>
+                  <p className="text-xs text-slate-500">
+                    회의방에 노출될 닉네임을 설정해 주세요. (최대 6자 제한)
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={tempNickname}
+                    onChange={e => setTempNickname(e.target.value.slice(0, 6))}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600 font-bold text-slate-900"
+                    placeholder="닉네임 (최대 6자)"
+                  />
+                  <div className="flex justify-end">
+                    <span className="text-[10px] text-slate-400 font-semibold">{tempNickname.length}/6자</span>
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setIsRegisteringUser(false)}
@@ -960,11 +982,14 @@ export default function App() {
                     취소
                   </button>
                   <button
-                    onClick={handleUpdateNickname}
+                    onClick={() => {
+                      if (!tempNickname.trim()) return;
+                      handleUpdateNickname();
+                    }}
                     disabled={!tempNickname.trim()}
-                    className="flex-1 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-xl transition"
+                    className="flex-1 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-xl transition shadow-xs"
                   >
-                    저장하기
+                    입장하기
                   </button>
                 </div>
               </motion.div>
@@ -1048,7 +1073,7 @@ export default function App() {
                 className="flex items-center gap-2 self-start md:self-auto bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition"
               >
                 <Plus className="w-4 h-4" />
-                새로운 소거 회의방 개설
+                + 회의방 개설
               </button>
             </div>
 
@@ -1096,7 +1121,7 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-700">카테고리</label>
                         <select
@@ -1106,20 +1131,32 @@ export default function App() {
                         >
                           <option value="기획">기획</option>
                           <option value="디자인">디자인</option>
-                          <option value="기타">기타</option>
                         </select>
                       </div>
 
                       <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">참석자 수</label>
+                        <label className="text-xs font-bold text-slate-700">참석자 수 (최대 6명)</label>
                         <input
                           type="number"
-                          min={2}
-                          max={50}
+                          min={1}
+                          max={6}
                           value={newRoomMaxParticipants}
-                          onChange={e => setNewRoomMaxParticipants(Number(e.target.value))}
+                          onChange={e => setNewRoomMaxParticipants(Math.min(Math.max(Number(e.target.value), 1), 6))}
                           className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
                         />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">최종 결과 수 (1~3개)</label>
+                        <select
+                          value={newRoomTargetWinners}
+                          onChange={e => setNewRoomTargetWinners(Number(e.target.value))}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
+                        >
+                          <option value={1}>최종 1개 선정</option>
+                          <option value={2}>최종 2개 선정</option>
+                          <option value={3}>최종 3개 선정</option>
+                        </select>
                       </div>
 
                       <div className="space-y-1">

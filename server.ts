@@ -677,7 +677,7 @@ app.get('/api/rooms', (req, res) => {
  * 2. Create room
  */
 app.post('/api/rooms', (req, res) => {
-  const { title, description, hostId, minResponseThreshold, eliminationConfig, deadlines, category, maxParticipants, isPublic } = req.body;
+  const { title, description, hostId, minResponseThreshold, eliminationConfig, deadlines, category, maxParticipants, isPublic, targetWinnerCount } = req.body;
   
   if (!title) {
     return res.status(400).json({ error: '방 제목은 필수입니다.' });
@@ -690,7 +690,8 @@ app.post('/api/rooms', (req, res) => {
     description: description || '',
     category: category || '기획',
     isPublic: isPublic !== undefined ? isPublic : true,
-    maxParticipants: maxParticipants || 10,
+    maxParticipants: Math.min(Math.max(Number(maxParticipants) || 4, 1), 6), // 최대 6명 제한
+    targetWinnerCount: Math.min(Math.max(Number(targetWinnerCount) || 1, 1), 3), // 최소 1개 ~ 최대 3개
     isPinned: false,
     hostId: hostId || 'host-user',
     status: 'IDEA_SUBMISSION', // Starts in IDEA_SUBMISSION state

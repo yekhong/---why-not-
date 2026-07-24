@@ -23,9 +23,10 @@ export interface Room {
   id: string;
   title: string;
   description?: string;
-  category?: '기획' | '디자인' | '기타' | string;
+  category?: '기획' | '디자인' | string;
   isPublic?: boolean;
-  maxParticipants?: number;
+  maxParticipants?: number; // max 6
+  targetWinnerCount?: number; // 1~3
   isPinned?: boolean;
   hostId: string;
   status: RoomStatus;
