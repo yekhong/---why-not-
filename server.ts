@@ -1456,42 +1456,59 @@ app.post('/api/rooms/:id/elimination/next', async (req, res) => {
   if (Array.isArray(eliminateIdeaIds) && eliminateIdeaIds.length > 0) {
     ideasToEliminate = activeIdeas.filter(i => eliminateIdeaIds.includes(i.id));
   } else {
-    // Case B: Calculate score based on SCORE_CONFIG and eliminate the single lowest scorer
-    const roomEvals = evaluations.get(id) || [];
-    const scoreMap: Record<string, number> = {};
+    // Case B: 2STF-01 Rule-based Elimination
+    const targetWinners = room.targetWinnerCount || 1;
+    const totalCount = activeIdeas.length;
 
-    activeIdeas.forEach(idea => {
-      scoreMap[idea.id] = 0;
+    // Exception handling: If registered active ideas <= targetWinners + 1, skip elimination and move directly to CLOSED
+    if (totalCount <= targetWinners + 1) {
+      room.status = 'CLOSED';
+      rooms.set(id, room);
+      return res.json({ finished: true, message: '등록된 아이디어 수가 정족수 이하로 전체가 2차 소거를 통과했습니다.' });
+    }
+
+    const evs = evaluations.get(id) || [];
+
+    // Calculate metrics per active idea
+    const ideaMetrics = activeIdeas.map(idea => {
+      const ideaEvals = evs.filter(e => e.ideaId === idea.id);
+      const keepCount = ideaEvals.filter(e => e.decision === 'KEEP').length;
+      const excludeCount = ideaEvals.filter(e => e.decision === 'EXCLUDE').length;
+      const neutralCount = ideaEvals.filter(e => e.decision === 'NEUTRAL').length;
+      const margin = Math.abs(keepCount - excludeCount);
+      return { idea, keepCount, excludeCount, neutralCount, margin };
     });
 
-    roomEvals.forEach(ev => {
-      if (scoreMap[ev.ideaId] !== undefined) {
-        if (ev.decision === 'KEEP') {
-          scoreMap[ev.ideaId] += SCORE_CONFIG.keepWeight;
-        } else if (ev.decision === 'NEUTRAL') {
-          scoreMap[ev.ideaId] += SCORE_CONFIG.neutralWeight;
-        } else if (ev.decision === 'EXCLUDE') {
-          scoreMap[ev.ideaId] += SCORE_CONFIG.excludeWeight;
-          if (ev.reasonType === 'OBJECTIVE_CONSTRAINT') {
-            scoreMap[ev.ideaId] -= SCORE_CONFIG.objectiveConstraintPenalty;
-          }
+    // 1. keepCount desc, 2. margin asc (tight/controversial), 3. excludeCount asc
+    ideaMetrics.sort((a, b) => {
+      if (b.keepCount !== a.keepCount) return b.keepCount - a.keepCount;
+      if (a.margin !== b.margin) return a.margin - b.margin;
+      return a.excludeCount - b.excludeCount;
+    });
+
+    // Target cutoff count: max(ceil(total * 0.6), targetWinners + 1)
+    const passTargetCount = Math.max(Math.ceil(totalCount * 0.6), targetWinners + 1);
+
+    // Boundary tie-breaker handling (keep all tied at boundary)
+    let passCount = passTargetCount;
+    if (passCount < ideaMetrics.length) {
+      const boundary = ideaMetrics[passCount - 1];
+      while (passCount < ideaMetrics.length) {
+        const nextItem = ideaMetrics[passCount];
+        if (
+          nextItem.keepCount === boundary.keepCount &&
+          nextItem.margin === boundary.margin &&
+          nextItem.excludeCount === boundary.excludeCount
+        ) {
+          passCount++;
+        } else {
+          break;
         }
       }
-    });
+    }
 
-    // Sort active ideas by score ascending
-    const sorted = [...activeIdeas].sort((a, b) => {
-      const scoreA = scoreMap[a.id];
-      const scoreB = scoreMap[b.id];
-      if (scoreA !== scoreB) {
-        return scoreA - scoreB; // Lowest score first
-      }
-      // Tie breaker: random (as configured)
-      return Math.random() - 0.5;
-    });
-
-    // Select the lowest one
-    ideasToEliminate = [sorted[0]];
+    const eliminatedMetrics = ideaMetrics.slice(passCount);
+    ideasToEliminate = eliminatedMetrics.map(m => m.idea);
   }
 
   if (ideasToEliminate.length === 0) {
