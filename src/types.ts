@@ -23,6 +23,10 @@ export interface Room {
   id: string;
   title: string;
   description?: string;
+  category?: '기획' | '디자인' | '기타' | string;
+  isPublic?: boolean;
+  maxParticipants?: number;
+  isPinned?: boolean;
   hostId: string;
   status: RoomStatus;
   minResponseThreshold: number; // default: 3
@@ -37,6 +41,8 @@ export interface Idea {
   title: string;
   description: string;
   attachmentUrl?: string;
+  pdfAttachmentUrl?: string;
+  tags?: string[];
   submitterId: string;
   submitterName: string;
   status: 'ACTIVE' | 'ELIMINATED' | 'WINNER';

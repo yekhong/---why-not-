@@ -579,6 +579,66 @@ ${allEliminatedIdeasWithRounds.map(i => `- [${i.round}라운드 소거] "${i.tit
 // ----------------------------------------------------------------
 
 /**
+ * Toggle Room Pin
+ */
+app.post('/api/rooms/:id/pin', (req, res) => {
+  const { id } = req.params;
+  const room = rooms.get(id);
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  
+  room.isPinned = !room.isPinned;
+  res.json({ success: true, isPinned: room.isPinned });
+});
+
+/**
+ * 5. Submit an Idea (Public)
+ */
+app.post('/api/rooms/:id/ideas', (req, res) => {
+  const { id } = req.params;
+  const { title, description, submitterId, submitterName, attachmentUrl, pdfAttachmentUrl, tags } = req.body;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (room.status !== 'IDEA_SUBMISSION') {
+    return res.status(400).json({ error: '현재 아이디어 등록 단계가 아닙니다.' });
+  }
+
+  if (!title || !submitterName) {
+    return res.status(400).json({ error: '아이디어 제목과 작성자 이름은 필수입니다.' });
+  }
+
+  const roomIdeas = ideas.get(id) || [];
+  
+  // If the same user wants to edit their idea before submission closes:
+  const existingIdeaIndex = roomIdeas.findIndex(i => i.submitterId === submitterId && i.id === req.body.id);
+  
+  const newIdea: Idea = {
+    id: req.body.id || `idea-${Math.random().toString(36).substr(2, 9)}`,
+    roomId: id,
+    title,
+    description,
+    submitterId,
+    submitterName,
+    attachmentUrl,
+    pdfAttachmentUrl,
+    tags: Array.isArray(tags) ? tags : (tags ? [tags] : []),
+    status: 'ACTIVE',
+  };
+
+  if (existingIdeaIndex >= 0) {
+    roomIdeas[existingIdeaIndex] = newIdea;
+  } else {
+    roomIdeas.push(newIdea);
+  }
+  
+  ideas.set(id, roomIdeas);
+  res.status(201).json(newIdea);
+});
+
+/**
  * Health Check
  */
 app.get('/api/health', (req, res) => {
@@ -592,14 +652,20 @@ app.get('/api/rooms', (req, res) => {
   const list = Array.from(rooms.values()).map(r => {
     const rIdeas = ideas.get(r.id) || [];
     const rEvals = evaluations.get(r.id) || [];
+    const rParticipants = participants.get(r.id);
     const uniqueEvaluators = new Set(rEvals.map(e => e.evaluatorId)).size;
+    const participantCount = rParticipants ? rParticipants.size : 1;
     return {
       id: r.id,
       title: r.title,
       description: r.description,
+      category: r.category || '기획',
+      isPublic: r.isPublic !== undefined ? r.isPublic : true,
+      maxParticipants: r.maxParticipants || 10,
+      isPinned: r.isPinned || false,
       status: r.status,
       ideasCount: rIdeas.length,
-      evaluatorsCount: uniqueEvaluators,
+      evaluatorsCount: Math.max(participantCount, uniqueEvaluators),
       minResponseThreshold: r.minResponseThreshold,
       createdAt: r.createdAt
     };
@@ -611,7 +677,7 @@ app.get('/api/rooms', (req, res) => {
  * 2. Create room
  */
 app.post('/api/rooms', (req, res) => {
-  const { title, description, hostId, minResponseThreshold, eliminationConfig, deadlines } = req.body;
+  const { title, description, hostId, minResponseThreshold, eliminationConfig, deadlines, category, maxParticipants, isPublic } = req.body;
   
   if (!title) {
     return res.status(400).json({ error: '방 제목은 필수입니다.' });
@@ -622,6 +688,10 @@ app.post('/api/rooms', (req, res) => {
     id: newId,
     title,
     description: description || '',
+    category: category || '기획',
+    isPublic: isPublic !== undefined ? isPublic : true,
+    maxParticipants: maxParticipants || 10,
+    isPinned: false,
     hostId: hostId || 'host-user',
     status: 'IDEA_SUBMISSION', // Starts in IDEA_SUBMISSION state
     minResponseThreshold: minResponseThreshold || 3,
@@ -843,6 +913,52 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
 
   ideas.set(id, roomIdeas);
   res.status(201).json(newIdea);
+});
+
+/**
+ * AI Idea Development Helper Endpoint (IA 2.2: AI 아이디어 디벨롭 보조 기능)
+ */
+app.post('/api/rooms/:id/ideas/develop', async (req, res) => {
+  const { title, description } = req.body;
+  if (!title || !description) {
+    return res.status(400).json({ error: '제목과 설명을 모두 입력해주세요.' });
+  }
+
+  const ai = getGeminiClient();
+  if (!ai) {
+    return res.json({
+      enhancedDescription: `${description}\n\n[AI 디벨롭 제안]\n- 기대 효과: 구현 시 팀 전체의 작업 효율 및 투명성을 30% 이상 향상시킬 수 있습니다.\n- 기술 제약 및 고려사항: 초기 연동 시 48시간 내 MVP 구현이 가능한 범위로 기능을 구체화할 것을 추천합니다.`
+    });
+  }
+
+  try {
+    const prompt = `
+당신은 해커톤 및 아이디어 기획 전문가입니다.
+제출하려는 다음 아이디어를 검토하고, 구체적인 기대 효과, 기술적 구현 가능성 모듈, 그리고 고려해야 할 객관적 제약 사항을 포함하여 디벨롭된 정제 문안으로 보완해 주십시오.
+
+[원문 제목]
+${title}
+
+[원문 내용]
+${description}
+
+출력 형식: 보완된 아이디어 설명 텍스트 (한국어)
+`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+
+    res.json({
+      enhancedDescription: response.text || description
+    });
+  } catch (err) {
+    console.error('AI idea development failed:', err);
+    res.json({
+      enhancedDescription: `${description}\n\n[AI 디벨롭 제안]\n- 구현 가능성: 핵심 MVP 기능 위주로 단계적 릴리즈 구체화 필요.`
+    });
+  }
 });
 
 /**

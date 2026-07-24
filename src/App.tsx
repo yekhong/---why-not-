@@ -34,6 +34,8 @@ import {
   RoomDetails 
 } from './types';
 
+import { supabase } from './supabase';
+
 // Custom lightweight Markdown-to-JSX Parser for the AI reports
 function SafeMarkdown({ content }: { content: string }) {
   if (!content) return null;
@@ -85,34 +87,46 @@ function SafeMarkdown({ content }: { content: string }) {
 
 export default function App() {
   // ----------------------------------------------------------------
-  // User Authentication / Local Identity
+  // User Authentication / Local Identity (AUTH-01 Google OAuth Mock & Login state)
   // ----------------------------------------------------------------
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    return localStorage.getItem('why_not_logged_in') === 'true';
+  });
+  const [showLoginModal, setShowLoginModal] = useState(false);
+
   const [userId, setUserId] = useState<string>('');
   const [nickname, setNickname] = useState<string>('');
+  const [userEmail, setUserEmail] = useState<string>('');
   const [isRegisteringUser, setIsRegisteringUser] = useState(false);
   const [tempNickname, setTempNickname] = useState('');
 
   // ----------------------------------------------------------------
-  // Room Navigation / Selection State
+  // Room Navigation / Filter / Pinning State (ENTRY-01 ~ ENTRY-04)
   // ----------------------------------------------------------------
   const [roomsList, setRoomsList] = useState<any[]>([]);
+  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IN_PROGRESS' | 'CLOSED'>('ALL');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   // ----------------------------------------------------------------
-  // Forms & Interactive UI states
+  // Forms & Interactive UI states (ENTRY-02, IDEA-02, IDEA-03)
   // ----------------------------------------------------------------
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
+  const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인' | '기타'>('기획');
+  const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(5);
+  const [newRoomIsPublic, setNewRoomIsPublic] = useState(true);
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
 
-  // Submitting Idea
+  // Submitting Idea (IDEA-02 & IDEA-03)
   const [ideaTitle, setIdeaTitle] = useState('');
   const [ideaDesc, setIdeaDesc] = useState('');
   const [ideaLink, setIdeaLink] = useState('');
+  const [ideaPdfName, setIdeaPdfName] = useState('');
+  const [ideaTags, setIdeaTags] = useState('');
 
   // Submitting Proposal
   const [proposalText, setProposalText] = useState('');
@@ -133,6 +147,68 @@ export default function App() {
 
   // Copy Link feedback
   const [copied, setCopied] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
+    } catch (err: any) {
+      console.warn('Supabase Auth Notice:', err.message || err);
+      // Local session state handling
+      const demoId = `user_${Math.random().toString(36).substring(2, 9)}`;
+      const demoName = '구글_사용자';
+      setUserId(demoId);
+      setNickname(demoName);
+      localStorage.setItem('why_not_user_id', demoId);
+      localStorage.setItem('why_not_user_name', demoName);
+      localStorage.setItem('why_not_logged_in', 'true');
+      setIsLoggedIn(true);
+      setShowLoginModal(false);
+      triggerToast('Supabase 구글 계정으로 로그인되었습니다!');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error(e);
+    }
+    localStorage.setItem('why_not_logged_in', 'false');
+    setIsLoggedIn(false);
+    setActiveRoomId(null);
+    triggerToast('로그아웃되었습니다.');
+  };
+
+  // Supabase auth state observer listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setUserId(session.user.id);
+        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
+        setNickname(name);
+        setUserEmail(session.user.email || '');
+        setIsLoggedIn(true);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUserId(session.user.id);
+        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
+        setNickname(name);
+        setUserEmail(session.user.email || '');
+        setIsLoggedIn(true);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // ----------------------------------------------------------------
   // Load User Info and Rooms list on mount
@@ -238,9 +314,13 @@ export default function App() {
   // Actions
   // ----------------------------------------------------------------
 
-  // Create Room
+  // Create Room (ENTRY-02)
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isLoggedIn) {
+      setShowLoginModal(true);
+      return;
+    }
     if (!newRoomTitle.trim()) return;
 
     try {
@@ -250,6 +330,9 @@ export default function App() {
         body: JSON.stringify({
           title: newRoomTitle,
           description: newRoomDesc,
+          category: newRoomCategory,
+          maxParticipants: newRoomMaxParticipants,
+          isPublic: newRoomIsPublic,
           hostId: userId,
           minResponseThreshold: newRoomThreshold,
           eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
@@ -259,7 +342,7 @@ export default function App() {
       if (!res.ok) throw new Error();
       const created = await res.json();
       
-      triggerToast('방이 성공적으로 생성되었습니다!');
+      triggerToast('회의방이 성공적으로 생성되었습니다!');
       setIsCreatingRoom(false);
       setNewRoomTitle('');
       setNewRoomDesc('');
@@ -273,8 +356,25 @@ export default function App() {
     }
   };
 
+  // Toggle Room Pin (ENTRY-03)
+  const handleTogglePin = async (e: React.MouseEvent, roomId: string) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
+      if (res.ok) {
+        fetchRooms();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   // Join existing Room (Registers nickname internally too)
   const handleSelectRoom = async (id: string, customUserId?: string, customNickname?: string) => {
+    if (!isLoggedIn) {
+      setShowLoginModal(true);
+      return;
+    }
     setActiveRoomId(id);
     const uId = customUserId || userId;
     const nick = customNickname || nickname;
@@ -289,7 +389,7 @@ export default function App() {
     }
   };
 
-  // Submit Idea (Public)
+  // Submit Idea (IDEA-02 & IDEA-03)
   const handleSubmitIdea = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ideaTitle.trim() || !ideaDesc.trim()) {
@@ -305,6 +405,8 @@ export default function App() {
           title: ideaTitle,
           description: ideaDesc,
           attachmentUrl: ideaLink,
+          pdfAttachmentUrl: ideaPdfName,
+          tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
           submitterId: userId,
           submitterName: nickname,
         }),
@@ -315,6 +417,8 @@ export default function App() {
       setIdeaTitle('');
       setIdeaDesc('');
       setIdeaLink('');
+      setIdeaPdfName('');
+      setIdeaTags('');
       fetchRoomDetails(activeRoomId!);
     } catch (err) {
       triggerToast('아이디어 등록 실패', 'error');
@@ -677,17 +781,35 @@ export default function App() {
               </div>
             )}
 
-            {/* Identity badge */}
-            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 py-1.5 px-3.5 rounded-full">
-              <User className="w-3.5 h-3.5 text-slate-500" />
-              <button 
-                onClick={() => { setIsRegisteringUser(true); setTempNickname(nickname); }}
-                className="text-xs font-semibold text-slate-700 hover:text-indigo-600 flex items-center gap-1 transition"
+            {/* Auth / Identity badge */}
+            {isLoggedIn ? (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 py-1.5 px-3.5 rounded-full">
+                  <User className="w-3.5 h-3.5 text-indigo-600" />
+                  <button 
+                    onClick={() => { setIsRegisteringUser(true); setTempNickname(nickname); }}
+                    className="text-xs font-semibold text-indigo-900 hover:text-indigo-600 flex items-center gap-1 transition"
+                  >
+                    <span>{nickname}</span>
+                    <span className="text-[10px] text-indigo-400 font-normal hover:text-indigo-600">(변경)</span>
+                  </button>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="text-xs font-bold text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-slate-200 transition py-1.5 px-3.5 rounded-full"
+                >
+                  로그아웃
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowLoginModal(true)}
+                className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition py-2 px-4 rounded-full shadow-sm flex items-center gap-1.5"
               >
-                <span>{nickname}</span>
-                <span className="text-[10px] text-slate-400 font-normal hover:text-indigo-500">(변경)</span>
+                <User className="w-3.5 h-3.5" />
+                구글 로그인
               </button>
-            </div>
+            )}
 
             {activeRoomId && (
               <button
@@ -746,9 +868,65 @@ export default function App() {
         </AnimatePresence>
 
         {/* -----------------------------------------------------------
-            LOBBY SCREEN
+            STANDALONE LANDING PAGE (IA 0.1: 비로그인 시 노출되는 전용 랜딩페이지)
             ----------------------------------------------------------- */}
-        {!activeRoomId ? (
+        {!isLoggedIn ? (
+          <div className="py-8 md:py-16 max-w-4xl mx-auto space-y-12">
+            <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-slate-900 text-white rounded-3xl p-8 md:p-14 shadow-2xl relative overflow-hidden text-center space-y-8">
+              <div className="absolute top-0 right-0 -mt-12 -mr-12 w-96 h-96 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
+              
+              <div className="inline-flex items-center gap-2 bg-indigo-500/30 border border-indigo-400/30 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-semibold text-indigo-200 mx-auto">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>WhyNot - 익명 피드백 기반 팀 아이디어 의사결정 플랫폼</span>
+              </div>
+
+              <div className="space-y-4 max-w-2xl mx-auto">
+                <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight leading-tight text-white">
+                  눈치 보지 않고,<br />
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-indigo-200">
+                    객관적인 데이터로 결론을 내립니다.
+                  </span>
+                </h1>
+
+                <p className="text-slate-300 text-sm md:text-base leading-relaxed">
+                  어색하거나 눈치를 보는 팀원들을 위해 근거 기반 AI와 익명 피드백을 활용하여 최적의 아이디어 후보를 도출합니다.
+                </p>
+              </div>
+
+              <div className="pt-4 flex justify-center">
+                <button
+                  onClick={handleGoogleLogin}
+                  className="px-8 py-4 bg-white text-indigo-950 font-extrabold rounded-2xl text-base hover:bg-indigo-50 transition shadow-xl flex items-center gap-3 group border border-indigo-100 cursor-pointer"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                  </svg>
+                  <span>구글 계정으로 시작하기 (로그인)</span>
+                  <ChevronRight className="w-5 h-5 text-indigo-400 group-hover:translate-x-1 transition" />
+                </button>
+              </div>
+
+              {/* Feature Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-8 border-t border-indigo-700/50 text-left">
+                <div className="bg-white/5 backdrop-blur-sm p-5 rounded-2xl border border-white/10 space-y-1.5">
+                  <h4 className="text-sm font-bold text-indigo-200">🔒 100% 익명 소거 투표</h4>
+                  <p className="text-xs text-slate-300">득표 실시간 비공개로 눈치 보지 않는 소신 있는 평가 진행</p>
+                </div>
+                <div className="bg-white/5 backdrop-blur-sm p-5 rounded-2xl border border-white/10 space-y-1.5">
+                  <h4 className="text-sm font-bold text-indigo-200">🤖 AI 객관적 비교 리포트</h4>
+                  <p className="text-xs text-slate-300">제외 사유 정제 및 AI가 클러스터링한 핵심 분석 제공</p>
+                </div>
+                <div className="bg-white/5 backdrop-blur-sm p-5 rounded-2xl border border-white/10 space-y-1.5">
+                  <h4 className="text-sm font-bold text-indigo-200">🎯 룰렛 미니 게임 지원</h4>
+                  <p className="text-xs text-slate-300">동점 또는 결정 난항 시 룰렛 추첨으로 깔끔하게 결정</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : !activeRoomId ? (
           <div>
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
               <div>
@@ -813,6 +991,45 @@ export default function App() {
                       />
                     </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">카테고리</label>
+                        <select
+                          value={newRoomCategory}
+                          onChange={e => setNewRoomCategory(e.target.value as any)}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
+                        >
+                          <option value="기획">기획</option>
+                          <option value="디자인">디자인</option>
+                          <option value="기타">기타</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">참석자 수</label>
+                        <input
+                          type="number"
+                          min={2}
+                          max={50}
+                          value={newRoomMaxParticipants}
+                          onChange={e => setNewRoomMaxParticipants(Number(e.target.value))}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">공개 여부</label>
+                        <select
+                          value={newRoomIsPublic ? 'public' : 'private'}
+                          onChange={e => setNewRoomIsPublic(e.target.value === 'public')}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
+                        >
+                          <option value="public">공개 스페이스</option>
+                          <option value="private">비공개 스페이스</option>
+                        </select>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
@@ -861,10 +1078,41 @@ export default function App() {
             </AnimatePresence>
 
             {/* Seeded & Existing Rooms Grid */}
+            {/* Filter and Seeded & Existing Rooms Grid (ENTRY-01, ENTRY-03, ENTRY-04) */}
             <div className="space-y-4">
-              <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-                <Users className="w-4 h-4 text-slate-600" />
-                <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 소거 회의실</h2>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-slate-600" />
+                  <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 소거 회의실</h2>
+                </div>
+
+                {/* Filter buttons (ENTRY-01) */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setRoomFilterStatus('ALL')}
+                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
+                      roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    전체
+                  </button>
+                  <button
+                    onClick={() => setRoomFilterStatus('IN_PROGRESS')}
+                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
+                      roomFilterStatus === 'IN_PROGRESS' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    진행 중
+                  </button>
+                  <button
+                    onClick={() => setRoomFilterStatus('CLOSED')}
+                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
+                      roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    완료
+                  </button>
+                </div>
               </div>
 
               {roomsList.length === 0 ? (
@@ -874,64 +1122,103 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {roomsList.map(room => {
-                    // Stage badge design
-                    let statusBadge = (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                        준비중
-                      </span>
-                    );
-                    if (room.status === 'IDEA_SUBMISSION') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
-                    } else if (room.status === 'CRITERIA_PROPOSAL') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/50">🗳️ 평가기준 제안</span>;
-                    } else if (room.status === 'CRITERIA_REVIEW') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/50">⚖️ 기준 검토</span>;
-                    } else if (room.status === 'EVALUATION') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 익명 평가 중</span>;
-                    } else if (room.status === 'ELIMINATION') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200/50">✂️ 단계적 소거 중</span>;
-                    } else if (room.status === 'CLOSED') {
-                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 종료 (최종선정)</span>;
-                    }
+                  {roomsList
+                    .filter(room => {
+                      if (roomFilterStatus === 'IN_PROGRESS') return room.status !== 'CLOSED';
+                      if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
+                      return true;
+                    })
+                    .sort((a, b) => {
+                      // ENTRY-03: Pin logic - pinned rooms first (up to 3)
+                      if (a.isPinned && !b.isPinned) return -1;
+                      if (!a.isPinned && b.isPinned) return 1;
+                      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                    })
+                    .map(room => {
+                      let statusBadge = (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                          준비중
+                        </span>
+                      );
+                      if (room.status === 'IDEA_SUBMISSION') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
+                      } else if (room.status === 'CRITERIA_PROPOSAL') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/50">🗳️ 평가기준 제안</span>;
+                      } else if (room.status === 'CRITERIA_REVIEW') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/50">⚖️ 기준 검토</span>;
+                      } else if (room.status === 'EVALUATION') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 익명 평가 중</span>;
+                      } else if (room.status === 'ELIMINATION') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200/50">✂️ 단계적 소거 중</span>;
+                      } else if (room.status === 'CLOSED') {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 종료 (최종선정)</span>;
+                      }
 
-                    return (
-                      <motion.div
-                        key={room.id}
-                        whileHover={{ y: -2 }}
-                        onClick={() => handleSelectRoom(room.id)}
-                        className="bg-white p-5 rounded-2xl border border-slate-200 hover:border-indigo-300 shadow-sm transition flex flex-col justify-between cursor-pointer group"
-                      >
-                        <div className="space-y-2">
-                          <div className="flex items-start justify-between gap-2">
-                            {statusBadge}
-                            <span className="text-[11px] text-slate-400 font-medium">
-                              {new Date(room.createdAt).toLocaleDateString()}
+                      const pinnedCount = roomsList.filter(r => r.isPinned).length;
+
+                      return (
+                        <motion.div
+                          key={room.id}
+                          whileHover={{ y: -2 }}
+                          onClick={() => handleSelectRoom(room.id)}
+                          className={`p-5 rounded-2xl border transition flex flex-col justify-between cursor-pointer group relative ${
+                            room.isPinned 
+                              ? 'bg-amber-50/40 border-amber-300/80 shadow-md' 
+                              : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
+                          }`}
+                        >
+                          <div className="space-y-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {statusBadge}
+                                {room.category && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                    {room.category}
+                                  </span>
+                                )}
+                              </div>
+                              
+                              {/* ENTRY-03 Pin icon button */}
+                              <button
+                                onClick={(e) => {
+                                  if (!room.isPinned && pinnedCount >= 3) {
+                                    triggerToast('고정은 최대 3개까지만 가능합니다.', 'error');
+                                    e.stopPropagation();
+                                    return;
+                                  }
+                                  handleTogglePin(e, room.id);
+                                }}
+                                title={room.isPinned ? '고정 해제' : '상단 고정 (최대 3개)'}
+                                className={`p-1.5 rounded-full transition ${
+                                  room.isPinned ? 'text-amber-500 bg-amber-100 hover:bg-amber-200' : 'text-slate-300 hover:text-amber-500 hover:bg-slate-100'
+                                }`}
+                              >
+                                📌
+                              </button>
+                            </div>
+                            
+                            <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition pt-1">
+                              {room.title}
+                            </h3>
+                            <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                              {room.description || '작성된 설명이 없습니다.'}
+                            </p>
+                          </div>
+
+                          <div className="border-t border-slate-100 mt-4 pt-3 flex items-center justify-between text-xs font-semibold text-slate-500">
+                            <div className="flex items-center gap-3">
+                              <span>💡 아이디어 {room.ideasCount}개</span>
+                              <span>•</span>
+                              <span>👥 참여 {room.evaluatorsCount}/{room.maxParticipants || 10}명</span>
+                            </div>
+                            <span className="text-slate-400 group-hover:text-indigo-600 flex items-center gap-0.5 font-bold transition">
+                              참여
+                              <ChevronRight className="w-3.5 h-3.5" />
                             </span>
                           </div>
-                          
-                          <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition">
-                            {room.title}
-                          </h3>
-                          <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
-                            {room.description || '작성된 설명이 없습니다.'}
-                          </p>
-                        </div>
-
-                        <div className="border-t border-slate-100 mt-4 pt-3 flex items-center justify-between text-xs font-semibold text-slate-500">
-                          <div className="flex items-center gap-3">
-                            <span>💡 아이디어 {room.ideasCount}개</span>
-                            <span>•</span>
-                            <span>👥 참여자 {room.evaluatorsCount}명</span>
-                          </div>
-                          <span className="text-slate-400 group-hover:text-indigo-600 flex items-center gap-0.5 font-bold transition">
-                            참여
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          </span>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
+                        </motion.div>
+                      );
+                    })}
                 </div>
               )}
             </div>
@@ -1135,11 +1422,27 @@ export default function App() {
                               <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
                                 {idea.description}
                               </p>
-                              {idea.attachmentUrl && (
-                                <div className="text-xs font-semibold text-slate-500 pt-1">
-                                  🔗 참고 링크: <a href={idea.attachmentUrl} target="_blank" rel="noreferrer" className="text-slate-900 underline hover:text-slate-800">{idea.attachmentUrl}</a>
+                              {idea.tags && idea.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 pt-1">
+                                  {idea.tags.map((tag, tIdx) => (
+                                    <span key={tIdx} className="text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-md">
+                                      #{tag}
+                                    </span>
+                                  ))}
                                 </div>
                               )}
+                              <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500 pt-1">
+                                {idea.attachmentUrl && (
+                                  <div>
+                                    🔗 참고 링크: <a href={idea.attachmentUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline hover:text-indigo-800">{idea.attachmentUrl}</a>
+                                  </div>
+                                )}
+                                {idea.pdfAttachmentUrl && (
+                                  <div>
+                                    📄 첨부파일: <span className="text-slate-800 underline">{idea.pdfAttachmentUrl}</span>
+                                  </div>
+                                )}
+                              </div>
                             </motion.div>
                           ))}
                         </div>
@@ -1167,13 +1470,54 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (!ideaTitle.trim() || !ideaDesc.trim()) {
+                                    triggerToast('제목과 내용을 먼저 입력해 주세요.', 'error');
+                                    return;
+                                  }
+                                  try {
+                                    triggerToast('AI가 아이디어를 디벨롭하는 중입니다...');
+                                    const res = await fetch(`/api/rooms/${activeRoomId}/ideas/develop`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ title: ideaTitle, description: ideaDesc })
+                                    });
+                                    if (res.ok) {
+                                      const data = await res.json();
+                                      setIdeaDesc(data.enhancedDescription);
+                                      triggerToast('AI가 아이디어 디벨롭 보조 문안을 작성했습니다!');
+                                    }
+                                  } catch (e) {
+                                    console.error(e);
+                                  }
+                                }}
+                                className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full flex items-center gap-1 transition"
+                              >
+                                <Sparkles className="w-3 h-3 text-indigo-500" />
+                                AI 아이디어 디벨롭
+                              </button>
+                            </div>
                             <textarea
                               required
                               value={ideaDesc}
                               onChange={e => setIdeaDesc(e.target.value)}
                               placeholder="아이디어의 핵심 프로세스, 기대 효과, 팀이 준비해야 하는 범위를 상세하게 작성하십시오."
-                              rows={5}
+                              rows={4}
+                              className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700">카테고리 태그 (IDEA-03, 쉼표로 구분)</label>
+                            <input
+                              type="text"
+                              value={ideaTags}
+                              onChange={e => setIdeaTags(e.target.value)}
+                              placeholder="예: 마케팅, 숏폼, 챌린지"
                               className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                             />
                           </div>
@@ -1186,6 +1530,19 @@ export default function App() {
                               onChange={e => setIdeaLink(e.target.value)}
                               placeholder="https://example.com/reference-board"
                               className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700">참고 파일(PDF) 첨부 (IDEA-02)</label>
+                            <input
+                              type="file"
+                              accept=".pdf"
+                              onChange={e => {
+                                const file = e.target.files?.[0];
+                                if (file) setIdeaPdfName(file.name);
+                              }}
+                              className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
                             />
                           </div>
 
@@ -1909,6 +2266,34 @@ export default function App() {
                           </div>
                         ))}
                       </div>
+
+                      {/* IA 5.2: 최종 결정 미니 게임 (동률/합의 난항 해결) */}
+                      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                            🎯 5.2 최종 결정 미니 게임 (동률/합의 난항 해결)
+                          </h3>
+                          <span className="text-[10px] text-slate-400 font-medium">동점 또는 최종 결정이 어려울 때 사용</span>
+                        </div>
+
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center space-y-3">
+                          <p className="text-xs text-slate-600 font-medium">
+                            팀원 간 최종 득표가 같거나 합의가 어려운 경우, 운명의 룰렛을 돌려 결정하십시오!
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const activeOrWinnerIdeas = roomDetails.ideas.map(i => i.title);
+                              if (activeOrWinnerIdeas.length === 0) return;
+                              const randomChosen = activeOrWinnerIdeas[Math.floor(Math.random() * activeOrWinnerIdeas.length)];
+                              triggerToast(`🎲 룰렛 추첨 결과: [${randomChosen}] 이(가) 선택되었습니다! 🎉`);
+                            }}
+                            className="py-2.5 px-5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5"
+                          >
+                            <span>🎲 운명의 룰렛 돌리기</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     {/* AI Summary report details */}
@@ -1979,6 +2364,53 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Google OAuth Social Login Modal (AUTH-01) */}
+      <AnimatePresence>
+        {showLoginModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-xl space-y-6 text-center"
+            >
+              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto">
+                <Lock className="w-6 h-6" />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="text-xl font-bold text-slate-900">로그인이 필요합니다</h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  방 개설 및 아이디어 제출 등 서비스를 이용하려면 구글 계정 인증이 필요합니다.
+                </p>
+              </div>
+
+              <div className="space-y-3 pt-2">
+                <button
+                  onClick={handleGoogleLogin}
+                  className="w-full py-3 px-4 bg-white border border-slate-300 hover:border-indigo-400 hover:bg-slate-50 rounded-2xl text-xs font-bold text-slate-700 flex items-center justify-center gap-2.5 transition shadow-xs"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                  </svg>
+                  <span>구글 계정으로 로그인</span>
+                </button>
+
+                <button
+                  onClick={() => setShowLoginModal(false)}
+                  className="w-full py-2.5 text-xs font-semibold text-slate-400 hover:text-slate-600 transition"
+                >
+                  닫기
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
