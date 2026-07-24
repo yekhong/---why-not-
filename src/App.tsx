@@ -1073,7 +1073,7 @@ export default function App() {
                 className="flex items-center gap-2 self-start md:self-auto bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition"
               >
                 <Plus className="w-4 h-4" />
-                + 회의방 개설
+                회의방 개설
               </button>
             </div>
 
