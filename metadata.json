@@ -1,0 +1,6 @@
+{
+  "name": "와이낫 (Why Not)",
+  "description": "팀이 브레인스토밍한 아이디어들을, 익명 제안 기준과 완전 익명 평가를 바탕으로 단계적으로 소거하여 솔직하고 공정한 의사결정을 돕는 아이디에이션 스크리닝 서비스",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
