@@ -297,6 +297,41 @@ export default function App() {
   const [ideaPdfName, setIdeaPdfName] = useState('');
   const [ideaTags, setIdeaTags] = useState('');
 
+  // Reference Link Validation
+  const [isCheckingLink, setIsCheckingLink] = useState(false);
+  const [linkValidationResult, setLinkValidationResult] = useState<{ valid: boolean; message: string; normalizedUrl?: string } | null>(null);
+
+  const validateIdeaLink = async (rawUrl: string): Promise<boolean> => {
+    if (!rawUrl.trim()) {
+      setLinkValidationResult(null);
+      return true;
+    }
+    setIsCheckingLink(true);
+    try {
+      const res = await fetch('/api/validate-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: rawUrl.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        setLinkValidationResult({ valid: true, message: data.message, normalizedUrl: data.normalizedUrl });
+        if (data.normalizedUrl && data.normalizedUrl !== ideaLink) {
+          setIdeaLink(data.normalizedUrl);
+        }
+        return true;
+      } else {
+        setLinkValidationResult({ valid: false, message: data.message || '실제 존재하는 올바른 링크만 등록 가능합니다.' });
+        return false;
+      }
+    } catch (e) {
+      setLinkValidationResult({ valid: false, message: '링크 존재 여부 확인 중 오류가 발생했습니다. 올바른 URL을 입력해 주세요.' });
+      return false;
+    } finally {
+      setIsCheckingLink(false);
+    }
+  };
+
   // Submitting Proposal
   const [proposalText, setProposalText] = useState('');
 
@@ -559,6 +594,14 @@ export default function App() {
       return;
     }
 
+    if (ideaLink.trim()) {
+      const isValid = await validateIdeaLink(ideaLink);
+      if (!isValid) {
+        triggerToast('실제 존재하는 올바른 참고 링크만 등록할 수 있습니다.', 'error');
+        return;
+      }
+    }
+
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
@@ -581,6 +624,7 @@ export default function App() {
       setIdeaLink('');
       setIdeaPdfName('');
       setIdeaTags('');
+      setLinkValidationResult(null);
       fetchRoomDetails(activeRoomId!);
     } catch (err) {
       triggerToast('아이디어 등록 실패', 'error');
@@ -1684,14 +1728,38 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
+                              {isCheckingLink && (
+                                <span className="text-[10px] font-semibold text-indigo-600 animate-pulse">
+                                  🔍 링크 실존 검증 중...
+                                </span>
+                              )}
+                            </div>
                             <input
-                              type="url"
+                              type="text"
                               value={ideaLink}
-                              onChange={e => setIdeaLink(e.target.value)}
-                              placeholder="https://example.com/reference-board"
-                              className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                              onChange={e => {
+                                setIdeaLink(e.target.value);
+                                setLinkValidationResult(null);
+                              }}
+                              onBlur={() => {
+                                if (ideaLink.trim()) validateIdeaLink(ideaLink);
+                              }}
+                              placeholder="https://www.google.com 등 실제 접속 가능한 URL"
+                              className={`w-full px-4 py-2 border rounded-xl text-sm focus:outline-none focus:ring-2 font-medium ${
+                                linkValidationResult
+                                  ? linkValidationResult.valid
+                                    ? 'border-emerald-300 focus:ring-emerald-500 bg-emerald-50/20'
+                                    : 'border-rose-300 focus:ring-rose-400 bg-rose-50/30'
+                                  : 'border-slate-200 focus:ring-indigo-500'
+                              }`}
                             />
+                            {linkValidationResult && (
+                              <p className={`text-[11px] font-medium mt-1 ${linkValidationResult.valid ? 'text-emerald-600 font-semibold' : 'text-rose-500 font-medium'}`}>
+                                {linkValidationResult.valid ? '✓ ' : '⚠️ '}{linkValidationResult.message}
+                              </p>
+                            )}
                           </div>
 
                           <div className="space-y-1">

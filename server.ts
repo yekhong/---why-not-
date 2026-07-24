@@ -639,6 +639,116 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
 });
 
 /**
+ * Validate URL existence and accessibility
+ */
+app.post('/api/validate-link', async (req, res) => {
+  const { url } = req.body;
+  if (!url || typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ valid: false, message: 'URL이 입력되지 않았습니다.' });
+  }
+
+  let targetUrl = url.trim();
+
+  // Automatically prepend https:// if protocol is missing
+  if (!/^https?:\/\//i.test(targetUrl)) {
+    targetUrl = `https://${targetUrl}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(targetUrl);
+  } catch (err) {
+    return res.status(400).json({
+      valid: false,
+      message: '올바른 URL 형식이 아닙니다. (예: https://www.naver.com)'
+    });
+  }
+
+  // Ensure hostname has valid structure (e.g. contains dot like domain.tld)
+  if (!parsed.hostname || !parsed.hostname.includes('.')) {
+    return res.status(400).json({
+      valid: false,
+      message: '올바른 도메인 주소를 입력해 주세요. (예: naver.com)'
+    });
+  }
+
+  // Block explicit fake/placeholder domains
+  const fakeDomains = ['example.com', 'example.org', 'example.net', 'test.com', 'sample.com', 'fake.com', 'domain.com'];
+  if (fakeDomains.some(domain => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`))) {
+    return res.status(400).json({
+      valid: false,
+      message: '예시용 주소(example.com 등)가 아닌 실제 존재하는 연결 가능한 URL을 입력해 주세요.'
+    });
+  }
+
+  // Network check with full browser headers and redirect follow
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+  let responseStatus: number | null = null;
+  let networkError: string | null = null;
+
+  try {
+    const resFetch = await fetch(targetUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache'
+      }
+    });
+    responseStatus = resFetch.status;
+  } catch (err: any) {
+    networkError = err?.message || 'Network request failed';
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  // Analysis of result:
+  // If status is 2xx, 3xx, 401, 403, 405, 429, 500, 502, 503 -> The domain & server exist!
+  // If status is 404 -> Page not found
+  // If network error occurred (DNS ENOTFOUND, ECONNREFUSED, invalid host) -> Domain does not exist / unreachable
+  if (responseStatus !== null) {
+    if (responseStatus >= 200 && responseStatus < 400) {
+      return res.json({
+        valid: true,
+        normalizedUrl: targetUrl,
+        message: '실제 연결 가능한 유효한 링크입니다.'
+      });
+    } else if (responseStatus === 404) {
+      return res.status(400).json({
+        valid: false,
+        message: '존재하지 않는 페이지입니다. (404 Not Found)'
+      });
+    } else if ([401, 403, 405, 429, 500, 502, 503].includes(responseStatus)) {
+      // Server responded (anti-bot or authentication required), domain exists!
+      return res.json({
+        valid: true,
+        normalizedUrl: targetUrl,
+        message: '확인된 실제 웹사이트 링크입니다.'
+      });
+    }
+  }
+
+  // Fallback: If fetch timed out or failed due to strict network policies, try fallback syntax check
+  if (networkError && networkError.includes('aborted')) {
+    return res.json({
+      valid: true,
+      normalizedUrl: targetUrl,
+      message: '유효한 웹사이트 주소 형식입니다.'
+    });
+  }
+
+  return res.status(400).json({
+    valid: false,
+    message: '실제 존재하는 웹페이지가 아니거나 연결할 수 없는 URL입니다. (도메인을 확인해 주세요)'
+  });
+});
+
+/**
  * Health Check
  */
 app.get('/api/health', (req, res) => {
