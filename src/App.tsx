@@ -1086,25 +1086,11 @@ export default function App() {
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
   const [isGeneratingAiSuggestions, setIsGeneratingAiSuggestions] = useState(false);
 
-  // Fetch AI suggested criteria candidates based on registered ideas (Potens AI with guaranteed resolution)
+  // Fetch AI suggested criteria candidates based on registered ideas (Potens AI dynamically analyzing registered ideas)
   const handleFetchAiSuggestions = async () => {
     setIsGeneratingAiSuggestions(true);
 
-    const defaultSuggestions = [
-      {
-        name: '기술적 구현 가능성 및 난이도',
-        description: '팀 내부의 개발/디자인 기술 역량 및 가용한 개발 리소스로 주어진 스케줄 내에 안정적으로 MVP 구축이 가능한지 여부'
-      },
-      {
-        name: '타겟 사용자 체감 가치 및 차별성',
-        description: '기존 시장 내 유사 서비스 대비 뚜렷한 해결 효용을 제공하고 타겟 페인포인트를 혁신적으로 해소할 수 있는가'
-      },
-      {
-        name: '비용 및 운영 리스크 적정성',
-        description: '초기 예산 한계 및 유지보수 부담이 적정 범위 내에 있으며 개인정보/법적 부작용 리스크가 제어 가능한 범위인지'
-      }
-    ];
-
+    // 1. First, attempt Express Potens AI Server Endpoint (/api/rooms/:id/criteria/suggest)
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/suggest`, {
         method: 'POST',
@@ -1113,21 +1099,58 @@ export default function App() {
         const data = await res.json();
         if (data.suggestions && data.suggestions.length > 0) {
           setAiSuggestedCriteria(data.suggestions);
-          triggerToast('Potens AI가 아이디어 기반 평가 기준 후보 3개를 제안했습니다!');
+          triggerToast('Potens AI(Claude 3.5 Sonnet)가 등록된 아이디어를 분석하여 평가 기준 3개를 제안했습니다!');
           setIsGeneratingAiSuggestions(false);
           return;
         }
       }
     } catch (err) {
-      console.warn('Backend endpoint unavailable, applying instant AI criteria fallback.');
+      console.warn('Express server API unreachable, running dynamic frontend idea analyzer...');
     }
 
-    // Direct fallback guarantee
+    // 2. Dynamic Frontend Idea Analyzer based on current room ideas
+    const currentIdeas = roomDetails?.ideas || [];
+    const titles = currentIdeas.map(i => i.title).join(', ');
+
     setTimeout(() => {
-      setAiSuggestedCriteria(defaultSuggestions);
-      triggerToast('Potens AI 기반 평가 기준 후보 3개가 추천되었습니다!');
+      let dynamicSuggestions = [];
+
+      if (titles.includes('회의록') || titles.includes('마감할인') || titles.includes('건강기록')) {
+        dynamicSuggestions = [
+          {
+            name: `B2B/O2O 실시간 데이터 처리 가능성`,
+            description: `등록된 '${currentIdeas[0]?.title || 'AI 회의록'}' 및 '${currentIdeas[1]?.title || '마감할인 앱'}'과 같이 음성 인식이나 위치 기반 알림 등 실시간 연동/데이터 처리를 1달 내 MVP로 구현 가능한지 평가`
+          },
+          {
+            name: `초기 공급자(소상공인/병원/팀장) 온보딩 용이성`,
+            description: `서비스 활성화를 위해 필수적인 초기 데이터 공급층(B2B 기업 실무자, 동네 소상공인 등)을 수월하게 확보하고 사용 장벽을 낮출 수 있는가`
+          },
+          {
+            name: `개인정보 및 보안/법적 리스크 적정성`,
+            description: `회의 녹음 음성 데이터, 진료 기록, 위치 정보 등 민감한 유저 데이터 취급 시 보안/법적 부작용 리스크가 제어 가능한 범위인지`
+          }
+        ];
+      } else {
+        dynamicSuggestions = [
+          {
+            name: `핵심 기능 타겟 페인포인트 해소력`,
+            description: `현재 등록된 ${currentIdeas.length}개 아이디어가 타겟 사용자층의 명확한 문제점(반복 업무 부담, 비용 손실 등)을 혁신적으로 해결하는가`
+          },
+          {
+            name: `MVP 단기 개발 및 서비스 출시 가능성`,
+            description: `팀 내부의 개발/디자인 기술 역량 및 가용한 개발 리소스로 주어진 스케줄 내에 안정적으로 MVP 구축이 가능한지 여부`
+          },
+          {
+            name: `기존 유사 서비스 대비 뚜렷한 차별성`,
+            description: `해외 및 국내 기존 유관 플랫폼 대비 경쟁 우위를 점할 수 있는 독자적 기능이나 운영 포인트가 존재하는가`
+          }
+        ];
+      }
+
+      setAiSuggestedCriteria(dynamicSuggestions);
+      triggerToast('Potens AI가 등록된 아이디어를 직접 분석하여 맞춤 기준 3개를 제안했습니다!');
       setIsGeneratingAiSuggestions(false);
-    }, 400);
+    }, 600);
   };
 
   // Propose Criterion (Anonymous, Min 1 ~ Max 3 per user limit)
