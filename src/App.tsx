@@ -1088,7 +1088,7 @@ export default function App() {
                 >
                   <form onSubmit={handleCreateRoom} className="space-y-4 max-w-2xl">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                      <h2 className="text-lg font-bold text-slate-900">새 소거 회의실 개설</h2>
+                      <h2 className="text-lg font-bold text-slate-900">새 회의실 개설</h2>
                       <button 
                         type="button" 
                         onClick={() => setIsCreatingRoom(false)}
@@ -1111,7 +1111,7 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-700">회의 설명 및 제약 조건 (선택)</label>
+                      <label className="text-xs font-bold text-slate-700">한 줄 설명 및 제약 조건 (선택)</label>
                       <textarea
                         value={newRoomDesc}
                         onChange={e => setNewRoomDesc(e.target.value)}
@@ -1172,33 +1172,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                          최소 응답 수 게이트
-                          <span className="text-slate-400 font-normal hover:text-slate-600 cursor-pointer" title="이 인원 미만으로 의견이 등록되면, 신원 노출 방지를 위해 결과 분석을 보여주지 않습니다.">
-                            <HelpCircle className="w-3.5 h-3.5" />
-                          </span>
-                        </label>
-                        <select
-                          value={newRoomThreshold}
-                          onChange={e => setNewRoomThreshold(Number(e.target.value))}
-                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
-                        >
-                          <option value={2}>2명 이상 참여시 공개</option>
-                          <option value={3}>3명 이상 참여시 공개 (권장)</option>
-                          <option value={4}>4명 이상 참여시 공개</option>
-                          <option value={5}>5명 이상 참여시 공개</option>
-                        </select>
-                      </div>
-
-                      <div className="flex items-end">
-                        <span className="text-[11px] text-slate-400 leading-normal pb-1">
-                          ※ 방을 생성한 방장은 각 단계 전환 및 소거 집행 권한을 가지게 됩니다.
-                        </span>
-                      </div>
-                    </div>
-
                     <div className="flex gap-2 pt-2 justify-end">
                       <button
                         type="button"
@@ -1225,7 +1198,7 @@ export default function App() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
                 <div className="flex items-center gap-2">
                   <Users className="w-4 h-4 text-slate-600" />
-                  <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 소거 회의실</h2>
+                  <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 회의실</h2>
                 </div>
 
                 {/* Filter buttons (ENTRY-01) */}
