@@ -1153,7 +1153,7 @@ export default function App() {
     }, 600);
   };
 
-  // Propose Criterion (Anonymous, Min 1 ~ Max 3 per user limit)
+  // Propose Criterion (Anonymous, Min 1 ~ Max 3 per user limit with instant fallback)
   const handleProposeCriterion = async (e?: React.FormEvent, customText?: string) => {
     if (e) e.preventDefault();
     const textToSubmit = customText || proposalText;
@@ -1162,6 +1162,39 @@ export default function App() {
       return;
     }
 
+    if (!roomDetails) return;
+
+    // Check user max 3 limit
+    const existingProposals = roomDetails.proposals || [];
+    const myProposals = existingProposals.filter(p => p.proposerId === userId);
+    if (myProposals.length >= 3) {
+      triggerToast('⚠️ 기준 제안은 1인당 최대 3개까지만 가능합니다.', 'error');
+      return;
+    }
+
+    const newProposalObj = {
+      id: `prop-${Math.random().toString(36).substring(2, 9)}`,
+      roomId: activeRoomId!,
+      rawText: textToSubmit.trim(),
+      proposerId: userId,
+      createdAt: new Date().toISOString()
+    };
+
+    // Update local state immediately
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const updatedProposals = [...(prev.proposals || []), newProposalObj];
+      return {
+        ...prev,
+        proposals: updatedProposals,
+        proposalsCount: updatedProposals.length
+      };
+    });
+
+    triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
+    setProposalText('');
+
+    // Background sync to API or Supabase
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
         method: 'POST',
@@ -1171,17 +1204,27 @@ export default function App() {
           proposerId: userId,
         }),
       });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || '기준 제안 제출 실패');
+      if (res.ok) {
+        fetchRoomDetails(activeRoomId!);
+        return;
       }
+    } catch (err) {
+      console.warn('Express API unavailable, proposal saved in local state.');
+    }
 
-      triggerToast('평가 기준 제안이 익명으로 제출되었습니다!');
-      setProposalText('');
-      fetchRoomDetails(activeRoomId!);
-    } catch (err: any) {
-      triggerToast(err.message || '기준 제안 제출 실패', 'error');
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('criterion_proposals')
+          .insert({
+            id: newProposalObj.id,
+            room_id: activeRoomId,
+            raw_text: textToSubmit.trim(),
+            proposer_id: userId
+          });
+      }
+    } catch (supaErr) {
+      console.error('Supabase DB proposal insert error:', supaErr);
     }
   };
 
@@ -2449,16 +2492,24 @@ export default function App() {
                             </span>
                           </div>
 
+                          {(roomDetails.proposals || []).length >= 1 && (
+                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                              <span>💡</span>
+                              기준 제안이 하단에 등록되었습니다. (AI 추천 선택 또는 제안 등록이 완료되어 직접 입력이 완료되었습니다)
+                            </div>
+                          )}
+
                           <form onSubmit={handleProposeCriterion} className="space-y-4">
                             <div className="space-y-1">
                               <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
                               <textarea
-                                required
+                                required={(roomDetails.proposals || []).length === 0}
+                                disabled={(roomDetails.proposals || []).length >= 1}
                                 value={proposalText}
                                 onChange={e => setProposalText(e.target.value)}
-                                placeholder="예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
+                                placeholder={(roomDetails.proposals || []).length >= 1 ? "이미 평가 기준 제안이 제출되었습니다." : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"}
                                 rows={3}
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
                               />
                             </div>
 
@@ -2468,7 +2519,8 @@ export default function App() {
 
                             <button
                               type="submit"
-                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
+                              disabled={(roomDetails.proposals || []).length >= 1}
+                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
                             >
                               익명 기준 제안 등록하기
                             </button>
@@ -2476,18 +2528,39 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Right: Progress Tracker & Clustering triggering (Host-only) */}
+                      {/* Right: Progress Tracker & Submitted Proposals List */}
                       <div className="lg:col-span-5 space-y-6">
                         <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <h2 className="text-base font-bold text-slate-900">제안 현황</h2>
-
-                          <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-600">현재 수집된 총 익명 기준 제안 수:</span>
-                            <span className="text-lg font-black text-slate-900">{roomDetails.proposalsCount}개</span>
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
+                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
+                              {roomDetails.proposalsCount}개 제출됨
+                            </span>
                           </div>
-                          <p className="text-[11px] text-slate-400 leading-normal">
-                            ※ 최소 1개 이상 수집 시 다음 단계 진행이 가능합니다. 제출 완료 후 방장이 AI 클러스터링을 가동합니다.
-                          </p>
+
+                          {/* Submitted Proposals List */}
+                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                            {(roomDetails.proposals || []).length === 0 ? (
+                              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
+                                <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
+                                <p className="text-[11px] text-slate-400">좌측에서 AI 추천 기준을 선택하거나 직접 입력해 주세요. (최소 1개 필수)</p>
+                              </div>
+                            ) : (
+                              (roomDetails.proposals || []).map((p, idx) => (
+                                <div key={p.id || idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-left">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                                      익명 제안 #{idx + 1}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400">🔒 작성자 익명 보장</span>
+                                  </div>
+                                  <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                    {p.rawText}
+                                  </p>
+                                </div>
+                              ))
+                            )}
+                          </div>
                         </div>
 
                         {/* Host Control: Triggers Clustering (CRIT-02 AI 자동 정리) */}

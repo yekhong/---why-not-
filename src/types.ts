@@ -91,6 +91,7 @@ export interface RoomDetails {
   room: Room;
   ideas: Idea[];
   criteria: Criterion[];
+  proposals?: CriterionProposal[];
   proposalsCount: number;
   rounds: EliminationRound[];
   evaluatorsCount: number;
