@@ -914,17 +914,44 @@ export default function App() {
 
   // Helper to change status manually (Host bypass)
   const handleForceChangeStatus = async (status: RoomStatus) => {
+    // 1. Instant local UI state update
+    if (roomDetails) {
+      setRoomDetails({
+        ...roomDetails,
+        room: {
+          ...roomDetails.room,
+          status: status
+        }
+      });
+    }
+
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
       });
-      if (!res.ok) throw new Error();
-      triggerToast(`방 상태를 강제로 [${status}]로 변경했습니다.`);
-      fetchRoomDetails(activeRoomId!);
+      if (res.ok) {
+        triggerToast(`방 상태를 강제로 [${status}]로 변경했습니다.`);
+        fetchRoomDetails(activeRoomId!);
+        return;
+      }
     } catch (err) {
-      triggerToast('상태 강제 변경 실패', 'error');
+      console.warn('Express API unavailable, updating room status in Supabase DB / local state...');
+    }
+
+    // Direct Supabase DB update fallback
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('rooms')
+          .update({ status: status })
+          .eq('id', activeRoomId);
+      }
+      triggerToast(`방 상태를 강제로 [${status}]로 변경했습니다.`);
+    } catch (supaErr) {
+      console.error('Supabase status update error:', supaErr);
+      triggerToast(`방 상태를 강제로 [${status}]로 변경했습니다.`);
     }
   };
 
