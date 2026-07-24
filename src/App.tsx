@@ -101,6 +101,7 @@ export default function App() {
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [userId, setUserId] = useState<string>('');
   const [nickname, setNickname] = useState<string>('');
@@ -121,6 +122,18 @@ export default function App() {
   const isEmailValid = useMemo(() => {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authEmail.trim());
   }, [authEmail]);
+
+  // Helper to persist registered users locally for fallback
+  const saveLocalRegisteredUser = (email: string, pass: string, name: string, id: string) => {
+    try {
+      const existing = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
+      const filtered = existing.filter((u: any) => u.email?.toLowerCase() !== email.toLowerCase());
+      filtered.push({ email: email.toLowerCase(), password: pass, name, id });
+      localStorage.setItem('why_not_registered_users', JSON.stringify(filtered));
+    } catch (e) {
+      console.error('Failed to save registered user locally:', e);
+    }
+  };
 
   // Email Signup Handler
   const handleEmailSignUp = async (e: React.FormEvent) => {
@@ -155,6 +168,8 @@ export default function App() {
       const uName = authName.trim();
       const uId = user?.id || `user_${Math.random().toString(36).substring(2, 9)}`;
 
+      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, uId);
+
       setUserId(uId);
       setNickname(uName);
       setUserEmail(authEmail.trim());
@@ -168,11 +183,15 @@ export default function App() {
       console.warn('Supabase SignUp notice:', err);
       // Fallback local session registration for testing
       const uId = `user_${Math.random().toString(36).substring(2, 9)}`;
+      const uName = authName.trim();
+
+      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, uId);
+
       setUserId(uId);
-      setNickname(authName.trim());
+      setNickname(uName);
       setUserEmail(authEmail.trim());
       localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', authName.trim());
+      localStorage.setItem('why_not_user_name', uName);
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
       setShowLoginModal(false);
@@ -183,10 +202,16 @@ export default function App() {
   // Email Login Handler
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
+    const failMsg = '아이디 또는 비밀번호가 올바르지 않습니다. 입력한 정보를 다시 확인해 주세요.';
+
     if (!isEmailValid) {
-      triggerToast('올바른 이메일 형식을 입력해 주세요.', 'error');
+      setAuthError(failMsg);
+      triggerToast(failMsg, 'error');
       return;
     }
+
+    const trimmedEmail = authEmail.trim().toLowerCase();
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -198,6 +223,8 @@ export default function App() {
 
       const user = data.user;
       const uName = user.user_metadata?.full_name || user.email?.split('@')[0] || '사용자';
+      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, user.id);
+
       setUserId(user.id);
       setNickname(uName);
       setUserEmail(user.email || '');
@@ -209,18 +236,37 @@ export default function App() {
       triggerToast(`${uName}님 환영합니다!`);
     } catch (err: any) {
       console.warn('Supabase Login Notice:', err);
-      // Local fallback for local test
-      const demoId = `user_${Math.random().toString(36).substring(2, 9)}`;
-      const demoName = authEmail.split('@')[0] || '사용자';
-      setUserId(demoId);
-      setNickname(demoName);
-      setUserEmail(authEmail.trim());
-      localStorage.setItem('why_not_user_id', demoId);
-      localStorage.setItem('why_not_user_name', demoName);
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast('로그인되었습니다!');
+      // Check local registered users fallback
+      let registeredUsers: any[] = [];
+      try {
+        registeredUsers = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
+      } catch (e) {}
+
+      const matchedUser = registeredUsers.find(
+        (u: any) => u.email && u.email.toLowerCase() === trimmedEmail
+      );
+
+      if (matchedUser) {
+        if (matchedUser.password && matchedUser.password !== authPassword) {
+          setAuthError(failMsg);
+          triggerToast(failMsg, 'error');
+          return;
+        }
+        const uId = matchedUser.id || `user_${Math.random().toString(36).substring(2, 9)}`;
+        const uName = matchedUser.name || trimmedEmail.split('@')[0] || '사용자';
+        setUserId(uId);
+        setNickname(uName);
+        setUserEmail(authEmail.trim());
+        localStorage.setItem('why_not_user_id', uId);
+        localStorage.setItem('why_not_user_name', uName);
+        localStorage.setItem('why_not_logged_in', 'true');
+        setIsLoggedIn(true);
+        setShowLoginModal(false);
+        triggerToast(`${uName}님 환영합니다!`);
+      } else {
+        setAuthError(failMsg);
+        triggerToast(failMsg, 'error');
+      }
     }
   };
 
@@ -1373,7 +1419,7 @@ export default function App() {
                 className="flex items-center gap-2 self-start md:self-auto bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition"
               >
                 <Plus className="w-4 h-4" />
-                + 회의방 개설
+                회의방 개설
               </button>
             </div>
 
@@ -2830,14 +2876,14 @@ export default function App() {
                 <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold">
                   <button
                     type="button"
-                    onClick={() => setAuthMode('LOGIN')}
+                    onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
                     className={`px-3 py-1 rounded-lg transition ${authMode === 'LOGIN' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
                     로그인
                   </button>
                   <button
                     type="button"
-                    onClick={() => setAuthMode('SIGNUP')}
+                    onClick={() => { setAuthMode('SIGNUP'); setAuthError(null); }}
                     className={`px-3 py-1 rounded-lg transition ${authMode === 'SIGNUP' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
                     회원가입
@@ -2855,6 +2901,13 @@ export default function App() {
                     : '이메일 형식의 ID와 비밀번호를 설정하여 가입하십시오.'}
                 </p>
               </div>
+
+              {authError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-medium">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                  <span>{authError}</span>
+                </div>
+              )}
 
               <form onSubmit={authMode === 'LOGIN' ? handleEmailLogin : handleEmailSignUp} className="space-y-3">
                 {authMode === 'SIGNUP' && (
@@ -2877,7 +2930,7 @@ export default function App() {
                     type="email"
                     required
                     value={authEmail}
-                    onChange={e => setAuthEmail(e.target.value)}
+                    onChange={e => { setAuthEmail(e.target.value); setAuthError(null); }}
                     placeholder="user@example.com"
                     className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${
                       authEmail && !isEmailValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
@@ -2900,7 +2953,7 @@ export default function App() {
                     required
                     maxLength={15}
                     value={authPassword}
-                    onChange={e => setAuthPassword(e.target.value)}
+                    onChange={e => { setAuthPassword(e.target.value); setAuthError(null); }}
                     placeholder="영문 소문자 및 숫자 조합"
                     className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${
                       authMode === 'SIGNUP' && authPassword && !isPasswordValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
@@ -2930,7 +2983,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => setShowLoginModal(false)}
+                    onClick={() => { setShowLoginModal(false); setAuthError(null); }}
                     className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center"
                   >
                     닫기
