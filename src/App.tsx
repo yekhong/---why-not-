@@ -109,18 +109,21 @@ export default function App() {
   const [isRegisteringUser, setIsRegisteringUser] = useState(false);
   const [tempNickname, setTempNickname] = useState('');
 
-  // Password validation helper: 소문자 및 숫자로만 구성, 최대 15자
+  // Password validation helper: 소문자 및 숫자로만 구성, 최대 15자 (테스트 계정 TEST1234 허용)
   const isPasswordValid = useMemo(() => {
     if (!authPassword) return false;
+    if (authPassword.toUpperCase() === 'TEST1234') return true;
     const isValidCharAndLength = /^[a-z0-9]{1,15}$/.test(authPassword);
     const hasLowercase = /[a-z]/.test(authPassword);
     const hasDigit = /[0-9]/.test(authPassword);
     return isValidCharAndLength && hasLowercase && hasDigit;
   }, [authPassword]);
 
-  // Email validation helper: 이메일 형식 검사
+  // Email validation helper: 이메일 형식 검사 (테스트 계정 GOMINHAJO 허용)
   const isEmailValid = useMemo(() => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authEmail.trim());
+    const input = authEmail.trim();
+    if (input.toUpperCase() === 'GOMINHAJO' || !input.includes('@')) return true;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
   }, [authEmail]);
 
   // Helper to persist registered users locally for fallback
@@ -205,25 +208,52 @@ export default function App() {
     setAuthError(null);
     const failMsg = '아이디 또는 비밀번호가 올바르지 않습니다. 입력한 정보를 다시 확인해 주세요.';
 
+    // Dedicated instant check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
+    const inputEmailOrId = authEmail.trim().toUpperCase();
+    const inputPassword = authPassword.trim().toUpperCase();
+
+    if ((inputEmailOrId === 'GOMINHAJO' || inputEmailOrId === 'GOMINHAJO@TEST.COM') && inputPassword === 'TEST1234') {
+      const uId = 'user_gominhajo_test';
+      const uName = 'GOMINHAJO';
+      setUserId(uId);
+      setNickname(uName);
+      setUserEmail('gominhajo@test.com');
+      localStorage.setItem('why_not_user_id', uId);
+      localStorage.setItem('why_not_user_name', uName);
+      localStorage.setItem('why_not_logged_in', 'true');
+      setIsLoggedIn(true);
+      setShowLoginModal(false);
+      triggerToast('테스트 계정(GOMINHAJO)으로 로그인되었습니다!');
+      return;
+    }
+
     if (!isEmailValid) {
       setAuthError(failMsg);
       triggerToast(failMsg, 'error');
       return;
     }
 
-    const trimmedEmail = authEmail.trim().toLowerCase();
+    // Special handling for test account login (ID: GOMINHAJO / PW: TEST1234 or email input)
+    let loginEmail = authEmail.trim();
+    if (loginEmail.toUpperCase() === 'GOMINHAJO') {
+      loginEmail = 'gominhajo@test.com';
+    } else if (!loginEmail.includes('@')) {
+      loginEmail = `${loginEmail}@test.com`;
+    }
+
+    const trimmedEmail = loginEmail.toLowerCase();
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: authEmail.trim(),
+        email: loginEmail,
         password: authPassword,
       });
 
       if (error) throw error;
 
       const user = data.user;
-      const uName = user.user_metadata?.full_name || user.email?.split('@')[0] || '사용자';
-      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, user.id);
+      const uName = user.user_metadata?.full_name || (trimmedEmail.startsWith('gominhajo') ? 'GOMINHAJO' : user.email?.split('@')[0]) || '사용자';
+      saveLocalRegisteredUser(loginEmail, authPassword, uName, user.id);
 
       setUserId(user.id);
       setNickname(uName);
@@ -236,6 +266,23 @@ export default function App() {
       triggerToast(`${uName}님 환영합니다!`);
     } catch (err: any) {
       console.warn('Supabase Login Notice:', err);
+
+      // Dedicated hardcoded check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
+      if ((authEmail.trim().toUpperCase() === 'GOMINHAJO' || trimmedEmail === 'gominhajo@test.com') && authPassword.toUpperCase() === 'TEST1234') {
+        const uId = 'user_gominhajo_test';
+        const uName = 'GOMINHAJO';
+        setUserId(uId);
+        setNickname(uName);
+        setUserEmail('gominhajo@test.com');
+        localStorage.setItem('why_not_user_id', uId);
+        localStorage.setItem('why_not_user_name', uName);
+        localStorage.setItem('why_not_logged_in', 'true');
+        setIsLoggedIn(true);
+        setShowLoginModal(false);
+        triggerToast('테스트 계정(GOMINHAJO)으로 로그인되었습니다!');
+        return;
+      }
+
       // Check local registered users fallback
       let registeredUsers: any[] = [];
       try {
@@ -256,7 +303,7 @@ export default function App() {
         const uName = matchedUser.name || trimmedEmail.split('@')[0] || '사용자';
         setUserId(uId);
         setNickname(uName);
-        setUserEmail(authEmail.trim());
+        setUserEmail(loginEmail);
         localStorage.setItem('why_not_user_id', uId);
         localStorage.setItem('why_not_user_name', uName);
         localStorage.setItem('why_not_logged_in', 'true');
@@ -440,12 +487,113 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  const DEFAULT_GOMINHAJO_ROOM: RoomDetails = {
+    room: {
+      id: 'room-gominhajo',
+      title: '고민하조 팀 프로젝트',
+      description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+      category: '기획',
+      isPublic: true,
+      maxParticipants: 4,
+      targetWinnerCount: 1,
+      isPinned: true,
+      hostId: 'user_gominhajo_test',
+      status: 'IDEA_SUBMISSION',
+      minResponseThreshold: 4,
+      eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+      deadlines: { ideaSubmissionAt: '2026-08-01T18:00:00Z' },
+      createdAt: new Date().toISOString(),
+    },
+    ideas: [
+      {
+        id: 'idea-gh-1',
+        roomId: 'room-gominhajo',
+        title: 'AI 회의록 자동 요약 서비스',
+        description: `1. 서비스 정의: 화상회의 녹음 파일 또는 실시간 회의 음성을 업로드하면 AI가 핵심 논의사항, 결정사항, 액션아이템을 자동으로 정리해주는 B2B SaaS 툴.\n2. 타겟 사용자: 주 3회 이상 화상회의를 하는 5~50인 규모 스타트업/중소기업의 팀장급 실무자.\n3. 핵심기능: ① 회의 녹음 업로드 또는 줌/구글밋 연동 자동 녹취 ② 화자 분리 및 발언 요약 ③ 결정사항·액션아이템 자동 추출 및 담당자 태깅 ④ 슬랙/노션으로 요약본 자동 전송.\n4. 해결해야하는 문제: 회의 후 누군가 수동으로 회의록을 작성해야 하는 반복 업무 부담, 회의 중 메모에 집중하느라 논의에 온전히 참여하지 못하는 문제.\n5. 유사서비스 및 차별점: 클로바노트, Otter.ai 등 유사 서비스 존재. 차별점은 단순 전사(STT)에 그치지 않고 "결정사항/액션아이템"만 구조화해서 뽑아내는 것과, 국내 협업툴(슬랙/노션) 연동에 특화된 점.\n6. 리스크: 음성 인식 정확도가 한국어 전문용어·사투리에서 떨어질 수 있음. 회의 녹음에 대한 참석자 동의·개인정보 이슈 발생 가능.`,
+        submitterId: 'user_gominhajo_test',
+        submitterName: 'GOMINHAJO',
+        status: 'ACTIVE',
+      },
+      {
+        id: 'idea-gh-2',
+        roomId: 'room-gominhajo',
+        title: '동네 소상공인 마감할인 매칭 앱',
+        description: `1. 서비스 정의: 마감 임박 재고를 가진 동네 가게(베이커리, 반찬가게 등)와 근처 소비자를 실시간 위치 기반으로 매칭해 할인 판매하는 O2O 커머스 앱.\n2. 타겟 사용자: 신선식품 폐기 부담이 있는 동네 소상공인, 저렴하게 먹거리를 구매하고 싶은 1인 가구·자취생.\n3. 핵심기능: ① 매장이 마감 1~2시간 전 남은 재고를 사진과 함께 할인 등록 ② 소비자 반경 1km 내 실시간 알림 ③ 앱 내 결제 및 픽업 예약 ④ 소진 완료 자동 마감 처리.\n4. 해결해야하는 문제: 소상공인의 마감 재고 폐기로 인한 매출 손실과 환경 부담, 소비자 입장에서는 신선식품을 저렴하게 구매할 채널 부족.\n5. 유사서비스 및 차별점: 해외의 Too Good To Go, 국내의 라스트오더가 유사 서비스로 이미 존재. 차별점을 확보하려면 특정 상권(대학가, 오피스 밀집 지역) 집중 공략이나 소상공인 대상 무료 온보딩 지원 등이 필요한 상황.\n6. 리스크: 이미 시장을 선점한 경쟁 서비스가 있어 신규 진입 장벽이 높음. 초기 매장 확보(공급 측) 없이는 소비자 앱으로서 매력이 없는 닭과 달걀 문제.`,
+        submitterId: 'user_member_1',
+        submitterName: '익명 참여자 A',
+        status: 'ACTIVE',
+      },
+      {
+        id: 'idea-gh-3',
+        roomId: 'room-gominhajo',
+        title: '반려동물 건강기록 공유 플랫폼',
+        description: `1. 서비스 정의: 반려동물의 병원 진료기록, 접종이력, 체중변화 등을 한 곳에 모아 관리하고 이사·이직·병원 변경 시 새 병원에 기록을 쉽게 공유할 수 있는 헬스케어 서비스.\n2. 타겟 사용자: 반려동물을 여러 병원에서 진료받거나, 지역 이동이 잦은 반려인.\n3. 핵심기능: ① 진료기록 사진 촬영으로 자동 스캔·입력 ② 접종 스케줄 알림 ③ 체중·건강 변화 그래프 ④ QR코드로 새 병원에 기록 즉시 공유.\n4. 해결해야하는 문제: 반려동물이 병원을 옮길 때마다 이전 진료 이력을 구두로만 전달해야 해서 정보 누락이 발생하고, 접종 시기를 놓치는 경우가 많음.\n5. 유사서비스 및 차별점: 펫나우, 삐약 등 반려동물 건강관리 앱이 존재하나 대부분 자체 기록 입력에 그침. 차별점은 병원 간 기록 "공유"에 특화된 점과 QR 기반 간편 전달 기능.\n6. 리스크: 실제 병원 시스템과의 연동이 안 되면 결국 보호자가 수동 입력해야 해서 사용률이 낮을 수 있음. 병원 측 협조 없이는 데이터 신뢰성 확보가 어려움.`,
+        submitterId: 'user_member_2',
+        submitterName: '익명 참여자 B',
+        status: 'ACTIVE',
+      },
+      {
+        id: 'idea-gh-4',
+        roomId: 'room-gominhajo',
+        title: '신입 개발자를 위한 코드리뷰 연습 플랫폼',
+        description: `1. 서비스 정의: 실제 오픈소스 프로젝트의 PR(Pull Request)을 기반으로 코드리뷰 연습을 하고, AI가 리뷰 품질에 대해 피드백을 주는 개발자 학습 서비스.\n2. 타겟 사용자: 코드리뷰 경험이 부족한 신입/주니어 개발자, 코드리뷰 문화를 도입하려는 소규모 개발팀.\n3. 핵심기능: ① 난이도별 실전 PR 문제 제공 ② 사용자가 직접 리뷰 코멘트 작성 ③ AI가 리뷰의 구체성·건설성·놓친 이슈를 채점 ④ 우수 리뷰 사례 학습 콘텐츠 제공.\n4. 해결해야하는 문제: 신입 개발자가 코드리뷰를 어떻게 해야 할지 감을 못 잡고, 실무에서 배우기 전까지 연습할 곳이 없는 문제.\n5. 유사서비스 및 차별점: 백준, 프로그래머스 등은 문제풀이 중심이라 "리뷰 스킬" 자체를 훈련하는 서비스는 국내에 거의 없음. 실제 오픈소스 PR을 소재로 쓴다는 점이 차별점.\n6. 리스크: 오픈소스 PR을 학습 콘텐츠로 가공하는 데 라이선스 이슈가 있을 수 있음. AI의 리뷰 채점 기준이 주관적이라 사용자 신뢰를 얻기 어려울 수 있음.`,
+        submitterId: 'user_member_3',
+        submitterName: '익명 참여자 C',
+        status: 'ACTIVE',
+      },
+      {
+        id: 'idea-gh-5',
+        roomId: 'room-gominhajo',
+        title: '프리랜서 계약서 자동 생성·검토 툴',
+        description: `1. 서비스 정의: 업종별 표준 계약서 템플릿에 조건을 입력하면 자동으로 계약서를 생성하고, AI가 불공정 조항을 사전에 짚어주는 리걸테크 서비스.\n2. 타겟 사용자: 디자이너·개발자·마케터 등 계약서 검토 경험이 적은 프리랜서, 프리랜서를 자주 고용하는 소규모 스튜디오.\n3. 핵심기능: ① 업종별(디자인/개발/영상 등) 계약서 템플릿 ② 조건 입력 시 자동 문서 생성 ③ AI 불공정 조항 하이라이트(예: 과도한 저작권 양도, 무제한 수정 조항) ④ 전자서명 연동.\n4. 해결해야하는 문제: 프리랜서들이 법률 지식 부족으로 불공정 계약을 그대로 수용하거나, 매번 계약서를 새로 찾아 작성하는 비효율.\n5. 유사서비스 및 차별점: 모두싸인, 계약서 템플릿 사이트는 "생성"에 집중하는 반면, 이 서비스는 "검토(불공정 조항 탐지)"에 특화된 점이 차별점.\n6. 리스크: 법률 자문이 아닌 AI 검토 결과에 대한 법적 책임 소재가 불분명함. 업종별 표준 계약 관행이 다양해 템플릿의 범용성 확보가 어려울 수 있음.`,
+        submitterId: 'user_member_4',
+        submitterName: '익명 참여자 D',
+        status: 'ACTIVE',
+      },
+      {
+        id: 'idea-gh-6',
+        roomId: 'room-gominhajo',
+        title: '팀 회식 메뉴 익명 취향 조사 봇',
+        description: `1. 서비스 정의: 회식 전 팀원들의 알레르기·못 먹는 음식·선호 메뉴를 익명으로 모아 자동으로 후보 3곳을 추천해주는 슬랙/카카오톡 챗봇.\n2. 타겟 사용자: 회식 장소 정하는 데 매번 시간을 쓰는 5~15인 규모 팀의 총무 담당자 또는 팀장.\n3. 핵심기능: ① 슬랙 명령어로 설문 자동 발송 ② 알레르기·비선호 메뉴는 익명 수집 ③ 팀원 답변 기반 근처 맛집 후보 3곳 자동 추천 ④ 투표로 최종 장소 확정.\n4. 해결해야하는 문제: 회식 메뉴 정할 때 못 먹는 음식이 있어도 말하기 어려워 나중에 불만이 생기거나, 장소 정하는 데만 카톡방에서 며칠씩 걸리는 문제.\n5. 유사서비스 및 차별점: 왓츠팟, 캐치테이블 등 예약 서비스는 있지만 "익명으로 못 먹는 것부터 걸러내는" 기능에 특화된 서비스는 없음. 회사 회식이라는 특수 상황(눈치, 알레르기 공개 부담)에 맞춘 점이 차별점.\n6. 리스크: 단순 기능이라 시장성/수익모델이 약함(B2C 유료화 어려움). 이미 사내 협업툴 내 설문 기능으로 대체 가능해 진짜 페인포인트인지 검증 필요.`,
+        submitterId: 'user_member_5',
+        submitterName: '익명 참여자 E',
+        status: 'ACTIVE',
+      }
+    ],
+    criteria: [],
+    proposalsCount: 0,
+    participants: [{ roomId: 'room-gominhajo', userId: 'user_gominhajo_test', nickname: 'GOMINHAJO', role: 'HOST', isIdeaDone: true }],
+    rounds: [],
+    evaluatorsCount: 1,
+    myEvaluations: [],
+    hasEvaluated: false,
+    minResponseThresholdMet: false,
+    scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
+  };
+
   const fetchRooms = async () => {
+    const gominhajoCard = {
+      id: 'room-gominhajo',
+      title: '고민하조 팀 프로젝트',
+      description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+      category: '기획',
+      isPublic: true,
+      maxParticipants: 4,
+      targetWinnerCount: 1,
+      isPinned: true,
+      status: 'IDEA_SUBMISSION',
+      ideasCount: 1,
+      evaluatorsCount: 1,
+      minResponseThreshold: 4,
+      createdAt: new Date().toISOString()
+    };
+
     try {
       const res = await fetch('/api/rooms');
       if (res.ok) {
         const data = await res.json();
-        setRoomsList(data);
+        const filteredOthers = (data || []).filter((r: any) => r.id !== 'room-gominhajo');
+        setRoomsList([gominhajoCard, ...filteredOthers]);
         return;
       }
     } catch (err) {
@@ -476,9 +624,43 @@ export default function App() {
         minResponseThreshold: r.min_response_threshold || 1,
         createdAt: r.created_at
       }));
-      setRoomsList(mapped);
+
+      // Always prepend GOMINHAJO room at top
+      const gominhajoCard = {
+        id: 'room-gominhajo',
+        title: '고민하조 팀 프로젝트',
+        description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+        category: '기획',
+        isPublic: true,
+        maxParticipants: 4,
+        targetWinnerCount: 1,
+        isPinned: true,
+        status: 'IDEA_SUBMISSION',
+        ideasCount: 1,
+        evaluatorsCount: 1,
+        minResponseThreshold: 4,
+        createdAt: new Date().toISOString()
+      };
+
+      const filteredOthers = mapped.filter(r => r.id !== 'room-gominhajo');
+      setRoomsList([gominhajoCard, ...filteredOthers]);
     } catch (supaErr) {
       console.error('Supabase DB fetchRooms error:', supaErr);
+      setRoomsList([{
+        id: 'room-gominhajo',
+        title: '고민하조 팀 프로젝트',
+        description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+        category: '기획',
+        isPublic: true,
+        maxParticipants: 4,
+        targetWinnerCount: 1,
+        isPinned: true,
+        status: 'IDEA_SUBMISSION',
+        ideasCount: 1,
+        evaluatorsCount: 1,
+        minResponseThreshold: 4,
+        createdAt: new Date().toISOString()
+      }]);
     }
   };
 
@@ -498,6 +680,14 @@ export default function App() {
       }
     } catch (err) {
       console.warn('Express backend fetchRoomDetails failed, reading from Supabase DB...');
+    }
+
+    // Special fallback for room-gominhajo
+    if (id === 'room-gominhajo') {
+      setRoomDetails(DEFAULT_GOMINHAJO_ROOM);
+      setLoading(false);
+      setRefreshing(false);
+      return;
     }
 
     // Direct Supabase DB fallback
@@ -2927,11 +3117,11 @@ export default function App() {
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-700">ID (이메일) <span className="text-rose-500">*</span></label>
                   <input
-                    type="email"
+                    type="text"
                     required
                     value={authEmail}
                     onChange={e => { setAuthEmail(e.target.value); setAuthError(null); }}
-                    placeholder="user@example.com"
+                    placeholder="GOMINHAJO 또는 user@example.com"
                     className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${
                       authEmail && !isEmailValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
                     }`}
