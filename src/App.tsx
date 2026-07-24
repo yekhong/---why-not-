@@ -33,7 +33,7 @@ import {
   Evaluation,
   EliminationRound,
   RoomDetails,
-  ParticipantStatus
+  Participant
 } from './types';
 
 import { supabase } from './supabase';
@@ -709,6 +709,7 @@ export default function App() {
       const { data: criteriaData } = await supabase.from('criteria').select('*').eq('room_id', id);
       const { data: proposalsData } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
       const { data: participantsData } = await supabase.from('participants').select('*').eq('room_id', id);
+      const { data: evaluationsData } = await supabase.from('evaluations').select('*').eq('room_id', id);
 
       const roomObj: Room = {
         id: roomData.id,
@@ -748,13 +749,15 @@ export default function App() {
         confirmed: true
       }));
 
-      const mappedParticipants: ParticipantStatus[] = (participantsData || []).map(p => ({
+      const mappedParticipants: Participant[] = (participantsData || []).map(p => ({
         roomId: p.room_id,
         userId: p.user_id,
         nickname: p.nickname,
         role: p.role || 'MEMBER',
         isIdeaDone: p.is_idea_done || false
       }));
+
+      const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id));
 
       const dataObj: RoomDetails = {
         room: roomObj,
@@ -763,9 +766,19 @@ export default function App() {
         proposalsCount: (proposalsData || []).length,
         participants: mappedParticipants,
         rounds: [],
-        evaluatorsCount: (participantsData || []).length || 1,
-        myEvaluations: [],
-        hasEvaluated: false,
+        evaluatorsCount: uniqueEvaluators.size || (participantsData || []).length || 1,
+        myEvaluations: (evaluationsData || []).filter(e => e.evaluator_id === userId).map(e => ({
+          id: e.id,
+          roomId: e.room_id,
+          ideaId: e.idea_id,
+          evaluatorId: e.evaluator_id,
+          decision: e.decision as any,
+          excludedCriterionIds: e.excluded_criterion_ids || [],
+          reasonText: e.reason_text || '',
+          reasonType: e.reason_type as any || 'PREFERENCE',
+          round: e.round || 1
+        })),
+        hasEvaluated: (evaluationsData || []).some(e => e.evaluator_id === userId),
         minResponseThresholdMet: true,
         scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
       };
@@ -1468,7 +1481,28 @@ export default function App() {
         return;
       }
     } catch (err) {
-      console.warn('Express API unavailable, evaluations saved locally.');
+      console.warn('Express API unavailable, trying Supabase DB insertion for evaluations...');
+    }
+
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        for (const sub of submissions) {
+          const evalId = `eval-${Math.random().toString(36).substring(2, 9)}`;
+          await supabase.from('evaluations').insert({
+            id: evalId,
+            room_id: activeRoomId,
+            idea_id: sub.ideaId,
+            evaluator_id: userId || 'anon-evaluator',
+            decision: sub.decision,
+            excluded_criterion_ids: sub.excludedCriterionIds || [],
+            reason_text: sub.reasonText || '',
+            reason_type: sub.reasonType || 'PREFERENCE',
+            round: 1
+          });
+        }
+      }
+    } catch (supaErr) {
+      console.error('Supabase DB evaluations insert error:', supaErr);
     }
   };
 

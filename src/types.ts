@@ -87,12 +87,22 @@ export interface EliminationRound {
   aiSummaryText: string;
 }
 
+export interface Participant {
+  id?: string;
+  roomId: string;
+  userId: string;
+  nickname: string;
+  role?: string;
+  isIdeaDone?: boolean;
+}
+
 export interface RoomDetails {
   room: Room;
   ideas: Idea[];
   criteria: Criterion[];
   proposals?: CriterionProposal[];
   proposalsCount: number;
+  participants?: Participant[];
   rounds: EliminationRound[];
   evaluatorsCount: number;
   myEvaluations?: Evaluation[];
