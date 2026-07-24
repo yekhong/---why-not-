@@ -684,7 +684,12 @@ export default function App() {
 
     // Special fallback for room-gominhajo
     if (id === 'room-gominhajo') {
-      setRoomDetails(DEFAULT_GOMINHAJO_ROOM);
+      setRoomDetails(prev => {
+        if (prev && prev.room.id === 'room-gominhajo') {
+          return prev;
+        }
+        return DEFAULT_GOMINHAJO_ROOM;
+      });
       setLoading(false);
       setRefreshing(false);
       return;
@@ -1380,7 +1385,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
       });
-      if (res.ok) {
+      if (res.ok && activeRoomId !== 'room-gominhajo') {
         fetchRoomDetails(activeRoomId!);
         return;
       }
