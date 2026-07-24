@@ -335,7 +335,7 @@ export default function App() {
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인'>('기획');
-  const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(4);
+  const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(2);
   const [newRoomTargetWinners, setNewRoomTargetWinners] = useState(1);
   const [newRoomIsPublic, setNewRoomIsPublic] = useState(true);
   const [newRoomVoteStartTime, setNewRoomVoteStartTime] = useState('');
@@ -875,7 +875,7 @@ export default function App() {
             description: newRoomDesc || '',
             category: newRoomCategory,
             is_public: newRoomIsPublic,
-            max_participants: Math.min(newRoomMaxParticipants, 6),
+            max_participants: Math.min(Math.max(newRoomMaxParticipants, 2), 6),
             target_winner_count: newRoomTargetWinners,
             is_pinned: false,
             host_id: userId || 'anon-host',
@@ -1956,13 +1956,13 @@ export default function App() {
                       </div>
 
                       <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">참석자 수 (최대 6명)</label>
+                        <label className="text-xs font-bold text-slate-700">참석자 수 (2~6명)</label>
                         <input
                           type="number"
-                          min={1}
+                          min={2}
                           max={6}
                           value={newRoomMaxParticipants}
-                          onChange={e => setNewRoomMaxParticipants(Math.min(Math.max(Number(e.target.value), 1), 6))}
+                          onChange={e => setNewRoomMaxParticipants(Math.min(Math.max(Number(e.target.value), 2), 6))}
                           className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
                         />
                       </div>
