@@ -5,7 +5,23 @@ export type RoomStatus =
   | 'CRITERIA_REVIEW'
   | 'EVALUATION'
   | 'ELIMINATION'
+  | 'EVALUATION_ROUND_2'
   | 'CLOSED';
+
+export interface ParticipantStatus {
+  roomId: string;
+  userId: string;
+  nickname: string;
+  role: 'HOST' | 'MEMBER' | 'VOTER';
+  isIdeaDone?: boolean;
+}
+
+export interface RankedVote {
+  id: string;
+  roomId: string;
+  voterId: string;
+  rankings: { ideaId: string; rank: number }[];
+}
 
 export interface EliminationConfig {
   countPerRound: number;
@@ -91,6 +107,7 @@ export interface RoomDetails {
   ideas: Idea[];
   criteria: Criterion[];
   proposalsCount: number;
+  participants?: ParticipantStatus[];
   rounds: EliminationRound[];
   evaluatorsCount: number;
   myEvaluations?: Evaluation[];

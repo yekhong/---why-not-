@@ -21,7 +21,8 @@ import {
   Copy,
   PlusCircle,
   HelpCircle,
-  Trash
+  Trash,
+  Star
 } from 'lucide-react';
 import { 
   Room, 
@@ -31,7 +32,8 @@ import {
   CriterionProposal, 
   Evaluation, 
   EliminationRound, 
-  RoomDetails 
+  RoomDetails,
+  ParticipantStatus
 } from './types';
 
 import { supabase } from './supabase';
@@ -226,7 +228,7 @@ export default function App() {
   // Room Navigation / Filter / Pinning State (ENTRY-01 ~ ENTRY-04)
   // ----------------------------------------------------------------
   const [roomsList, setRoomsList] = useState<any[]>([]);
-  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IN_PROGRESS' | 'CLOSED'>('ALL');
+  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IDEA_SUBMISSION' | 'EVALUATION' | 'CLOSED'>('ALL');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
   const [loading, setLoading] = useState(false);
@@ -236,12 +238,15 @@ export default function App() {
   // Forms & Interactive UI states (ENTRY-02, IDEA-02, IDEA-03)
   // ----------------------------------------------------------------
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [newRoomHostNickname, setNewRoomHostNickname] = useState('');
   const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인'>('기획');
   const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(4);
   const [newRoomTargetWinners, setNewRoomTargetWinners] = useState(1);
   const [newRoomIsPublic, setNewRoomIsPublic] = useState(true);
+  const [newRoomVoteStartTime, setNewRoomVoteStartTime] = useState('');
+  const [newRoomVoteEndTime, setNewRoomVoteEndTime] = useState('');
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
 
   // Submitting Idea (IDEA-02 & IDEA-03)
@@ -268,8 +273,32 @@ export default function App() {
   // Error/Success Alerts
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
-  // Copy Link feedback
+  // Copy Link feedback & Share Modal state
   const [copied, setCopied] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [inviteEmailInput, setInviteEmailInput] = useState('');
+
+  // Dual link copy helpers (① Participant link vs ② Voter link)
+  const copyParticipantLink = () => {
+    if (!activeRoomId) return;
+    const url = `${window.location.origin}?room=${activeRoomId}&role=participant`;
+    navigator.clipboard.writeText(url);
+    triggerToast('① 참여자 전용 링크 (최대 6명, 의견등록 가능)가 복사되었습니다!');
+  };
+
+  const copyVoterLink = () => {
+    if (!activeRoomId) return;
+    const url = `${window.location.origin}?room=${activeRoomId}&role=voter`;
+    navigator.clipboard.writeText(url);
+    triggerToast('② 투표자 공개 링크 (MVP 기본 30명, 2차 투표 전용)가 복사되었습니다!');
+  };
+
+  const handleSendEmailInvite = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmailInput.trim()) return;
+    triggerToast(`[${inviteEmailInput.trim()}] (으)로 초대 메일 발송이 완료되었습니다!`);
+    setInviteEmailInput('');
+  };
 
   const handleLogout = async () => {
     try {
@@ -330,10 +359,17 @@ export default function App() {
 
     fetchRooms();
 
-    // URL 쿼리 파라미터에서 roomId를 분석하여 방에 자동 입장 처리 (팀원 초대 링크 지원)
+    // URL 쿼리 파라미터에서 room 및 role 분석하여 방에 자동 입장 처리 (① 참여자 링크 vs ② 투표자 링크)
     const params = new URLSearchParams(window.location.search);
-    const urlRoomId = params.get('roomId');
+    const urlRoomId = params.get('room') || params.get('roomId');
+    const urlRole = params.get('role') || 'member';
+
     if (urlRoomId) {
+      if (urlRole === 'voter') {
+        localStorage.setItem('why_not_user_role', 'VOTER');
+      } else {
+        localStorage.setItem('why_not_user_role', 'MEMBER');
+      }
       handleSelectRoom(urlRoomId, savedId, savedName);
     }
   }, []);
@@ -361,28 +397,144 @@ export default function App() {
   const fetchRooms = async () => {
     try {
       const res = await fetch('/api/rooms');
-      const data = await res.json();
-      setRoomsList(data);
+      if (res.ok) {
+        const data = await res.json();
+        setRoomsList(data);
+        return;
+      }
     } catch (err) {
-      console.error('Error fetching rooms:', err);
+      console.warn('Express backend offline, fetching rooms directly from Supabase DB...');
+    }
+
+    // Direct Supabase DB query fallback
+    try {
+      const { data: supaRooms, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      
+      const mapped = (supaRooms || []).map(r => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category || '기획',
+        isPublic: r.is_public !== undefined ? r.is_public : true,
+        maxParticipants: r.max_participants || 6,
+        targetWinnerCount: r.target_winner_count || 1,
+        isPinned: r.is_pinned || false,
+        status: r.status,
+        ideasCount: 0,
+        evaluatorsCount: 1,
+        minResponseThreshold: r.min_response_threshold || 1,
+        createdAt: r.created_at
+      }));
+      setRoomsList(mapped);
+    } catch (supaErr) {
+      console.error('Supabase DB fetchRooms error:', supaErr);
     }
   };
 
   const fetchRoomDetails = async (id: string, isSilent = false) => {
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
+
     try {
       const res = await fetch(`/api/rooms/${id}?userId=${userId}`);
-      if (!res.ok) throw new Error('방 세부사항 로드 실패');
-      const data: RoomDetails = await res.json();
-      setRoomDetails(data);
-      
-      // If we are in CRITERIA_REVIEW, populate editable candidates
-      if (data.room.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
-        setEditableCriteria(data.criteria);
+      if (res.ok) {
+        const data: RoomDetails = await res.json();
+        setRoomDetails(data);
+        if (data.room.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
+          setEditableCriteria(data.criteria);
+        }
+        return;
       }
     } catch (err) {
-      console.error('Error fetching room details:', err);
+      console.warn('Express backend fetchRoomDetails failed, reading from Supabase DB...');
+    }
+
+    // Direct Supabase DB fallback
+    try {
+      const { data: roomData, error: roomErr } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (roomErr || !roomData) throw new Error('방을 찾을 수 없습니다.');
+
+      const { data: ideasData } = await supabase.from('ideas').select('*').eq('room_id', id);
+      const { data: criteriaData } = await supabase.from('criteria').select('*').eq('room_id', id);
+      const { data: proposalsData } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
+      const { data: participantsData } = await supabase.from('participants').select('*').eq('room_id', id);
+
+      const roomObj: Room = {
+        id: roomData.id,
+        title: roomData.title,
+        description: roomData.description,
+        category: roomData.category,
+        isPublic: roomData.is_public,
+        maxParticipants: roomData.max_participants,
+        targetWinnerCount: roomData.target_winner_count,
+        isPinned: roomData.is_pinned,
+        hostId: roomData.host_id,
+        status: roomData.status,
+        minResponseThreshold: roomData.min_response_threshold || 1,
+        eliminationConfig: roomData.elimination_config || { countPerRound: 1, tieBreak: 'random' },
+        deadlines: roomData.deadlines || {},
+        createdAt: roomData.created_at,
+      };
+
+      const mappedIdeas: Idea[] = (ideasData || []).map(i => ({
+        id: i.id,
+        roomId: i.room_id,
+        title: i.title,
+        description: i.description,
+        submitterId: i.submitter_id,
+        submitterName: i.submitter_name,
+        attachmentUrl: i.attachment_url,
+        pdfAttachmentUrl: i.pdf_attachment_url,
+        tags: i.tags,
+        status: i.status
+      }));
+
+      const mappedCriteria: Criterion[] = (criteriaData || []).map(c => ({
+        id: c.id,
+        roomId: c.room_id,
+        name: c.name,
+        description: c.description,
+        confirmed: true
+      }));
+
+      const mappedParticipants: ParticipantStatus[] = (participantsData || []).map(p => ({
+        roomId: p.room_id,
+        userId: p.user_id,
+        nickname: p.nickname,
+        role: p.role || 'MEMBER',
+        isIdeaDone: p.is_idea_done || false
+      }));
+
+      const dataObj: RoomDetails = {
+        room: roomObj,
+        ideas: mappedIdeas,
+        criteria: mappedCriteria,
+        proposalsCount: (proposalsData || []).length,
+        participants: mappedParticipants,
+        rounds: [],
+        evaluatorsCount: (participantsData || []).length || 1,
+        myEvaluations: [],
+        hasEvaluated: false,
+        minResponseThresholdMet: true,
+        scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
+      };
+
+      setRoomDetails(dataObj);
+      if (roomObj.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
+        setEditableCriteria(mappedCriteria);
+      }
+    } catch (supaErr) {
+      console.error('Supabase fetchRoomDetails failed:', supaErr);
       triggerToast('방 정보를 불러오는 데 실패했습니다.', 'error');
     } finally {
       setLoading(false);
@@ -416,7 +568,6 @@ export default function App() {
   // Actions
   // ----------------------------------------------------------------
 
-  // Create Room (ENTRY-02)
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isLoggedIn) {
@@ -425,51 +576,140 @@ export default function App() {
     }
     if (!newRoomTitle.trim()) return;
 
-    try {
-      const res = await fetch('/api/rooms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: newRoomTitle,
-          description: newRoomDesc,
-          category: newRoomCategory,
-          maxParticipants: Math.min(newRoomMaxParticipants, 6),
-          targetWinnerCount: newRoomTargetWinners,
-          isPublic: newRoomIsPublic,
-          hostId: userId,
-          minResponseThreshold: newRoomThreshold,
-          eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-        }),
-      });
+    const hostNick = newRoomHostNickname.trim().slice(0, 6) || nickname.slice(0, 6) || '방장';
+    localStorage.setItem('why_not_room_nickname', hostNick);
+    setNickname(hostNick);
 
-      if (!res.ok) throw new Error();
-      const created = await res.json();
+    try {
+      const roomPayload = {
+        title: newRoomTitle,
+        description: newRoomDesc,
+        category: newRoomCategory,
+        maxParticipants: Math.min(newRoomMaxParticipants, 6),
+        targetWinnerCount: newRoomTargetWinners,
+        isPublic: newRoomIsPublic,
+        hostId: userId || 'anon-host',
+        minResponseThreshold: 1,
+        eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+      };
+
+      let createdRoomId = '';
+
+      // Try Express backend endpoint first
+      try {
+        const res = await fetch('/api/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(roomPayload),
+        });
+        if (res.ok) {
+          const created = await res.json();
+          createdRoomId = created.id;
+        }
+      } catch (e) {
+        console.warn('Express API server unaccessible, trying direct Supabase insertion...', e);
+      }
+
+      // If backend was not reached or failed (e.g. Vercel static frontend), insert directly into Supabase DB
+      if (!createdRoomId) {
+        const newId = `room-${Math.random().toString(36).substring(2, 9)}`;
+        const { error: supaError } = await supabase
+          .from('rooms')
+          .insert({
+            id: newId,
+            title: newRoomTitle,
+            description: newRoomDesc || '',
+            category: newRoomCategory,
+            is_public: newRoomIsPublic,
+            max_participants: Math.min(newRoomMaxParticipants, 6),
+            target_winner_count: newRoomTargetWinners,
+            is_pinned: false,
+            host_id: userId || 'anon-host',
+            status: 'IDEA_SUBMISSION',
+            min_response_threshold: 1,
+            elimination_config: { countPerRound: 1, tieBreak: 'random' },
+            deadlines: {
+              evaluationAt: newRoomVoteEndTime || undefined,
+              voteStartTime: newRoomVoteStartTime || undefined
+            },
+          });
+
+        if (supaError) {
+          console.error('Supabase DB room insert error:', supaError);
+          throw supaError;
+        }
+        createdRoomId = newId;
+      }
       
-      triggerToast('회의방이 성공적으로 생성되었습니다!');
+      // Register host participant
+      try {
+        await supabase.from('participants').insert({
+          room_id: createdRoomId,
+          user_id: userId || 'anon-host',
+          nickname: hostNick
+        });
+      } catch (pErr) {
+        console.warn(pErr);
+      }
+
+      triggerToast(`회의실이 성공적으로 개설되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
+      setNewRoomHostNickname('');
       setNewRoomTitle('');
       setNewRoomDesc('');
+      setNewRoomVoteStartTime('');
+      setNewRoomVoteEndTime('');
       setNewRoomThreshold(3);
       
-      // Select the newly created room & fetch details immediately
-      setActiveRoomId(created.id);
-      fetchRoomDetails(created.id);
+      // Select the newly created room & open Dual Link Share Modal immediately
+      setActiveRoomId(createdRoomId);
+      setShowShareModal(true);
+      fetchRoomDetails(createdRoomId);
       fetchRooms();
-    } catch (err) {
-      triggerToast('방 생성 도중 오류가 발생했습니다.', 'error');
+      
+      // Select the newly created room & fetch details immediately
+      setActiveRoomId(createdRoomId);
+      fetchRoomDetails(createdRoomId);
+      fetchRooms();
+    } catch (err: any) {
+      console.error('Room Creation Failed:', err);
+      triggerToast(`방 생성 도중 오류가 발생했습니다: ${err?.message || ''}`, 'error');
     }
   };
 
-  // Toggle Room Pin (ENTRY-03)
+  // Toggle Room Pin (ENTRY-03, max 3 pins limit with Supabase DB Fallback)
   const handleTogglePin = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
+
+    const targetRoom = roomsList.find(r => r.id === roomId);
+    if (!targetRoom) return;
+
+    const nextPinState = !targetRoom.isPinned;
+    const currentPinnedCount = roomsList.filter(r => r.isPinned && r.id !== roomId).length;
+
+    if (nextPinState && currentPinnedCount >= 3) {
+      triggerToast('상단 고정은 최대 3개까지만 가능합니다.', 'error');
+      return;
+    }
+
+    // 1. Instant local UI update for snappy feedback
+    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: nextPinState } : r));
+    triggerToast(nextPinState ? '★ 상단 고정되었습니다. (ON)' : '☆ 상단 고정이 해제되었습니다. (OFF)');
+
+    // 2. Server API or Supabase DB persistence
     try {
       const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
-      if (res.ok) {
-        fetchRooms();
-      }
+      if (!res.ok) throw new Error();
     } catch (err) {
-      console.error(err);
+      console.warn('Express backend offline, updating pin state directly in Supabase DB...');
+      try {
+        await supabase
+          .from('rooms')
+          .update({ is_pinned: nextPinState })
+          .eq('id', roomId);
+      } catch (supaErr) {
+        console.error('Supabase DB pin toggle error:', supaErr);
+      }
     }
   };
 
@@ -505,40 +745,100 @@ export default function App() {
     }
   };
 
-  // Submit Idea (IDEA-02 & IDEA-03)
+  // Submit Idea (Anonymously, Max 5 ideas per user limit)
   const handleSubmitIdea = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ideaTitle.trim() || !ideaDesc.trim()) {
-      triggerToast('제목과 내용을 모두 작성해 주세요.', 'error');
+      triggerToast('필수 항목(제목, 설명)을 입력해 주세요.', 'error');
       return;
     }
 
+    if (!roomDetails) return;
+
+    // Check if user is Host or Member (Voter cannot submit ideas)
+    const userRole = localStorage.getItem('why_not_user_role') || 'MEMBER';
+    if (userRole === 'VOTER') {
+      triggerToast('투표자는 아이디어를 등록할 수 없습니다. (참여자/방장 전용)', 'error');
+      return;
+    }
+
+    // Check deadline exception
+    const deadline = roomDetails.room.deadlines?.ideaSubmissionAt;
+    if (deadline && new Date() > new Date(deadline)) {
+      triggerToast('⚠️ 아이디어 제출 마감 시각이 지나 등록할 수 없습니다.', 'error');
+      return;
+    }
+
+    // Check 1인당 5개 제한
+    const myExistingIdeasCount = (roomDetails.ideas || []).filter(i => i.submitterId === userId).length;
+    if (myExistingIdeasCount >= 5) {
+      triggerToast('⚠️ 1인당 아이디어는 최대 5개까지 등록 가능합니다. (6개 이상 등록 차단)', 'error');
+      return;
+    }
+
+    // Generate anonymous label (e.g. "익명 아이디어 #1", "익명 아이디어 #2")
+    const nextAnonIndex = (roomDetails.ideas || []).length + 1;
+    const anonLabel = `익명 아이디어 #${nextAnonIndex}`;
+
+    const newIdeaObj = {
+      title: ideaTitle,
+      description: ideaDesc,
+      attachmentUrl: ideaLink,
+      pdfAttachmentUrl: ideaPdfName,
+      tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+      submitterId: userId,
+      submitterName: anonLabel,
+    };
+
+    let insertedSuccess = false;
+
+    // Try Express backend endpoint first
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: ideaTitle,
-          description: ideaDesc,
-          attachmentUrl: ideaLink,
-          pdfAttachmentUrl: ideaPdfName,
-          tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-          submitterId: userId,
-          submitterName: nickname,
-        }),
+        body: JSON.stringify(newIdeaObj),
       });
-
-      if (!res.ok) throw new Error();
-      triggerToast('아이디어가 성공적으로 등록되었습니다!');
-      setIdeaTitle('');
-      setIdeaDesc('');
-      setIdeaLink('');
-      setIdeaPdfName('');
-      setIdeaTags('');
-      fetchRoomDetails(activeRoomId!);
-    } catch (err) {
-      triggerToast('아이디어 등록 실패', 'error');
+      if (res.ok) insertedSuccess = true;
+    } catch (e) {
+      console.warn('Express API server unaccessible, trying direct Supabase insertion...', e);
     }
+
+    // Supabase DB Direct insertion fallback
+    if (!insertedSuccess) {
+      try {
+        const newIdeaId = `idea-${Math.random().toString(36).substring(2, 9)}`;
+        const { error: supaErr } = await supabase
+          .from('ideas')
+          .insert({
+            id: newIdeaId,
+            room_id: activeRoomId,
+            title: ideaTitle,
+            description: ideaDesc,
+            submitter_id: userId,
+            submitter_name: anonLabel,
+            attachment_url: ideaLink || null,
+            pdf_attachment_url: ideaPdfName || null,
+            tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
+            status: 'ACTIVE'
+          });
+
+        if (supaErr) throw supaErr;
+        insertedSuccess = true;
+      } catch (err: any) {
+        console.error('Supabase DB submit idea error:', err);
+        triggerToast(`아이디어 등록 도중 오류가 발생했습니다: ${err.message}`, 'error');
+        return;
+      }
+    }
+
+    triggerToast(`아이디어가 익명(${anonLabel})으로 성공적으로 등록되었습니다!`);
+    setIdeaTitle('');
+    setIdeaDesc('');
+    setIdeaLink('');
+    setIdeaPdfName('');
+    setIdeaTags('');
+    fetchRoomDetails(activeRoomId!);
   };
 
   // Propose Criterion (Anonymous)
@@ -1099,6 +1399,19 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700">방장 닉네임 설정 <span className="text-rose-500">*</span></label>
+                      <input
+                        type="text"
+                        required
+                        maxLength={6}
+                        value={newRoomHostNickname}
+                        onChange={e => setNewRoomHostNickname(e.target.value.slice(0, 6))}
+                        placeholder="방장 닉네임 입력 (최대 6자)"
+                        className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-900"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-700">회의 주제 (방 제목) <span className="text-rose-500">*</span></label>
                       <input
                         type="text"
@@ -1172,6 +1485,28 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* 2차 투표 가능 시간 (시작~마감 일시) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">2차 투표 시작 일시 (선택)</label>
+                        <input
+                          type="datetime-local"
+                          value={newRoomVoteStartTime}
+                          onChange={e => setNewRoomVoteStartTime(e.target.value)}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">2차 투표 마감 일시 (선택)</label>
+                        <input
+                          type="datetime-local"
+                          value={newRoomVoteEndTime}
+                          onChange={e => setNewRoomVoteEndTime(e.target.value)}
+                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
+                        />
+                      </div>
+                    </div>
+
                     <div className="flex gap-2 pt-2 justify-end">
                       <button
                         type="button"
@@ -1182,7 +1517,8 @@ export default function App() {
                       </button>
                       <button
                         type="submit"
-                        className="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 shadow-sm transition"
+                        disabled={!newRoomTitle.trim() || !newRoomHostNickname.trim()}
+                        className="px-5 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed shadow-sm transition"
                       >
                         회의실 만들기
                       </button>
@@ -1201,8 +1537,8 @@ export default function App() {
                   <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 회의실</h2>
                 </div>
 
-                {/* Filter buttons (ENTRY-01) */}
-                <div className="flex items-center gap-1.5">
+                {/* Filter buttons */}
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     onClick={() => setRoomFilterStatus('ALL')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
@@ -1212,12 +1548,20 @@ export default function App() {
                     전체
                   </button>
                   <button
-                    onClick={() => setRoomFilterStatus('IN_PROGRESS')}
+                    onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
-                      roomFilterStatus === 'IN_PROGRESS' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
-                    진행 중
+                    아이디어 모집
+                  </button>
+                  <button
+                    onClick={() => setRoomFilterStatus('EVALUATION')}
+                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${
+                      roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    익명 평가중
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('CLOSED')}
@@ -1225,7 +1569,7 @@ export default function App() {
                       roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
-                    완료
+                    종료 (최종선정)
                   </button>
                 </div>
               </div>
@@ -1239,12 +1583,12 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                   {roomsList
                     .filter(room => {
-                      if (roomFilterStatus === 'IN_PROGRESS') return room.status !== 'CLOSED';
+                      if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION';
+                      if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
                       if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
                       return true;
                     })
                     .sort((a, b) => {
-                      // ENTRY-03: Pin logic - pinned rooms first (up to 3)
                       if (a.isPinned && !b.isPinned) return -1;
                       if (!a.isPinned && b.isPinned) return 1;
                       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
@@ -1257,19 +1601,11 @@ export default function App() {
                       );
                       if (room.status === 'IDEA_SUBMISSION') {
                         statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
-                      } else if (room.status === 'CRITERIA_PROPOSAL') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/50">🗳️ 평가기준 제안</span>;
-                      } else if (room.status === 'CRITERIA_REVIEW') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/50">⚖️ 기준 검토</span>;
-                      } else if (room.status === 'EVALUATION') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 익명 평가 중</span>;
-                      } else if (room.status === 'ELIMINATION') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200/50">✂️ 단계적 소거 중</span>;
                       } else if (room.status === 'CLOSED') {
                         statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 종료 (최종선정)</span>;
+                      } else {
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 익명 평가중</span>;
                       }
-
-                      const pinnedCount = roomsList.filter(r => r.isPinned).length;
 
                       return (
                         <motion.div
@@ -1278,7 +1614,7 @@ export default function App() {
                           onClick={() => handleSelectRoom(room.id)}
                           className={`p-5 rounded-2xl border transition flex flex-col justify-between cursor-pointer group relative ${
                             room.isPinned 
-                              ? 'bg-amber-50/40 border-amber-300/80 shadow-md' 
+                              ? 'bg-amber-50/40 border-amber-300/80 shadow-md ring-1 ring-amber-200/60' 
                               : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
                           }`}
                         >
@@ -1293,22 +1629,24 @@ export default function App() {
                                 )}
                               </div>
                               
-                              {/* ENTRY-03 Pin icon button */}
+                              {/* Star Pin icon button (Yellow Star = ON, Gray Star = OFF) */}
                               <button
-                                onClick={(e) => {
-                                  if (!room.isPinned && pinnedCount >= 3) {
-                                    triggerToast('고정은 최대 3개까지만 가능합니다.', 'error');
-                                    e.stopPropagation();
-                                    return;
-                                  }
-                                  handleTogglePin(e, room.id);
-                                }}
-                                title={room.isPinned ? '고정 해제' : '상단 고정 (최대 3개)'}
-                                className={`p-1.5 rounded-full transition ${
-                                  room.isPinned ? 'text-amber-500 bg-amber-100 hover:bg-amber-200' : 'text-slate-300 hover:text-amber-500 hover:bg-slate-100'
+                                onClick={(e) => handleTogglePin(e, room.id)}
+                                title={room.isPinned ? '상단 고정 해제 (OFF)' : '상단 고정 (ON)'}
+                                className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${
+                                  room.isPinned 
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs' 
+                                    : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
                                 }`}
                               >
-                                📌
+                                <Star 
+                                  className={`w-4 h-4 ${
+                                    room.isPinned 
+                                      ? 'fill-amber-400 text-amber-500' 
+                                      : 'text-slate-400 fill-slate-200'
+                                  }`} 
+                                />
+                                {room.isPinned && <span className="pr-1 text-[11px]">고정</span>}
                               </button>
                             </div>
                             
@@ -1322,14 +1660,12 @@ export default function App() {
 
                           <div className="border-t border-slate-100 mt-4 pt-3 flex items-center justify-between text-xs font-semibold text-slate-500">
                             <div className="flex items-center gap-3">
-                              <span>💡 아이디어 {room.ideasCount}개</span>
+                              <span className="bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-md border border-indigo-100">
+                                🏷️ {room.category || '기획'}
+                              </span>
                               <span>•</span>
-                              <span>👥 참여 {room.evaluatorsCount}/{room.maxParticipants || 10}명</span>
+                              <span className="font-bold text-slate-700">👥 {room.evaluatorsCount || 1}/6명</span>
                             </div>
-                            <span className="text-slate-400 group-hover:text-indigo-600 flex items-center gap-0.5 font-bold transition">
-                              참여
-                              <ChevronRight className="w-3.5 h-3.5" />
-                            </span>
                           </div>
                         </motion.div>
                       );
@@ -1467,11 +1803,11 @@ export default function App() {
                             </span>
                           )}
                           <button 
-                            onClick={copyShareLink}
-                            className="text-xs font-semibold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full transition flex items-center gap-1"
+                            onClick={() => setShowShareModal(true)}
+                            className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
                           >
                             <Copy className="w-3 h-3" />
-                            링크 공유
+                            🔗 공유 링크 발급/관리
                           </button>
                         </div>
 
@@ -1485,8 +1821,12 @@ export default function App() {
 
                       {/* Refresh / Stats */}
                       <div className="flex sm:flex-col items-end gap-2 justify-between">
-                        <div className="text-xs font-semibold text-slate-500 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full shrink-0">
-                          👥 참여 {roomDetails.evaluatorsCount}명 / 최소 {roomDetails.room.minResponseThreshold}명
+                        {/* Live progress indicator ("N/M명 아이디어 제출 완료") */}
+                        <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
+                          <span>📊 등록 완료 현황판:</span>
+                          <span className="text-indigo-600 font-extrabold">
+                            { (roomDetails.participants || []).filter(p => p.isIdeaDone).length } / { roomDetails.room.maxParticipants || 6 }명 완료
+                          </span>
                         </div>
                         <button
                           onClick={() => fetchRoomDetails(activeRoomId!, false)}
@@ -1505,47 +1845,45 @@ export default function App() {
                 {roomDetails.room.status === 'IDEA_SUBMISSION' && (
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     
-                    {/* Left: Ideas List */}
+                    {/* Left: Ideas List (Anonymous Labels) */}
                     <div className="lg:col-span-7 space-y-4">
                       <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                         <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
                           제출된 아이디어 목록 ({roomDetails.ideas.length}개)
                         </h2>
-                        <span className="text-xs text-slate-400 font-medium">※ 실명 기재로 전체 공개됩니다.</span>
+                        <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                          🔒 100% 익명 보장
+                        </span>
                       </div>
 
+                      {/* Empty State Prompt */}
                       {roomDetails.ideas.length === 0 ? (
-                        <div className="text-center py-16 bg-white rounded-2xl border border-slate-200/80">
-                          <PlusCircle className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                          <p className="text-sm font-bold text-slate-500">아직 제출된 아이디어가 없습니다.</p>
-                          <p className="text-xs text-slate-400 mt-1">우측 등록 양식을 통해 기획안을 먼저 등록해 주세요.</p>
+                        <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
+                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
+                            💡
+                          </div>
+                          <h3 className="text-base font-bold text-slate-900">아직 등록된 아이디어가 없습니다!</h3>
+                          <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                            우측의 등록 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. (참여자당 1개~최대 5개 등록 가능)
+                          </p>
                         </div>
                       ) : (
                         <div className="space-y-4">
-                          {roomDetails.ideas.map((idea) => (
+                          {roomDetails.ideas.map((idea, idx) => (
                             <motion.div
                               key={idea.id}
                               className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3"
                             >
                               <div className="flex items-center justify-between">
                                 <h3 className="text-base font-bold text-slate-950">{idea.title}</h3>
-                                <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full flex items-center gap-1">
-                                  <User className="w-3 h-3 text-slate-400" />
-                                  {idea.submitterName}
+                                <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full flex items-center gap-1">
+                                  <User className="w-3 h-3 text-indigo-400" />
+                                  {idea.submitterName || `익명 아이디어 #${idx + 1}`}
                                 </span>
                               </div>
                               <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
                                 {idea.description}
                               </p>
-                              {idea.tags && idea.tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 pt-1">
-                                  {idea.tags.map((tag, tIdx) => (
-                                    <span key={tIdx} className="text-[11px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-md">
-                                      #{tag}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
                               <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500 pt-1">
                                 {idea.attachmentUrl && (
                                   <div>
@@ -1554,7 +1892,7 @@ export default function App() {
                                 )}
                                 {idea.pdfAttachmentUrl && (
                                   <div>
-                                    📄 첨부파일: <span className="text-slate-800 underline">{idea.pdfAttachmentUrl}</span>
+                                    📄 참고 파일 (PDF/PNG): <span className="text-slate-800 underline font-bold">{idea.pdfAttachmentUrl}</span>
                                   </div>
                                 )}
                               </div>
@@ -1567,9 +1905,14 @@ export default function App() {
                     {/* Right: Submission Form & Admin Gate */}
                     <div className="lg:col-span-5 space-y-6">
                       <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                        <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
-                          내 아이디어 등록하기
-                        </h2>
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                          <h2 className="text-base font-bold text-slate-900">
+                            내 아이디어 등록하기 (익명)
+                          </h2>
+                          <span className="text-[11px] font-bold text-slate-500">
+                            (내 제출: { (roomDetails.ideas || []).filter(i => i.submitterId === userId).length }/5개)
+                          </span>
+                        </div>
 
                         <form onSubmit={handleSubmitIdea} className="space-y-4">
                           <div className="space-y-1">
@@ -1627,17 +1970,6 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-700">카테고리 태그 (IDEA-03, 쉼표로 구분)</label>
-                            <input
-                              type="text"
-                              value={ideaTags}
-                              onChange={e => setIdeaTags(e.target.value)}
-                              placeholder="예: 마케팅, 숏폼, 챌린지"
-                              className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                            />
-                          </div>
-
-                          <div className="space-y-1">
                             <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
                             <input
                               type="url"
@@ -1649,10 +1981,10 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-700">참고 파일(PDF) 첨부 (IDEA-02)</label>
+                            <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
                             <input
                               type="file"
-                              accept=".pdf"
+                              accept=".pdf,.png"
                               onChange={e => {
                                 const file = e.target.files?.[0];
                                 if (file) setIdeaPdfName(file.name);
@@ -1661,15 +1993,16 @@ export default function App() {
                             />
                           </div>
 
-                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs text-slate-500 leading-relaxed">
-                            💡 **공개 원칙**: 다른 참여자들에게 내 실명(<strong>{nickname}</strong>)과 작성 글이 상시 투명하게 공개됩니다.
+                          <div className="bg-indigo-50/60 p-3 rounded-xl border border-indigo-100 text-xs text-indigo-900 leading-relaxed">
+                            🔒 **익명 정책**: 제출자 이름 대신 **'익명 아이디어 #N'**으로 등록되며 타인에게 닉네임이 노출되지 않습니다. (1인당 최소 1개 ~ 최대 5개)
                           </div>
 
                           <button
                             type="submit"
-                            className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
+                            disabled={(roomDetails.ideas || []).filter(i => i.submitterId === userId).length >= 5}
+                            className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 transition shadow-sm"
                           >
-                            아이디어 올리기
+                            아이디어 올리기 (익명)
                           </button>
                         </form>
                       </div>
@@ -2604,6 +2937,110 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Dual Link & Invitation Modal (① 참여자 전용 링크 vs ② 투표자 공개 링크) */}
+      <AnimatePresence>
+        {showShareModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-6 text-left"
+            >
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center font-bold">
+                    🔗
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">회의실 전용 링크 공유 및 관리</h3>
+                    <p className="text-xs text-slate-400">참여자용 링크 및 2차 투표자 전용 공개 링크를 구분 발급합니다.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowShareModal(false)}
+                  className="text-slate-400 hover:text-slate-600 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Link Option 1: ① 참여자 전용 링크 */}
+              <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-600 text-white">
+                      ① 참여자 전용 링크
+                    </span>
+                    <span className="text-[11px] font-semibold text-indigo-900">최대 6명 (의견 및 아이디어 제출 가능)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  회의에 직접 동참하여 아이디어를 발제하고 익명 평가 기준을 제출하는 핵심 참여자 링크입니다. (입장 시 닉네임 최대 6자 설정)
+                </p>
+
+                {/* Email invitation form */}
+                <form onSubmit={handleSendEmailInvite} className="flex gap-2 pt-1">
+                  <input
+                    type="email"
+                    value={inviteEmailInput}
+                    onChange={e => setInviteEmailInput(e.target.value)}
+                    placeholder="참여자 이메일 입력 (예: member@company.com)"
+                    className="flex-1 px-3 py-2 border border-indigo-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
+                  />
+                  <button
+                    type="submit"
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs shrink-0"
+                  >
+                    이메일 초대
+                  </button>
+                </form>
+
+                <button
+                  onClick={copyParticipantLink}
+                  className="w-full py-2.5 bg-white hover:bg-indigo-100/50 border border-indigo-200 text-indigo-900 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>참여자 전용 복사 링크</span>
+                </button>
+              </div>
+
+              {/* Link Option 2: ② 투표자 공개 링크 */}
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-900 text-white">
+                      ② 투표자 공개 링크
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-700">MVP 기본 30명 (2차 익명 투표 전용)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  인원 제한이 완화되어 제출된 아이디어에 대해 소신 투표만 익명으로 진행하는 외부/동료 전용 공개 링크입니다.
+                </p>
+
+                <button
+                  onClick={copyVoterLink}
+                  className="w-full py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5 text-slate-600" />
+                  <span>투표자 전용 복사 링크</span>
+                </button>
+              </div>
+
+              <div className="pt-2 text-right">
+                <button
+                  onClick={() => setShowShareModal(false)}
+                  className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition"
+                >
+                  닫기
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

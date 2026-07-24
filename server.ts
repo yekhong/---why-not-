@@ -27,13 +27,42 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Lazy-initialized Gemini Client
+// Lazy-initialized Gemini / Potens AI Client
+const POTENS_API_URL = 'https://ai.potens.ai/api/chat';
+
+async function callPotensAI(prompt: string, model: string = 'claude-4-6-sonnet'): Promise<string> {
+  const apiKey = process.env.POTENS_API_KEY || process.env.GEMINI_API_KEY || '';
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    throw new Error('POTENS_API_KEY environment variable is not configured.');
+  }
+
+  const response = await fetch(POTENS_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      model: model
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Potens AI request failed (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  // Standard chat completion response resolution
+  return data.text || data.message || data.content || (data.choices && data.choices[0]?.message?.content) || JSON.stringify(data);
+}
+
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI | null {
   if (!aiClient) {
     const key = process.env.GEMINI_API_KEY || '';
     if (!key || key === 'MY_GEMINI_API_KEY') {
-      console.warn('GEMINI_API_KEY is not set or is using a placeholder. Falling back to simulated AI helper responses.');
       return null;
     }
     aiClient = new GoogleGenAI({ apiKey: key });
@@ -366,56 +395,57 @@ seedData();
  * 1. Cluster criteria proposal texts into 3-5 confirmed criteria candidates
  */
 async function aiClusterCriteria(proposals: string[]): Promise<{ name: string; description: string }[]> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    // Elegant fallback simulation
-    return [
-      { name: '임직원 참여 장벽', description: '기획안이 일상 업무 중 부담스럽지 않고 손쉽게 동참 가능한지 여부' },
-      { name: '실질적인 친환경 효과', description: '탄소 저감, 쓰레기 배출량 등 실측 및 개선 효능의 정량적 가치' },
-      { name: '캠페인 유지 예산', description: '인센티브 비용, 기기 관리 비용이 장기적으로 회사 예산 범위에 부합하는지 여부' },
-      { name: '지속 성장 가능성', description: '일회성 행사로 그치지 않고 사내 문화로 뿌리내리기 좋은 구조인지 검토' }
-    ];
-  }
-
-  try {
-    const prompt = `
+  const prompt = `
 당신은 브레인스토밍 평가를 기획하는 정교한 퍼실리테이터입니다.
-참여자들이 익명으로 자유 제안한 다음 '평가 기준 제안' 목록을 꼼꼼하게 검토하여, 중복을 제거하고 유사한 키워드를 응축해 3~5개의 정제되고 객관적인 핵심 '평가 기준(Criterion)' 후보를 도출해 주십시오.
+등록된 아이디어/의견 목록을 바탕으로 3개의 정제되고 객관적인 핵심 '평가 기준(Criterion)' 후보를 제안해 주십시오.
 
-[제출된 원본 기준 제안들]
+[제출된 데이터 목록]
 ${proposals.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 각 평가 기준은 직관적이고 간결한 한글 이름("name")과 구체적인 의미를 파악할 수 있는 고급스러운 "description" 문장을 가져야 합니다.
-반드시 아래 스키마에 정합한 JSON 배열 형태로만 출력해 주십시오. 다른 설명은 포함하지 마십시오.
+반드시 마크다운 없이 아래 스키마에 정합한 Pure JSON 배열 형태로만 출력해 주십시오. 다른 설명은 절대 포함하지 마십시오.
 
 JSON 출력 예시:
 [
-  { "name": "기준명 1", "description": "설명 문장 1" },
-  { "name": "기준명 2", "description": "설명 문장 2" }
+  { "name": "실현 가능성 및 난이도", "description": "팀 내부 리브레/기술 스택으로 2주 내 실제 개발이 가능한지 평가" },
+  { "name": "사용자 파급력", "description": "서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용" },
+  { "name": "비용 및 운영 효율성", "description": "초기 구축 및 유지 보수 비용 대비 기대할 수 있는 ROI 분석" }
 ]
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json'
-      }
-    });
-
-    const parsed = JSON.parse(response.text || '[]');
+  try {
+    // 1. Try Potens AI API endpoint
+    const rawText = await callPotensAI(prompt, 'claude-4-6-sonnet');
+    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanedText);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      return parsed.slice(0, 3);
     }
-    throw new Error('Empty array parsed');
-  } catch (err) {
-    console.error('Gemini AI criteria clustering failed, using fallback:', err);
-    return [
-      { name: '임직원 참여 장벽', description: '기획안이 일상 업무 중 부담스럽지 않고 손쉽게 동참 가능한지 여부' },
-      { name: '실질적인 친환경 효과', description: '탄소 저감, 쓰레기 배출량 등 실측 및 개선 효능의 정량적 가치' },
-      { name: '캠페인 유지 예산', description: '인센티브 비용, 기기 관리 비용이 장기적으로 회사 예산 범위에 부합하는지 여부' }
-    ];
+  } catch (potensErr) {
+    console.warn('Potens AI API failed, trying Gemini or fallback...', potensErr);
   }
+
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: { responseMimeType: 'application/json' }
+      });
+      const parsed = JSON.parse(response.text || '[]');
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(0, 3);
+    } catch (gErr) {
+      console.error('Gemini fallback error:', gErr);
+    }
+  }
+
+  // Final fallback candidates
+  return [
+    { name: '실현 가능성 및 난이도', description: '팀 내부 기술 스택과 예산으로 2주 내 실제 구현 및 배포가 가능한지 여부' },
+    { name: '사용자 파급력', description: '서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용' },
+    { name: '비용 및 운영 효율성', description: '초기 구축 비용 및 지속적인 리소스 투입 대비 기대 효과 및 ROI 분석' }
+  ];
 }
 
 /**
