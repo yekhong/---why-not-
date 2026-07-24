@@ -27,13 +27,42 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Lazy-initialized Gemini Client
+// Lazy-initialized Gemini / Potens AI Client
+const POTENS_API_URL = 'https://ai.potens.ai/api/chat';
+
+async function callPotensAI(prompt: string, model: string = 'claude-4-6-sonnet'): Promise<string> {
+  const apiKey = process.env.POTENS_API_KEY || process.env.GEMINI_API_KEY || '';
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    throw new Error('POTENS_API_KEY environment variable is not configured.');
+  }
+
+  const response = await fetch(POTENS_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      model: model
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Potens AI request failed (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  // Standard chat completion response resolution
+  return data.text || data.message || data.content || (data.choices && data.choices[0]?.message?.content) || JSON.stringify(data);
+}
+
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI | null {
   if (!aiClient) {
     const key = process.env.GEMINI_API_KEY || '';
     if (!key || key === 'MY_GEMINI_API_KEY') {
-      console.warn('GEMINI_API_KEY is not set or is using a placeholder. Falling back to simulated AI helper responses.');
       return null;
     }
     aiClient = new GoogleGenAI({ apiKey: key });
@@ -72,6 +101,77 @@ const aiFinalSummaries = new Map<string, string>();
 // ----------------------------------------------------------------
 function seedData() {
   console.log('Seeding initial room data for demonstration...');
+
+  // --- ROOM 0: 고민하조 팀 프로젝트 (Default Seed Room) ---
+  const r0Id = 'room-gominhajo';
+  rooms.set(r0Id, {
+    id: r0Id,
+    title: '고민하조 팀 프로젝트',
+    description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+    hostId: 'user_gominhajo_test',
+    status: 'IDEA_SUBMISSION',
+    minResponseThreshold: 4,
+    eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+    deadlines: { ideaSubmissionAt: '2026-08-01T18:00:00Z' },
+    createdAt: new Date().toISOString(),
+  });
+
+  ideas.set(r0Id, [
+    {
+      id: 'idea-gh-1',
+      roomId: r0Id,
+      title: 'AI 회의록 자동 요약 서비스',
+      description: `1. 서비스 정의: 화상회의 녹음 파일 또는 실시간 회의 음성을 업로드하면 AI가 핵심 논의사항, 결정사항, 액션아이템을 자동으로 정리해주는 B2B SaaS 툴.\n2. 타겟 사용자: 주 3회 이상 화상회의를 하는 5~50인 규모 스타트업/중소기업의 팀장급 실무자.\n3. 핵심기능: ① 회의 녹음 업로드 또는 줌/구글밋 연동 자동 녹취 ② 화자 분리 및 발언 요약 ③ 결정사항·액션아이템 자동 추출 및 담당자 태깅 ④ 슬랙/노션으로 요약본 자동 전송.\n4. 해결해야하는 문제: 회의 후 누군가 수동으로 회의록을 작성해야 하는 반복 업무 부담, 회의 중 메모에 집중하느라 논의에 온전히 참여하지 못하는 문제.\n5. 유사서비스 및 차별점: 클로바노트, Otter.ai 등 유사 서비스 존재. 차별점은 단순 전사(STT)에 그치지 않고 "결정사항/액션아이템"만 구조화해서 뽑아내는 것과, 국내 협업툴(슬랙/노션) 연동에 특화된 점.\n6. 리스크: 음성 인식 정확도가 한국어 전문용어·사투리에서 떨어질 수 있음. 회의 녹음에 대한 참석자 동의·개인정보 이슈 발생 가능.`,
+      submitterId: 'user_gominhajo_test',
+      submitterName: 'GOMINHAJO',
+      status: 'ACTIVE',
+    },
+    {
+      id: 'idea-gh-2',
+      roomId: r0Id,
+      title: '동네 소상공인 마감할인 매칭 앱',
+      description: `1. 서비스 정의: 마감 임박 재고를 가진 동네 가게(베이커리, 반찬가게 등)와 근처 소비자를 실시간 위치 기반으로 매칭해 할인 판매하는 O2O 커머스 앱.\n2. 타겟 사용자: 신선식품 폐기 부담이 있는 동네 소상공인, 저렴하게 먹거리를 구매하고 싶은 1인 가구·자취생.\n3. 핵심기능: ① 매장이 마감 1~2시간 전 남은 재고를 사진과 함께 할인 등록 ② 소비자 반경 1km 내 실시간 알림 ③ 앱 내 결제 및 픽업 예약 ④ 소진 완료 자동 마감 처리.\n4. 해결해야하는 문제: 소상공인의 마감 재고 폐기로 인한 매출 손실과 환경 부담, 소비자 입장에서는 신선식품을 저렴하게 구매할 채널 부족.\n5. 유사서비스 및 차별점: 해외의 Too Good To Go, 국내의 라스트오더가 유사 서비스로 이미 존재. 차별점을 확보하려면 특정 상권(대학가, 오피스 밀집 지역) 집중 공략이나 소상공인 대상 무료 온보딩 지원 등이 필요한 상황.\n6. 리스크: 이미 시장을 선점한 경쟁 서비스가 있어 신규 진입 장벽이 높음. 초기 매장 확보(공급 측) 없이는 소비자 앱으로서 매력이 없는 닭과 달걀 문제.`,
+      submitterId: 'user_member_1',
+      submitterName: '익명 참여자 A',
+      status: 'ACTIVE',
+    },
+    {
+      id: 'idea-gh-3',
+      roomId: r0Id,
+      title: '반려동물 건강기록 공유 플랫폼',
+      description: `1. 서비스 정의: 반려동물의 병원 진료기록, 접종이력, 체중변화 등을 한 곳에 모아 관리하고 이사·이직·병원 변경 시 새 병원에 기록을 쉽게 공유할 수 있는 헬스케어 서비스.\n2. 타겟 사용자: 반려동물을 여러 병원에서 진료받거나, 지역 이동이 잦은 반려인.\n3. 핵심기능: ① 진료기록 사진 촬영으로 자동 스캔·입력 ② 접종 스케줄 알림 ③ 체중·건강 변화 그래프 ④ QR코드로 새 병원에 기록 즉시 공유.\n4. 해결해야하는 문제: 반려동물이 병원을 옮길 때마다 이전 진료 이력을 구두로만 전달해야 해서 정보 누락이 발생하고, 접종 시기를 놓치는 경우가 많음.\n5. 유사서비스 및 차별점: 펫나우, 삐약 등 반려동물 건강관리 앱이 존재하나 대부분 자체 기록 입력에 그침. 차별점은 병원 간 기록 "공유"에 특화된 점과 QR 기반 간편 전달 기능.\n6. 리스크: 실제 병원 시스템과의 연동이 안 되면 결국 보호자가 수동 입력해야 해서 사용률이 낮을 수 있음. 병원 측 협조 없이는 데이터 신뢰성 확보가 어려움.`,
+      submitterId: 'user_member_2',
+      submitterName: '익명 참여자 B',
+      status: 'ACTIVE',
+    },
+    {
+      id: 'idea-gh-4',
+      roomId: r0Id,
+      title: '신입 개발자를 위한 코드리뷰 연습 플랫폼',
+      description: `1. 서비스 정의: 실제 오픈소스 프로젝트의 PR(Pull Request)을 기반으로 코드리뷰 연습을 하고, AI가 리뷰 품질에 대해 피드백을 주는 개발자 학습 서비스.\n2. 타겟 사용자: 코드리뷰 경험이 부족한 신입/주니어 개발자, 코드리뷰 문화를 도입하려는 소규모 개발팀.\n3. 핵심기능: ① 난이도별 실전 PR 문제 제공 ② 사용자가 직접 리뷰 코멘트 작성 ③ AI가 리뷰의 구체성·건설성·놓친 이슈를 채점 ④ 우수 리뷰 사례 학습 콘텐츠 제공.\n4. 해결해야하는 문제: 신입 개발자가 코드리뷰를 어떻게 해야 할지 감을 못 잡고, 실무에서 배우기 전까지 연습할 곳이 없는 문제.\n5. 유사서비스 및 차별점: 백준, 프로그래머스 등은 문제풀이 중심이라 "리뷰 스킬" 자체를 훈련하는 서비스는 국내에 거의 없음. 실제 오픈소스 PR을 소재로 쓴다는 점이 차별점.\n6. 리스크: 오픈소스 PR을 학습 콘텐츠로 가공하는 데 라이선스 이슈가 있을 수 있음. AI의 리뷰 채점 기준이 주관적이라 사용자 신뢰를 얻기 어려울 수 있음.`,
+      submitterId: 'user_member_3',
+      submitterName: '익명 참여자 C',
+      status: 'ACTIVE',
+    },
+    {
+      id: 'idea-gh-5',
+      roomId: r0Id,
+      title: '프리랜서 계약서 자동 생성·검토 툴',
+      description: `1. 서비스 정의: 업종별 표준 계약서 템플릿에 조건을 입력하면 자동으로 계약서를 생성하고, AI가 불공정 조항을 사전에 짚어주는 리걸테크 서비스.\n2. 타겟 사용자: 디자이너·개발자·마케터 등 계약서 검토 경험이 적은 프리랜서, 프리랜서를 자주 고용하는 소규모 스튜디오.\n3. 핵심기능: ① 업종별(디자인/개발/영상 등) 계약서 템플릿 ② 조건 입력 시 자동 문서 생성 ③ AI 불공정 조항 하이라이트(예: 과도한 저작권 양도, 무제한 수정 조항) ④ 전자서명 연동.\n4. 해결해야하는 문제: 프리랜서들이 법률 지식 부족으로 불공정 계약을 그대로 수용하거나, 매번 계약서를 새로 찾아 작성하는 비효율.\n5. 유사서비스 및 차별점: 모두싸인, 계약서 템플릿 사이트는 "생성"에 집중하는 반면, 이 서비스는 "검토(불공정 조항 탐지)"에 특화된 점이 차별점.\n6. 리스크: 법률 자문이 아닌 AI 검토 결과에 대한 법적 책임 소재가 불분명함. 업종별 표준 계약 관행이 다양해 템플릿의 범용성 확보가 어려울 수 있음.`,
+      submitterId: 'user_member_4',
+      submitterName: '익명 참여자 D',
+      status: 'ACTIVE',
+    },
+    {
+      id: 'idea-gh-6',
+      roomId: r0Id,
+      title: '팀 회식 메뉴 익명 취향 조사 봇',
+      description: `1. 서비스 정의: 회식 전 팀원들의 알레르기·못 먹는 음식·선호 메뉴를 익명으로 모아 자동으로 후보 3곳을 추천해주는 슬랙/카카오톡 챗봇.\n2. 타겟 사용자: 회식 장소 정하는 데 매번 시간을 쓰는 5~15인 규모 팀의 총무 담당자 또는 팀장.\n3. 핵심기능: ① 슬랙 명령어로 설문 자동 발송 ② 알레르기·비선호 메뉴는 익명 수집 ③ 팀원 답변 기반 근처 맛집 후보 3곳 자동 추천 ④ 투표로 최종 장소 확정.\n4. 해결해야하는 문제: 회식 메뉴 정할 때 못 먹는 음식이 있어도 말하기 어려워 나중에 불만이 생기거나, 장소 정하는 데만 카톡방에서 며칠씩 걸리는 문제.\n5. 유사서비스 및 차별점: 왓츠팟, 캐치테이블 등 예약 서비스는 있지만 "익명으로 못 먹는 것부터 걸러내는" 기능에 특화된 서비스는 없음. 회사 회식이라는 특수 상황(눈치, 알레르기 공개 부담)에 맞춘 점이 차별점.\n6. 리스크: 단순 기능이라 시장성/수익모델이 약함(B2C 유료화 어려움). 이미 사내 협업툴 내 설문 기능으로 대체 가능해 진짜 페인포인트인지 검증 필요.`,
+      submitterId: 'user_member_5',
+      submitterName: '익명 참여자 E',
+      status: 'ACTIVE',
+    }
+  ]);
 
   // --- ROOM 1: 스타트업 하반기 SNS 마케팅 기획 (Status: EVALUATION) ---
   const r1Id = 'room-marketing';
@@ -366,56 +466,57 @@ seedData();
  * 1. Cluster criteria proposal texts into 3-5 confirmed criteria candidates
  */
 async function aiClusterCriteria(proposals: string[]): Promise<{ name: string; description: string }[]> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    // Elegant fallback simulation
-    return [
-      { name: '임직원 참여 장벽', description: '기획안이 일상 업무 중 부담스럽지 않고 손쉽게 동참 가능한지 여부' },
-      { name: '실질적인 친환경 효과', description: '탄소 저감, 쓰레기 배출량 등 실측 및 개선 효능의 정량적 가치' },
-      { name: '캠페인 유지 예산', description: '인센티브 비용, 기기 관리 비용이 장기적으로 회사 예산 범위에 부합하는지 여부' },
-      { name: '지속 성장 가능성', description: '일회성 행사로 그치지 않고 사내 문화로 뿌리내리기 좋은 구조인지 검토' }
-    ];
-  }
-
-  try {
-    const prompt = `
+  const prompt = `
 당신은 브레인스토밍 평가를 기획하는 정교한 퍼실리테이터입니다.
-참여자들이 익명으로 자유 제안한 다음 '평가 기준 제안' 목록을 꼼꼼하게 검토하여, 중복을 제거하고 유사한 키워드를 응축해 3~5개의 정제되고 객관적인 핵심 '평가 기준(Criterion)' 후보를 도출해 주십시오.
+등록된 아이디어/의견 목록을 바탕으로 3개의 정제되고 객관적인 핵심 '평가 기준(Criterion)' 후보를 제안해 주십시오.
 
-[제출된 원본 기준 제안들]
+[제출된 데이터 목록]
 ${proposals.map((p, i) => `${i + 1}. ${p}`).join('\n')}
 
 각 평가 기준은 직관적이고 간결한 한글 이름("name")과 구체적인 의미를 파악할 수 있는 고급스러운 "description" 문장을 가져야 합니다.
-반드시 아래 스키마에 정합한 JSON 배열 형태로만 출력해 주십시오. 다른 설명은 포함하지 마십시오.
+반드시 마크다운 없이 아래 스키마에 정합한 Pure JSON 배열 형태로만 출력해 주십시오. 다른 설명은 절대 포함하지 마십시오.
 
 JSON 출력 예시:
 [
-  { "name": "기준명 1", "description": "설명 문장 1" },
-  { "name": "기준명 2", "description": "설명 문장 2" }
+  { "name": "실현 가능성 및 난이도", "description": "팀 내부 리브레/기술 스택으로 2주 내 실제 개발이 가능한지 평가" },
+  { "name": "사용자 파급력", "description": "서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용" },
+  { "name": "비용 및 운영 효율성", "description": "초기 구축 및 유지 보수 비용 대비 기대할 수 있는 ROI 분석" }
 ]
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json'
-      }
-    });
-
-    const parsed = JSON.parse(response.text || '[]');
+  try {
+    // 1. Try Potens AI API endpoint
+    const rawText = await callPotensAI(prompt, 'claude-4-6-sonnet');
+    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanedText);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      return parsed.slice(0, 3);
     }
-    throw new Error('Empty array parsed');
-  } catch (err) {
-    console.error('Gemini AI criteria clustering failed, using fallback:', err);
-    return [
-      { name: '임직원 참여 장벽', description: '기획안이 일상 업무 중 부담스럽지 않고 손쉽게 동참 가능한지 여부' },
-      { name: '실질적인 친환경 효과', description: '탄소 저감, 쓰레기 배출량 등 실측 및 개선 효능의 정량적 가치' },
-      { name: '캠페인 유지 예산', description: '인센티브 비용, 기기 관리 비용이 장기적으로 회사 예산 범위에 부합하는지 여부' }
-    ];
+  } catch (potensErr) {
+    console.warn('Potens AI API failed, trying Gemini or fallback...', potensErr);
   }
+
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: { responseMimeType: 'application/json' }
+      });
+      const parsed = JSON.parse(response.text || '[]');
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(0, 3);
+    } catch (gErr) {
+      console.error('Gemini fallback error:', gErr);
+    }
+  }
+
+  // Final fallback candidates
+  return [
+    { name: '실현 가능성 및 난이도', description: '팀 내부 기술 스택과 예산으로 2주 내 실제 구현 및 배포가 가능한지 여부' },
+    { name: '사용자 파급력', description: '서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용' },
+    { name: '비용 및 운영 효율성', description: '초기 구축 비용 및 지속적인 리소스 투입 대비 기대 효과 및 ROI 분석' }
+  ];
 }
 
 /**
@@ -636,116 +737,6 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
   
   ideas.set(id, roomIdeas);
   res.status(201).json(newIdea);
-});
-
-/**
- * Validate URL existence and accessibility
- */
-app.post('/api/validate-link', async (req, res) => {
-  const { url } = req.body;
-  if (!url || typeof url !== 'string' || !url.trim()) {
-    return res.status(400).json({ valid: false, message: 'URL이 입력되지 않았습니다.' });
-  }
-
-  let targetUrl = url.trim();
-
-  // Automatically prepend https:// if protocol is missing
-  if (!/^https?:\/\//i.test(targetUrl)) {
-    targetUrl = `https://${targetUrl}`;
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(targetUrl);
-  } catch (err) {
-    return res.status(400).json({
-      valid: false,
-      message: '올바른 URL 형식이 아닙니다. (예: https://www.naver.com)'
-    });
-  }
-
-  // Ensure hostname has valid structure (e.g. contains dot like domain.tld)
-  if (!parsed.hostname || !parsed.hostname.includes('.')) {
-    return res.status(400).json({
-      valid: false,
-      message: '올바른 도메인 주소를 입력해 주세요. (예: naver.com)'
-    });
-  }
-
-  // Block explicit fake/placeholder domains
-  const fakeDomains = ['example.com', 'example.org', 'example.net', 'test.com', 'sample.com', 'fake.com', 'domain.com'];
-  if (fakeDomains.some(domain => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`))) {
-    return res.status(400).json({
-      valid: false,
-      message: '예시용 주소(example.com 등)가 아닌 실제 존재하는 연결 가능한 URL을 입력해 주세요.'
-    });
-  }
-
-  // Network check with full browser headers and redirect follow
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-  let responseStatus: number | null = null;
-  let networkError: string | null = null;
-
-  try {
-    const resFetch = await fetch(targetUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Cache-Control': 'no-cache'
-      }
-    });
-    responseStatus = resFetch.status;
-  } catch (err: any) {
-    networkError = err?.message || 'Network request failed';
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  // Analysis of result:
-  // If status is 2xx, 3xx, 401, 403, 405, 429, 500, 502, 503 -> The domain & server exist!
-  // If status is 404 -> Page not found
-  // If network error occurred (DNS ENOTFOUND, ECONNREFUSED, invalid host) -> Domain does not exist / unreachable
-  if (responseStatus !== null) {
-    if (responseStatus >= 200 && responseStatus < 400) {
-      return res.json({
-        valid: true,
-        normalizedUrl: targetUrl,
-        message: '실제 연결 가능한 유효한 링크입니다.'
-      });
-    } else if (responseStatus === 404) {
-      return res.status(400).json({
-        valid: false,
-        message: '존재하지 않는 페이지입니다. (404 Not Found)'
-      });
-    } else if ([401, 403, 405, 429, 500, 502, 503].includes(responseStatus)) {
-      // Server responded (anti-bot or authentication required), domain exists!
-      return res.json({
-        valid: true,
-        normalizedUrl: targetUrl,
-        message: '확인된 실제 웹사이트 링크입니다.'
-      });
-    }
-  }
-
-  // Fallback: If fetch timed out or failed due to strict network policies, try fallback syntax check
-  if (networkError && networkError.includes('aborted')) {
-    return res.json({
-      valid: true,
-      normalizedUrl: targetUrl,
-      message: '유효한 웹사이트 주소 형식입니다.'
-    });
-  }
-
-  return res.status(400).json({
-    valid: false,
-    message: '실제 존재하는 웹페이지가 아니거나 연결할 수 없는 URL입니다. (도메인을 확인해 주세요)'
-  });
 });
 
 /**
