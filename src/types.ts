@@ -54,6 +54,7 @@ export interface CriterionProposal {
   id: string;
   roomId: string;
   rawText: string;
+  proposerId?: string;
   clusterId?: string;
 }
 

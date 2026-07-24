@@ -1073,11 +1073,68 @@ ${description}
 });
 
 /**
- * 6. Submit a Criterion Proposal (Anonymous proposal)
+ * 6-1. AI Suggest 3 Criteria Based on Registered Ideas (Potens AI)
+ */
+app.post('/api/rooms/:id/criteria/suggest', async (req, res) => {
+  const { id } = req.params;
+  const roomIdeas = ideas.get(id) || [];
+
+  if (roomIdeas.length === 0) {
+    return res.json({
+      suggestions: [
+        { name: '실현 가능성 및 난이도', description: '팀의 기술 역량 및 주어진 인력/시간 내에서 구현이 가능한가?' },
+        { name: '비용 및 리소스 효율성', description: '예산 범위 내에서 개발 및 운영이 지속될 수 있는가?' },
+        { name: '사용자 파급력 및 효용', description: '타겟 고객에게 뚜렷한 해결 가치와 효용을 제공하는가?' }
+      ]
+    });
+  }
+
+  const ideasSummary = roomIdeas.map((idea, idx) => `아이디어 ${idx + 1}: ${idea.title}\n설명: ${idea.description}`).join('\n\n');
+
+  const prompt = `
+당신은 IT 서비스 아이디어 평가 퍼실리테이터입니다.
+팀이 등록한 아래의 아이디어 목록들을 다각도로 검토하고, 이 아이디어들을 필터링하고 선별하기에 가장 적합한 핵심 '평가 기준' 3개를 제안해 주십시오.
+
+[등록된 아이디어 목록]
+${ideasSummary}
+
+각 평가 기준은 간결한 기준명("name")과 명확한 구체 설명 문장("description")을 가져야 합니다.
+반드시 마크다운 없이 아래 스키마에 정합한 Pure JSON 배열 형태로만 3개를 출력해 주십시오.다른 설명은 절대 포함하지 마십시오.
+
+JSON 출력 예시:
+[
+  { "name": "실현 가능성 및 난이도", "description": "팀 내부 기술 스택 및 주어진 기간 내에 구현이 가능한지 평가" },
+  { "name": "사용자 파급력 및 차별성", "description": "기존 서비스 대비 차별화된 가치와 타겟 사용자층에 유의미한 효용을 주는지 평가" },
+  { "name": "비용 및 운영 지속성", "description": "프로젝트 예산 한계 및 유지보수 부담이 적정 범위 내에 있는지 평가" }
+]
+`;
+
+  try {
+    const rawText = await callPotensAI(prompt, 'claude-4-6-sonnet');
+    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return res.json({ suggestions: parsed.slice(0, 3) });
+    }
+    throw new Error('Invalid JSON format');
+  } catch (err) {
+    console.warn('Potens AI criteria suggestion failed, using fallback:', err);
+    res.json({
+      suggestions: [
+        { name: '기술적 실현 가능성', description: '팀의 현재 역량과 리소스로 한 달 이내 안정적으로 구현 및 배포가 가능한가?' },
+        { name: '타겟 파급력 및 차별성', description: '기존 시장 서비스 대비 타겟 사용자에게 명확한 차별적 이점을 제공하는가?' },
+        { name: '운영 리스크 및 비용 적정성', description: '예산 범위를 초과하지 않으며 법적/개인정보 등 부작용 리스크가 제어 가능한가?' }
+      ]
+    });
+  }
+});
+
+/**
+ * 6. Submit a Criterion Proposal (Anonymous proposal with min 1 ~ max 3 limit per user)
  */
 app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   const { id } = req.params;
-  const { rawText, proposerId } = req.body; // proposerId is used on backend for audit, but never returned
+  const { rawText, proposerId } = req.body;
 
   const room = rooms.get(id);
   if (!room) {
@@ -1093,10 +1150,19 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   }
 
   const proposals = criterionProposals.get(id) || [];
+
+  if (proposerId) {
+    const userProposals = proposals.filter(p => p.proposerId === proposerId);
+    if (userProposals.length >= 3) {
+      return res.status(400).json({ error: '평가 기준은 참여자당 최대 3개까지만 제안할 수 있습니다.' });
+    }
+  }
+
   const newProposal: CriterionProposal = {
     id: `prop-${Math.random().toString(36).substr(2, 9)}`,
     roomId: id,
-    rawText,
+    rawText: rawText.trim(),
+    proposerId: proposerId || 'anon'
   };
 
   proposals.push(newProposal);
