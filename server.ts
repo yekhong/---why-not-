@@ -1589,12 +1589,21 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
   // Calculate needed count to reach targetThreshold
   const neededCount = Math.max(1, targetThreshold - currentCount);
 
-  // Generate dynamic mock voters
+  // Generate dynamic mock voters with UNIQUE IDs (no ID collision with existing evaluators)
   const greekLetters = ['알파', '베타', '감마', '델타', '엡실론', '제타', '에타', '타우'];
-  const mockVoters = Array.from({ length: neededCount }, (_, idx) => ({
-    id: `mock-eval-${idx + 1}`,
-    name: `가상참여자_${greekLetters[idx % greekLetters.length]}`
-  }));
+  const mockVoters: { id: string; name: string }[] = [];
+  let counter = 1;
+  const timestamp = Date.now();
+  while (mockVoters.length < neededCount) {
+    const candidateId = `mock-user-${timestamp}-${counter}`;
+    if (!currentEvaluators.has(candidateId)) {
+      mockVoters.push({
+        id: candidateId,
+        name: `가상참여자_${greekLetters[mockVoters.length % greekLetters.length]}`
+      });
+    }
+    counter++;
+  }
 
   let rParticipants = participants.get(id);
   if (!rParticipants) {
@@ -1603,11 +1612,6 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
   }
 
   mockVoters.forEach((voter, idx) => {
-    // Remove existing for this mock voter if any
-    const filtered = roomEvals.filter(e => e.evaluatorId !== voter.id);
-    roomEvals.length = 0;
-    roomEvals.push(...filtered);
-
     rParticipants!.set(voter.id, voter.name);
 
     roomIdeas.forEach((idea, ideaIdx) => {
@@ -1647,7 +1651,7 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
   res.json({
     success: true,
     addedCount: neededCount,
-    message: `가상 참여자 ${neededCount}명의 평가가 성공적으로 생성되어 정족수를 달성했습니다!`
+    message: `가상 참여자 ${neededCount}명의 평가가 성공적으로 생성되어 정족수(${targetThreshold}명)를 즉시 달성했습니다!`
   });
 });
 
@@ -1675,6 +1679,50 @@ app.post('/api/rooms/:id/status', (req, res) => {
   room.status = status;
   rooms.set(id, room);
   res.json({ success: true, status: room.status });
+});
+
+/**
+ * 10.5 Final Vote for remaining 2 candidate ideas
+ */
+app.post('/api/rooms/:id/final-vote', async (req, res) => {
+  const { id } = req.params;
+  const { winnerIdeaId } = req.body;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (!winnerIdeaId) {
+    return res.status(400).json({ error: '투표할 최종 후보가 선택되지 않았습니다.' });
+  }
+
+  const roomIdeas = ideas.get(id) || [];
+  const selectedIds = Array.isArray(winnerIdeaId) ? winnerIdeaId : [winnerIdeaId];
+
+  roomIdeas.forEach(idea => {
+    if (selectedIds.includes(idea.id)) {
+      idea.status = 'WINNER';
+    } else if (idea.status === 'ACTIVE') {
+      idea.status = 'ELIMINATED';
+    }
+  });
+
+  room.status = 'CLOSED';
+  rooms.set(id, room);
+  ideas.set(id, roomIdeas);
+
+  const roomRounds = eliminationRounds.get(id) || [];
+  aiCommentsCache.delete(id);
+
+  // Auto trigger final report generation
+  await generateFinalRoomReport(id, room, roomIdeas, roomRounds);
+
+  res.json({
+    success: true,
+    closed: true,
+    message: '🎉 최종 후보 투표가 성공적으로 완료되어 결과가 확정되었습니다!'
+  });
 });
 
 /**
@@ -1720,50 +1768,54 @@ app.post('/api/rooms/:id/elimination/next', async (req, res) => {
   if (Array.isArray(eliminateIdeaIds) && eliminateIdeaIds.length > 0) {
     ideasToEliminate = activeIdeas.filter(i => eliminateIdeaIds.includes(i.id));
   } else {
-    // Case B: 2STF-01 Rule-based Elimination
+    // Case B: Rule-based Elimination (Top ~60% survival ratio based on 유지 찬성 vs 제외 희망 votes)
     const targetWinners = room.targetWinnerCount || 1;
     const totalCount = activeIdeas.length;
 
-    // Exception handling: If registered active ideas <= targetWinners + 1, skip elimination and move directly to CLOSED
-    if (totalCount <= targetWinners + 1) {
+    if (totalCount <= targetWinners) {
       room.status = 'CLOSED';
+      activeIdeas.forEach((i, idx) => {
+        if (idx < targetWinners) i.status = 'WINNER';
+      });
       rooms.set(id, room);
-      return res.json({ finished: true, message: '등록된 아이디어 수가 정족수 이하로 전체가 2차 소거를 통과했습니다.' });
+      ideas.set(id, roomIdeas);
+      await generateFinalRoomReport(id, room, roomIdeas, roomRounds);
+      return res.json({ finished: true, message: '목표 생존 수 이하로 소거가 최종 완료되었습니다.' });
     }
 
     const evs = evaluations.get(id) || [];
 
-    // Calculate metrics per active idea
+    // Calculate metrics per active idea (netScore = keepCount - excludeCount)
     const ideaMetrics = activeIdeas.map(idea => {
       const ideaEvals = evs.filter(e => e.ideaId === idea.id);
       const keepCount = ideaEvals.filter(e => e.decision === 'KEEP').length;
       const excludeCount = ideaEvals.filter(e => e.decision === 'EXCLUDE').length;
-      const neutralCount = ideaEvals.filter(e => e.decision === 'NEUTRAL').length;
-      const margin = Math.abs(keepCount - excludeCount);
-      return { idea, keepCount, excludeCount, neutralCount, margin };
+      const netScore = keepCount - excludeCount;
+      return { idea, keepCount, excludeCount, netScore };
     });
 
-    // 1. keepCount desc, 2. margin asc (tight/controversial), 3. excludeCount asc
+    // Ranking: 1. netScore desc, 2. keepCount desc, 3. excludeCount asc
     ideaMetrics.sort((a, b) => {
+      if (b.netScore !== a.netScore) return b.netScore - a.netScore;
       if (b.keepCount !== a.keepCount) return b.keepCount - a.keepCount;
-      if (a.margin !== b.margin) return a.margin - b.margin;
       return a.excludeCount - b.excludeCount;
     });
 
-    // Target cutoff count: max(ceil(total * 0.6), targetWinners + 1)
-    const passTargetCount = Math.max(Math.ceil(totalCount * 0.6), targetWinners + 1);
+    // 60% survival ratio rule (Guaranteed at least 1 elimination per round)
+    const passTargetCount = Math.max(targetWinners, Math.min(Math.ceil(totalCount * 0.6), totalCount - 1));
 
-    // Boundary tie-breaker handling (keep all tied at boundary)
+    // Boundary tie-breaker handling
     let passCount = passTargetCount;
     if (passCount < ideaMetrics.length) {
       const boundary = ideaMetrics[passCount - 1];
       while (passCount < ideaMetrics.length) {
         const nextItem = ideaMetrics[passCount];
         if (
+          nextItem.netScore === boundary.netScore &&
           nextItem.keepCount === boundary.keepCount &&
-          nextItem.margin === boundary.margin &&
           nextItem.excludeCount === boundary.excludeCount
         ) {
+          if (passCount + 1 >= ideaMetrics.length) break; // Avoid eliminating 0
           passCount++;
         } else {
           break;
@@ -1773,6 +1825,11 @@ app.post('/api/rooms/:id/elimination/next', async (req, res) => {
 
     const eliminatedMetrics = ideaMetrics.slice(passCount);
     ideasToEliminate = eliminatedMetrics.map(m => m.idea);
+
+    // Fallback: If tie-breaker produced 0 eliminations, force eliminate lowest-ranked candidate
+    if (ideasToEliminate.length === 0 && ideaMetrics.length > targetWinners) {
+      ideasToEliminate = [ideaMetrics[ideaMetrics.length - 1].idea];
+    }
   }
 
   if (ideasToEliminate.length === 0) {
