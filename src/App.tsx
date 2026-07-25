@@ -1511,6 +1511,58 @@ export default function App() {
       reasonType: evalSubmissions[i.id].reasonType,
     }));
 
+    // Calculate aggregated scores locally for instant reflection
+    const existingAggregated = roomDetails.aggregatedScores || {};
+    const newAggregated: Record<string, any> = { ...existingAggregated };
+
+    const scoreConfig = roomDetails?.scoreConfig || {
+      keepWeight: 2,
+      neutralWeight: 1,
+      excludeWeight: 0,
+      objectiveConstraintPenalty: 3
+    };
+
+    activeIdeas.forEach(idea => {
+      const vote = evalSubmissions[idea.id];
+      if (!vote) return;
+      const currentStats = newAggregated[idea.id] || {
+        score: 0,
+        keepCount: 0,
+        neutralCount: 0,
+        excludeCount: 0,
+        objectiveExcludeCount: 0,
+      };
+
+      let keepCount = currentStats.keepCount || 0;
+      let neutralCount = currentStats.neutralCount || 0;
+      let excludeCount = currentStats.excludeCount || 0;
+      let objectiveExcludeCount = currentStats.objectiveExcludeCount || 0;
+      let score = currentStats.score || 0;
+
+      if (vote.decision === 'KEEP') {
+        keepCount += 1;
+        score += scoreConfig.keepWeight;
+      } else if (vote.decision === 'NEUTRAL') {
+        neutralCount += 1;
+        score += scoreConfig.neutralWeight;
+      } else if (vote.decision === 'EXCLUDE') {
+        excludeCount += 1;
+        score += scoreConfig.excludeWeight;
+        if (vote.reasonType === 'OBJECTIVE_CONSTRAINT') {
+          objectiveExcludeCount += 1;
+          score -= scoreConfig.objectiveConstraintPenalty;
+        }
+      }
+
+      newAggregated[idea.id] = {
+        score,
+        keepCount,
+        neutralCount,
+        excludeCount,
+        objectiveExcludeCount,
+      };
+    });
+
     // Update local state immediately & transition status to 4단계 ELIMINATION (2차 투표)
     setRoomDetails(prev => {
       if (!prev) return prev;
@@ -1519,6 +1571,7 @@ export default function App() {
         hasEvaluated: true,
         evaluatorsCount: (prev.evaluatorsCount || 0) + 1,
         minResponseThresholdMet: true,
+        aggregatedScores: newAggregated,
         room: {
           ...prev.room,
           status: 'ELIMINATION'
@@ -3001,13 +3054,26 @@ export default function App() {
                                     {/* 1. Which criteria apply? (Min 1 required) */}
                                     <div className="space-y-2">
                                       <label className="text-xs font-bold text-slate-800 block">
-                                        근거 평가 기준 선택 (CRIT-02 확정 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
+                                        근거 평가 기준 선택 (2단계 제안된 평가 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
                                       </label>
                                       <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
-                                        {(roomDetails.criteria || []).length === 0 ? (
-                                          <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (방장이 기준을 먼저 확정해야 합니다)</p>
-                                        ) : (
-                                          (roomDetails.criteria || []).map(crit => {
+                                        {(() => {
+                                          const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
+                                            ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
+                                            : (roomDetails.proposals || []).map((p, idx) => {
+                                                const parts = p.rawText.split(': ');
+                                                return {
+                                                  id: p.id || `prop-${idx}`,
+                                                  name: parts[0] || `기준 #${idx + 1}`,
+                                                  description: parts.length > 1 ? parts.slice(1).join(': ') : p.rawText
+                                                };
+                                              });
+
+                                          if (availableCriteria.length === 0) {
+                                            return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
+                                          }
+
+                                          return availableCriteria.map(crit => {
                                             const isChecked = userVote.excludedCriterionIds.includes(crit.id);
                                             return (
                                               <label key={crit.id} className="flex items-start gap-2.5 text-xs font-semibold text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded-lg transition">
@@ -3023,8 +3089,8 @@ export default function App() {
                                                 </div>
                                               </label>
                                             );
-                                          })
-                                        )}
+                                          });
+                                        })()}
                                       </div>
                                     </div>
 
@@ -3058,7 +3124,8 @@ export default function App() {
                               const vote = evalSubmissions[idea.id];
                               if (!vote || !vote.decision) return false;
                               if (!vote.reasonText || !vote.reasonText.trim()) return false;
-                              if ((roomDetails.criteria || []).length > 0 && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
+                              const hasCriteria = ((roomDetails.criteria || []).length > 0) || ((roomDetails.proposals || []).length > 0);
+                              if (hasCriteria && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
                               return true;
                             });
 

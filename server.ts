@@ -1019,6 +1019,59 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
 });
 
 /**
+ * 5-1. Submit Evaluations for 1차 투표 및 익명 평가
+ */
+app.post('/api/rooms/:id/evaluations', (req, res) => {
+  const { id } = req.params;
+  const { evaluatorId, submissions } = req.body;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (!evaluatorId || !Array.isArray(submissions)) {
+    return res.status(400).json({ error: 'evaluatorId와 submissions 배열이 필수입니다.' });
+  }
+
+  // Record evaluation records
+  let rEvals = evaluations.get(id);
+  if (!rEvals) {
+    rEvals = [];
+    evaluations.set(id, rEvals);
+  }
+
+  // Invalidate previous evals by this evaluator
+  const otherEvals = rEvals.filter(e => String(e.evaluatorId) !== String(evaluatorId));
+
+  const newEvals: Evaluation[] = submissions.map((sub: any) => ({
+    id: `eval-${Math.random().toString(36).substring(2, 9)}`,
+    roomId: id,
+    ideaId: sub.ideaId,
+    evaluatorId: String(evaluatorId),
+    decision: sub.decision || 'KEEP',
+    excludedCriterionIds: sub.excludedCriterionIds || [],
+    reasonText: sub.reasonText || '',
+    reasonType: sub.reasonType || 'PREFERENCE',
+    round: 1,
+  }));
+
+  const updatedEvals = [...otherEvals, ...newEvals];
+  evaluations.set(id, updatedEvals);
+
+  const uniqueEvaluatorsCount = new Set(updatedEvals.map(e => e.evaluatorId)).size;
+
+  // Invalidate AI comment cache for fresh recalculation
+  aiCommentsCache.delete(id);
+
+  res.status(201).json({
+    success: true,
+    evaluatorsCount: uniqueEvaluatorsCount,
+    evaluationsCount: updatedEvals.length
+  });
+});
+
+/**
  * AI Idea Development Helper Endpoint (IA 2.2: AI 아이디어 디벨롭 보조 기능)
  */
 app.post('/api/rooms/:id/ideas/develop', async (req, res) => {
