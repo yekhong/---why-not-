@@ -561,6 +561,7 @@ export default function App() {
       }
     ],
     criteria: [],
+    proposals: [],
     proposalsCount: 0,
     participants: [{ roomId: 'room-gominhajo', userId: 'user_gominhajo_test', nickname: 'GOMINHAJO', role: 'HOST', isIdeaDone: true }],
     rounds: [],
@@ -757,13 +758,22 @@ export default function App() {
         isIdeaDone: p.is_idea_done || false
       }));
 
+      const mappedProposals: CriterionProposal[] = (proposalsData || []).map(p => ({
+        id: p.id,
+        roomId: p.room_id,
+        rawText: p.raw_text || (p as any).rawText || '',
+        proposerId: p.proposer_id || (p as any).proposerId || '',
+        clusterId: p.cluster_id || (p as any).clusterId
+      }));
+
       const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id));
 
       const dataObj: RoomDetails = {
         room: roomObj,
         ideas: mappedIdeas,
         criteria: mappedCriteria,
-        proposalsCount: (proposalsData || []).length,
+        proposals: mappedProposals,
+        proposalsCount: mappedProposals.length,
         participants: mappedParticipants,
         rounds: [],
         evaluatorsCount: uniqueEvaluators.size || (participantsData || []).length || 1,
@@ -1645,6 +1655,9 @@ export default function App() {
     });
   }, [roomDetails]);
 
+
+  const myProposalsCount = (roomDetails?.proposals || []).filter(p => p.proposerId === userId).length;
+  const totalProposalsCount = roomDetails?.proposalsCount || (roomDetails?.proposals || []).length;
 
   // ----------------------------------------------------------------
   // Render Main Body
@@ -2534,153 +2547,153 @@ export default function App() {
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-                      {/* Left: Input Proposal Form & AI Suggested Criteria */}
-                      <div className="lg:col-span-7 space-y-6">
+                        {/* Left: Input Proposal Form & AI Suggested Criteria */}
+                        <div className="lg:col-span-7 space-y-6">
 
-                        {/* AI Criteria Generator Card (Potens AI) */}
-                        <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
-                              <Sparkles className="w-4 h-4 text-amber-400" />
-                              Potens AI 기반 평가 기준 3가지 제안
-                            </h3>
-                            <button
-                              type="button"
-                              onClick={handleFetchAiSuggestions}
-                              disabled={isGeneratingAiSuggestions}
-                              className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
-                            >
-                              {isGeneratingAiSuggestions ? (
-                                <>
-                                  <RefreshCw className="w-3 h-3 animate-spin" />
-                                  생성 중...
-                                </>
-                              ) : (
-                                <>
-                                  <Sparkles className="w-3 h-3" />
-                                  AI 기준 생성
-                                </>
-                              )}
-                            </button>
-                          </div>
-                          <p className="text-xs text-slate-300 leading-relaxed">
-                            등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 클릭 시 즉시 내 기준 제안으로 등록됩니다.
-                          </p>
+                          {/* AI Criteria Generator Card (Potens AI) */}
+                          <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
+                            <div className="flex items-center justify-between">
+                              <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
+                                <Sparkles className="w-4 h-4 text-amber-400" />
+                                Potens AI 기반 평가 기준 3가지 제안
+                              </h3>
+                              <button
+                                type="button"
+                                onClick={handleFetchAiSuggestions}
+                                disabled={isGeneratingAiSuggestions}
+                                className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
+                              >
+                                {isGeneratingAiSuggestions ? (
+                                  <>
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                    생성 중...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="w-3 h-3" />
+                                    AI 기준 생성
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 클릭 시 즉시 내 기준 제안으로 등록됩니다.
+                            </p>
 
-                          {aiSuggestedCriteria.length > 0 && (
-                            <div className="space-y-2 pt-1">
-                              {aiSuggestedCriteria.map((item, idx) => (
-                                <div
-                                  key={idx}
-                                  className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition flex items-start justify-between gap-3 text-left"
-                                >
-                                  <div className="space-y-0.5 min-w-0 flex-1">
-                                    <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
-                                      <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-                                      {item.name}
-                                    </h4>
-                                    <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
-                                      {item.description}
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleProposeCriterion(undefined, `${item.name}: ${item.description}`)}
-                                    disabled={(roomDetails.proposals || []).length >= 3}
-                                    className="shrink-0 text-xs font-bold bg-white text-slate-900 hover:bg-slate-100 disabled:bg-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition"
+                            {aiSuggestedCriteria.length > 0 && (
+                              <div className="space-y-2 pt-1">
+                                {aiSuggestedCriteria.map((item, idx) => (
+                                  <div
+                                    key={idx}
+                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition flex items-start justify-between gap-3 text-left"
                                   >
-                                    {(roomDetails.proposals || []).length >= 3 ? '제안 완료 (최대 3개)' : '이 기준 제안 선택'}
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Direct Criterion Proposal Form */}
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
-                            <div>
-                              <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
-                              <p className="text-xs text-slate-500 mt-0.5">
-                                "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
-                              </p>
-                            </div>
-                            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                              최소 1개 ~ 최대 3개 (현재 {(roomDetails.proposals || []).length}/3개)
-                            </span>
-                          </div>
-
-                          {(roomDetails.proposals || []).length >= 3 && (
-                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
-                              <span>⚠️</span>
-                              평가 기준이 최대 제한인 3개까지 모두 제출되어 추가 등록이 제한됩니다.
-                            </div>
-                          )}
-
-                          <form onSubmit={handleProposeCriterion} className="space-y-4">
-                            <div className="space-y-1">
-                              <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
-                              <textarea
-                                required={(roomDetails.proposals || []).length === 0}
-                                disabled={(roomDetails.proposals || []).length >= 3}
-                                value={proposalText}
-                                onChange={e => setProposalText(e.target.value)}
-                                placeholder={(roomDetails.proposals || []).length >= 3 ? "최대 3개 제안이 완료되었습니다." : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"}
-                                rows={3}
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
-                              />
-                            </div>
-
-                            <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
-                              🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
-                            </div>
-
-                            <button
-                              type="submit"
-                              disabled={(roomDetails.proposals || []).length >= 3}
-                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
-                            >
-                              익명 기준 제안 등록하기
-                            </button>
-                          </form>
-                        </div>
-                      </div>
-
-                      {/* Right: Progress Tracker & Submitted Proposals List */}
-                      <div className="lg:col-span-5 space-y-6">
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                            <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
-                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                              {roomDetails.proposalsCount}개 제출됨
-                            </span>
-                          </div>
-
-                          {/* Submitted Proposals List */}
-                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                            {(roomDetails.proposals || []).length === 0 ? (
-                              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
-                                <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
-                                <p className="text-[11px] text-slate-400">좌측에서 AI 추천 기준을 선택하거나 직접 입력해 주세요. (최소 1개 필수)</p>
-                              </div>
-                            ) : (
-                              (roomDetails.proposals || []).map((p, idx) => (
-                                <div key={p.id || idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-left">
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
-                                      익명 제안 #{idx + 1}
-                                    </span>
-                                    <span className="text-[10px] text-slate-400">🔒 작성자 익명 보장</span>
+                                    <div className="space-y-0.5 min-w-0 flex-1">
+                                      <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
+                                        <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                        {item.name}
+                                      </h4>
+                                      <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
+                                        {item.description}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleProposeCriterion(undefined, `${item.name}: ${item.description}`)}
+                                      disabled={myProposalsCount >= 3}
+                                      className="shrink-0 text-xs font-bold bg-white text-slate-900 hover:bg-slate-100 disabled:bg-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition"
+                                    >
+                                      {myProposalsCount >= 3 ? '제안 완료 (최대 3개)' : '이 기준 제안 선택'}
+                                    </button>
                                   </div>
-                                  <p className="text-xs text-slate-800 font-medium leading-relaxed">
-                                    {p.rawText}
-                                  </p>
-                                </div>
-                              ))
+                                ))}
+                              </div>
                             )}
                           </div>
+
+                          {/* Direct Criterion Proposal Form */}
+                          <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+                              <div>
+                                <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
+                                </p>
+                              </div>
+                              <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
+                                1인당 최대 3개 (내 제안 {myProposalsCount}/3개)
+                              </span>
+                            </div>
+
+                            {myProposalsCount >= 3 && (
+                              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                                <span>⚠️</span>
+                                1인당 평가 기준이 최대 제한인 3개까지 모두 제출되어 추가 등록이 제한됩니다.
+                              </div>
+                            )}
+
+                            <form onSubmit={handleProposeCriterion} className="space-y-4">
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
+                                <textarea
+                                  required={myProposalsCount === 0}
+                                  disabled={myProposalsCount >= 3}
+                                  value={proposalText}
+                                  onChange={e => setProposalText(e.target.value)}
+                                  placeholder={myProposalsCount >= 3 ? "최대 3개 제안이 완료되었습니다." : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"}
+                                  rows={3}
+                                  className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
+                                />
+                              </div>
+
+                              <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
+                                🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
+                              </div>
+
+                              <button
+                                type="submit"
+                                disabled={myProposalsCount >= 3}
+                                className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+                              >
+                                익명 기준 제안 등록하기
+                              </button>
+                            </form>
+                          </div>
                         </div>
+
+                        {/* Right: Progress Tracker & Submitted Proposals List */}
+                        <div className="lg:col-span-5 space-y-6">
+                          <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                              <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
+                              <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
+                                {totalProposalsCount}개 제출됨
+                              </span>
+                            </div>
+
+                            {/* Submitted Proposals List */}
+                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                              {(roomDetails.proposals || []).length === 0 ? (
+                                <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
+                                  <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
+                                  <p className="text-[11px] text-slate-400">좌측에서 AI 추천 기준을 선택하거나 직접 입력해 주세요. (최소 1개 필수)</p>
+                                </div>
+                              ) : (
+                                (roomDetails.proposals || []).map((p, idx) => (
+                                  <div key={p.id || idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-left">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                                        익명 제안 #{idx + 1}
+                                      </span>
+                                      <span className="text-[10px] text-slate-400">🔒 작성자 익명 보장</span>
+                                    </div>
+                                    <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                      {p.rawText}
+                                    </p>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
 
                         {/* Host Control: Triggers Clustering (CRIT-02 AI 자동 정리) */}
                         {roomDetails.room.hostId === userId && (
@@ -2713,7 +2726,6 @@ export default function App() {
                           </div>
                         )}
                       </div>
-
                     </div>
                   )}
 

@@ -854,6 +854,7 @@ app.get('/api/rooms/:id', async (req, res) => {
     room,
     ideas: roomIdeas,
     criteria: roomCriteria,
+    proposals: roomProposals,
     proposalsCount: roomProposals.length,
     rounds: roomRounds,
     evaluatorsCount,
