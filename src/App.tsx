@@ -1495,7 +1495,7 @@ export default function App() {
           return;
         }
         if (!vote.reasonText || !vote.reasonText.trim()) {
-          const stanceLabel = vote.decision === 'KEEP' ? '유지 지지' : '제외 요청';
+          const stanceLabel = vote.decision === 'KEEP' ? '유지 찬성' : '제외 희망';
           triggerToast(`"${idea.title}" 아이디어의 ${stanceLabel} 세부 사유를 작성해 주세요.`, 'error');
           return;
         }
@@ -1627,8 +1627,9 @@ export default function App() {
       const res = await fetch(`/api/rooms/${activeRoomId}/seed-evaluations`, {
         method: 'POST',
       });
-      if (!res.ok) throw new Error();
-      triggerToast('시뮬레이션 가상 평가 2건이 성공적으로 기록되었습니다! 게이트가 충족됩니다.');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || '오류 발생');
+      triggerToast(data.message || '시뮬레이션 가상 평가가 성공적으로 기록되었습니다! 정족수가 충족됩니다.');
       fetchRoomDetails(activeRoomId!);
     } catch (err) {
       triggerToast('가상 평가 추가 실패', 'error');
@@ -2950,24 +2951,27 @@ export default function App() {
                           </div>
 
                           {/* Tester assist box */}
-                          {!roomDetails.minResponseThresholdMet && (
-                            <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-left space-y-3">
-                              <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                                미리보기 테스트 팁 (시뮬레이션 가상 참여자)
-                              </h4>
-                              <p className="text-[11px] text-slate-400 leading-normal">
-                                혼자서 테스트 중이시라면 아래 버튼을 클릭하십시오! 서버가 즉시 <strong>가상 팀원 2명의 익명 평가 정보</strong>를 임의 생성하여 정족수를 만족시켜 주고, 결과 통계 페이지를 보여줍니다.
-                              </p>
-                              <button
-                                onClick={handleSeedMockEvaluations}
-                                className="w-full py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm flex items-center justify-center gap-1"
-                              >
-                                <PlusCircle className="w-3.5 h-3.5" />
-                                시뮬레이션 가상 평가 2명 데이터 추가
-                              </button>
-                            </div>
-                          )}
+                          {!roomDetails.minResponseThresholdMet && (() => {
+                            const neededCount = Math.max(1, (roomDetails.room.minResponseThreshold || 4) - (roomDetails.evaluatorsCount || 0));
+                            return (
+                              <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-left space-y-3">
+                                <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                  미리보기 테스트 팁 (시뮬레이션 가상 참여자)
+                                </h4>
+                                <p className="text-[11px] text-slate-400 leading-normal">
+                                  혼자서 테스트 중이시라면 아래 버튼을 클릭하십시오! 서버가 즉시 <strong>가상 팀원 {neededCount}명의 익명 평가 정보</strong>를 임의 생성하여 정족수를 만족시켜 주고, 결과 통계 페이지를 보여줍니다.
+                                </p>
+                                <button
+                                  onClick={handleSeedMockEvaluations}
+                                  className="w-full py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm flex items-center justify-center gap-1"
+                                >
+                                  <PlusCircle className="w-3.5 h-3.5" />
+                                  시뮬레이션 가상 평가 {neededCount}명 데이터 추가 (정족수 달성)
+                                </button>
+                              </div>
+                            );
+                          })()}
 
                           {/* Transition button for host */}
                           {roomDetails.room.hostId === userId && roomDetails.minResponseThresholdMet && (
@@ -3172,7 +3176,7 @@ export default function App() {
                         <div className="space-y-4">
                           <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                             <h2 className="text-base font-extrabold text-slate-900">현재 생존해 있는 활성 후보 ({activeIdeasCount}개)</h2>
-                            <span className="text-xs text-slate-400 font-semibold">점수 기준: 유지(+2) 상관없음(+1) 필수제약감점(-3)</span>
+                            <span className="text-xs text-slate-400 font-semibold">투표 결과: 유지 찬성 / 제외 희망</span>
                           </div>
 
                           {roomDetails.ideas.filter(i => i.status === 'ACTIVE').map(idea => {
@@ -3193,23 +3197,15 @@ export default function App() {
                                   </div>
                                 </div>
 
-                                {/* Aggregate vote counters */}
-                                <div className="grid grid-cols-4 gap-2 bg-slate-50 p-2.5 rounded-xl text-center text-[10px] font-extrabold text-slate-500">
-                                  <div>
-                                    <span className="block text-emerald-600">유지찬성</span>
-                                    <span className="text-xs font-black text-slate-800">{stats.keepCount}표</span>
+                                {/* Aggregate vote counters (2 options: 유지 찬성 / 제외 희망) */}
+                                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl text-center text-xs font-extrabold text-slate-500">
+                                  <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-100/80 flex items-center justify-between px-4">
+                                    <span className="text-emerald-700 font-bold">유지 찬성</span>
+                                    <span className="text-sm font-black text-emerald-800">{stats.keepCount}표</span>
                                   </div>
-                                  <div>
-                                    <span className="block text-slate-600">상관없음</span>
-                                    <span className="text-xs font-black text-slate-800">{stats.neutralCount}표</span>
-                                  </div>
-                                  <div>
-                                    <span className="block text-rose-600">일반제외</span>
-                                    <span className="text-xs font-black text-slate-800">{stats.excludeCount - stats.objectiveExcludeCount}표</span>
-                                  </div>
-                                  <div className="bg-rose-50/50 rounded-lg">
-                                    <span className="block text-rose-700">필수제약위반</span>
-                                    <span className="text-xs font-black text-rose-800">{stats.objectiveExcludeCount}표</span>
+                                  <div className="bg-rose-50/70 p-2.5 rounded-xl border border-rose-100/80 flex items-center justify-between px-4">
+                                    <span className="text-rose-700 font-bold">제외 희망</span>
+                                    <span className="text-sm font-black text-rose-800">{stats.excludeCount}표</span>
                                   </div>
                                 </div>
 

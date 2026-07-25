@@ -1581,11 +1581,26 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
 
   const roomEvals = evaluations.get(id) || [];
 
-  // Create mock evaluations for 2 virtual participants
-  const mockVoters = [
-    { id: 'mock-eval-1', name: '가상참여자A' },
-    { id: 'mock-eval-2', name: '가상참여자B' }
-  ];
+  // Calculate distinct current evaluators
+  const currentEvaluators = new Set(roomEvals.map(e => e.evaluatorId));
+  const currentCount = currentEvaluators.size;
+  const targetThreshold = room.minResponseThreshold || 4;
+
+  // Calculate needed count to reach targetThreshold
+  const neededCount = Math.max(1, targetThreshold - currentCount);
+
+  // Generate dynamic mock voters
+  const greekLetters = ['알파', '베타', '감마', '델타', '엡실론', '제타', '에타', '타우'];
+  const mockVoters = Array.from({ length: neededCount }, (_, idx) => ({
+    id: `mock-eval-${idx + 1}`,
+    name: `가상참여자_${greekLetters[idx % greekLetters.length]}`
+  }));
+
+  let rParticipants = participants.get(id);
+  if (!rParticipants) {
+    rParticipants = new Map<string, string>();
+    participants.set(id, rParticipants);
+  }
 
   mockVoters.forEach((voter, idx) => {
     // Remove existing for this mock voter if any
@@ -1593,41 +1608,23 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
     roomEvals.length = 0;
     roomEvals.push(...filtered);
 
+    rParticipants!.set(voter.id, voter.name);
+
     roomIdeas.forEach((idea, ideaIdx) => {
-      // Create interesting split decisions
-      let decision: 'KEEP' | 'NEUTRAL' | 'EXCLUDE' = 'NEUTRAL';
+      // Alternate KEEP and EXCLUDE decisions with varied criteria and reasons
+      let decision: 'KEEP' | 'EXCLUDE' = (idx + ideaIdx) % 2 === 0 ? 'KEEP' : 'EXCLUDE';
       let reasonText = '';
       let reasonType: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE' | undefined;
       let excludedCriterionIds: string[] = [];
 
-      if (idx === 0) {
-        // Mock Voter A behavior
-        if (ideaIdx === 0) {
-          decision = 'KEEP';
-        } else if (ideaIdx === 1) {
-          decision = 'EXCLUDE';
-          reasonType = 'OBJECTIVE_CONSTRAINT';
-          if (roomCriteria.length > 0) {
-            excludedCriterionIds = [roomCriteria[roomCriteria.length - 1].id]; // Last criterion (usually preparation difficulty)
-          }
-          reasonText = '현재 팀에 가용한 개발/기획 리소스를 크게 초과하는 복잡한 과제인 것 같습니다. 1달 내 론칭하기가 절대적으로 어렵습니다.';
-        } else {
-          decision = 'NEUTRAL';
+      if (decision === 'EXCLUDE') {
+        reasonType = idx % 2 === 0 ? 'OBJECTIVE_CONSTRAINT' : 'PREFERENCE';
+        if (roomCriteria.length > 0) {
+          excludedCriterionIds = [roomCriteria[ideaIdx % roomCriteria.length].id];
         }
-      } else {
-        // Mock Voter B behavior
-        if (ideaIdx === 0) {
-          decision = 'NEUTRAL';
-        } else if (ideaIdx === 1) {
-          decision = 'KEEP';
-        } else {
-          decision = 'EXCLUDE';
-          reasonType = 'PREFERENCE';
-          if (roomCriteria.length > 0) {
-            excludedCriterionIds = [roomCriteria[0].id]; // First criterion (usually budget)
-          }
-          reasonText = '이 기획은 참신함 면에서 기존에 진행하던 캠페인들과의 차별성을 전혀 체감하지 못하겠습니다. 조금 식상하다는 생각이 드네요.';
-        }
+        reasonText = idx % 2 === 0
+          ? '현재 가용한 개발/기획 리소스를 크게 초과하는 복잡한 과제입니다. 일정 내 배포가 어렵습니다.'
+          : '기존 진행 서비스 대비 차별성이 부족하고 독창적 강점이 명확히 전달되지 않습니다.';
       }
 
       roomEvals.push({
@@ -1647,16 +1644,11 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
   evaluations.set(id, roomEvals);
   aiCommentsCache.delete(id); // Clear cache
 
-  // Add virtual participants
-  let rParticipants = participants.get(id);
-  if (!rParticipants) {
-    rParticipants = new Map<string, string>();
-    participants.set(id, rParticipants);
-  }
-  rParticipants.set('mock-eval-1', '가상참여자_알파');
-  rParticipants.set('mock-eval-2', '가상참여자_베타');
-
-  res.json({ success: true, message: '가상 참여자 2명의 평가가 완료되었습니다!' });
+  res.json({
+    success: true,
+    addedCount: neededCount,
+    message: `가상 참여자 ${neededCount}명의 평가가 성공적으로 생성되어 정족수를 달성했습니다!`
+  });
 });
 
 /**
