@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { 
@@ -13,7 +12,7 @@ import {
   Evaluation, 
   EliminationRound,
   RoomDetails
-} from './src/types.js'; // Ensure correct extension for ESM imports if needed, or omit. We can import from types directly.
+} from './src/types';
 
 dotenv.config();
 
@@ -1992,6 +1991,7 @@ async function generateFinalRoomReport(
 // ----------------------------------------------------------------
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
