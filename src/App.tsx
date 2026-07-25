@@ -22,7 +22,9 @@ import {
   PlusCircle,
   HelpCircle,
   Trash,
-  Star
+  Star,
+  Edit2,
+  Edit
 } from 'lucide-react';
 import {
   Room,
@@ -1317,6 +1319,74 @@ export default function App() {
       }
     } catch (supaErr) {
       console.error('Supabase DB proposal insert error:', supaErr);
+    }
+  };
+
+  // State for Editing Proposal
+  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
+  const [editingProposalText, setEditingProposalText] = useState<string>('');
+
+  // Save edited proposal
+  const handleSaveProposal = async (proposalId: string) => {
+    if (!editingProposalText.trim()) {
+      triggerToast('수정할 평가 기준 내용을 입력해 주세요.', 'error');
+      return;
+    }
+
+    const updatedText = editingProposalText.trim();
+
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const updatedProposals = (prev.proposals || []).map(p =>
+        p.id === proposalId ? { ...p, rawText: updatedText } : p
+      );
+      return {
+        ...prev,
+        proposals: updatedProposals
+      };
+    });
+
+    setEditingProposalId(null);
+    setEditingProposalText('');
+    triggerToast('제안된 평가 기준이 수정되었습니다.');
+
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('criterion_proposals')
+          .update({ raw_text: updatedText })
+          .eq('id', proposalId);
+      }
+    } catch (err) {
+      console.error('Supabase update proposal error:', err);
+    }
+  };
+
+  // Delete proposal
+  const handleDeleteProposal = async (proposalId: string) => {
+    if (!window.confirm('이 제안된 평가 기준을 삭제하시겠습니까?')) return;
+
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const updatedProposals = (prev.proposals || []).filter(p => p.id !== proposalId);
+      return {
+        ...prev,
+        proposals: updatedProposals,
+        proposalsCount: updatedProposals.length
+      };
+    });
+
+    triggerToast('제안된 평가 기준이 삭제되었습니다.');
+
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('criterion_proposals')
+          .delete()
+          .eq('id', proposalId);
+      }
+    } catch (err) {
+      console.error('Supabase delete proposal error:', err);
     }
   };
 
@@ -2829,19 +2899,76 @@ export default function App() {
                               ) : (
                                 (roomDetails.proposals || []).map((p: any, idx: number) => {
                                   const isAi = p.isAiSuggested || p.proposerId === 'gemini-ai' || (p.rawText && (p.rawText.includes('가능성') || p.rawText.includes('적정성') || p.rawText.includes('차별성') || p.rawText.includes('용이성') || p.rawText.includes('해소력') || p.rawText.includes('인가?')));
+                                  const isMyProposal = p.proposerId === userId || roomDetails.room.hostId === userId;
+                                  const isEditing = editingProposalId === p.id;
+
                                   return (
-                                    <div key={p.id || idx} className={`p-3 rounded-xl space-y-1 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
+                                    <div key={p.id || idx} className={`p-3 rounded-xl space-y-2 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
                                       <div className="flex items-center justify-between">
                                         <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
                                           기준 #{idx + 1}
                                         </span>
-                                        <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
-                                          {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
-                                        </span>
+                                        <div className="flex items-center gap-2">
+                                          <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
+                                            {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
+                                          </span>
+
+                                          {/* Edit / Delete Buttons */}
+                                          {isMyProposal && !isEditing && (
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                onClick={() => {
+                                                  setEditingProposalId(p.id);
+                                                  setEditingProposalText(p.rawText);
+                                                }}
+                                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition"
+                                                title="수정"
+                                              >
+                                                <Edit2 className="w-3 h-3" />
+                                              </button>
+                                              <button
+                                                onClick={() => handleDeleteProposal(p.id)}
+                                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
+                                                title="삭제"
+                                              >
+                                                <Trash2 className="w-3 h-3" />
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
                                       </div>
-                                      <p className="text-xs text-slate-800 font-medium leading-relaxed">
-                                        {p.rawText}
-                                      </p>
+
+                                      {isEditing ? (
+                                        <div className="space-y-2 pt-1">
+                                          <textarea
+                                            value={editingProposalText}
+                                            onChange={(e) => setEditingProposalText(e.target.value)}
+                                            className="w-full text-xs p-2.5 bg-white border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                                            rows={2}
+                                          />
+                                          <div className="flex items-center justify-end gap-1.5">
+                                            <button
+                                              onClick={() => {
+                                                setEditingProposalId(null);
+                                                setEditingProposalText('');
+                                              }}
+                                              className="px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 rounded-md transition"
+                                            >
+                                              취소
+                                            </button>
+                                            <button
+                                              onClick={() => handleSaveProposal(p.id)}
+                                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition"
+                                            >
+                                              저장
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                          {p.rawText}
+                                        </p>
+                                      )}
                                     </div>
                                   );
                                 })
