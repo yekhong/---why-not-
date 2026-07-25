@@ -1511,14 +1511,18 @@ export default function App() {
       reasonType: evalSubmissions[i.id].reasonType,
     }));
 
-    // Update local state immediately
+    // Update local state immediately & transition status to 4단계 ELIMINATION (2차 투표)
     setRoomDetails(prev => {
       if (!prev) return prev;
       return {
         ...prev,
         hasEvaluated: true,
         evaluatorsCount: (prev.evaluatorsCount || 0) + 1,
-        minResponseThresholdMet: true
+        minResponseThresholdMet: true,
+        room: {
+          ...prev.room,
+          status: 'ELIMINATION'
+        }
       };
     });
 
@@ -3047,15 +3051,41 @@ export default function App() {
                             );
                           })}
 
-                          <div className="pt-4 text-center">
-                            <button
-                              type="button"
-                              onClick={handleSubmitAllEvaluations}
-                              className="px-8 py-3 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-700 transition shadow-md"
-                            >
-                              내 익명 심사 평가 완료하기
-                            </button>
-                          </div>
+                          {/* Centered Voting Transition Button under the last candidate idea */}
+                          {(() => {
+                            const activeIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE');
+                            const isAllEvaluated = activeIdeas.length > 0 && activeIdeas.every(idea => {
+                              const vote = evalSubmissions[idea.id];
+                              if (!vote || !vote.decision) return false;
+                              if (!vote.reasonText || !vote.reasonText.trim()) return false;
+                              if ((roomDetails.criteria || []).length > 0 && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
+                              return true;
+                            });
+
+                            return (
+                              <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
+                                {!isAllEvaluated && (
+                                  <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
+                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [근거 평가 기준], [세부 사유]를 모두 작성하셔야 4단계 2차 투표로 이동할 수 있습니다.
+                                  </p>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={handleSubmitAllEvaluations}
+                                  disabled={!isAllEvaluated}
+                                  className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${
+                                    isAllEvaluated
+                                      ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
+                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
+                                  }`}
+                                >
+                                  <Sparkles className="w-4 h-4" />
+                                  {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
+                                  <ArrowRight className="w-4 h-4" />
+                                </button>
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
 
