@@ -1081,6 +1081,18 @@ export default function App() {
     // Supabase DB Direct insertion fallback
     if (!insertedSuccess) {
       try {
+        // Ensure room exists in Supabase rooms table to avoid foreign key constraint violation
+        if (activeRoomId && roomDetails?.room) {
+          await supabase.from('rooms').upsert({
+            id: activeRoomId,
+            title: roomDetails.room.title || '새 회의방',
+            description: roomDetails.room.description || '',
+            category: roomDetails.room.category || '기획',
+            host_id: roomDetails.room.hostId || userId || 'host-1',
+            status: roomDetails.room.status || 'IDEA_SUBMISSION'
+          }, { onConflict: 'id' });
+        }
+
         const newIdeaId = `idea-${Math.random().toString(36).substring(2, 9)}`;
         const { error: supaErr } = await supabase
           .from('ideas')
