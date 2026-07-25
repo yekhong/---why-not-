@@ -1109,20 +1109,67 @@ export default function App() {
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
   const [isGeneratingAiSuggestions, setIsGeneratingAiSuggestions] = useState(false);
 
+  const autoRegisterAiProposals = (suggestions: any[]) => {
+    if (!suggestions || suggestions.length === 0 || !activeRoomId) return;
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const existing = prev.proposals || [];
+      const existingTexts = new Set(existing.map(p => p.rawText));
+
+      const newProposals = suggestions.map((item: any, idx: number) => {
+        const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
+        return {
+          id: `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`,
+          roomId: activeRoomId,
+          rawText: text,
+          proposerId: 'gemini-ai',
+          isAiSuggested: true,
+          createdAt: new Date().toISOString()
+        };
+      }).filter((p: any) => p.rawText && !existingTexts.has(p.rawText));
+
+      if (newProposals.length === 0) return prev;
+      const updated = [...existing, ...newProposals];
+      return {
+        ...prev,
+        proposals: updated,
+        proposalsCount: updated.length
+      };
+    });
+
+    // Background API sync
+    suggestions.forEach(item => {
+      const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
+      if (!text) return;
+      fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
+      }).catch(() => {});
+    });
+  };
+
   // Fetch AI suggested criteria candidates based on registered ideas (Potens AI dynamically analyzing registered ideas)
   const handleFetchAiSuggestions = async () => {
     setIsGeneratingAiSuggestions(true);
 
-    // 1. First, attempt Express Potens AI Server Endpoint (/api/rooms/:id/criteria/suggest)
+    const currentIdeas = (roomDetails?.ideas || []).filter(i => i.status !== 'ELIMINATED');
+
+    // 1. First, attempt Express Gemini AI Server Endpoint (/api/rooms/:id/criteria/suggest)
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/suggest`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ideas: currentIdeas.map(i => ({ title: i.title, description: i.description }))
+        }),
       });
       if (res.ok) {
         const data = await res.json();
         if (data.suggestions && data.suggestions.length > 0) {
           setAiSuggestedCriteria(data.suggestions);
-          triggerToast('Potens AI(Claude 3.5 Sonnet)가 등록된 아이디어를 분석하여 평가 기준 3개를 제안했습니다!');
+          autoRegisterAiProposals(data.suggestions);
+          triggerToast('Gemini AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
           setIsGeneratingAiSuggestions(false);
           return;
         }
@@ -1132,11 +1179,10 @@ export default function App() {
     }
 
     // 2. Dynamic Frontend Idea Analyzer based on current room ideas
-    const currentIdeas = roomDetails?.ideas || [];
     const titles = currentIdeas.map(i => i.title).join(', ');
 
     setTimeout(() => {
-      let dynamicSuggestions = [];
+      let dynamicSuggestions: any[] = [];
 
       if (titles.includes('회의록') || titles.includes('마감할인') || titles.includes('건강기록')) {
         dynamicSuggestions = [
@@ -1171,7 +1217,8 @@ export default function App() {
       }
 
       setAiSuggestedCriteria(dynamicSuggestions);
-      triggerToast('Potens AI가 등록된 아이디어를 직접 분석하여 맞춤 기준 3개를 제안했습니다!');
+      autoRegisterAiProposals(dynamicSuggestions);
+      triggerToast('Gemini AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
       setIsGeneratingAiSuggestions(false);
     }, 600);
   };
@@ -2555,7 +2602,7 @@ export default function App() {
                             <div className="flex items-center justify-between">
                               <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
                                 <Sparkles className="w-4 h-4 text-amber-400" />
-                                Potens AI 기반 평가 기준 3가지 제안
+                                AI 기반 평가 기준 3가지 제안
                               </h3>
                               <button
                                 type="button"
@@ -2577,7 +2624,7 @@ export default function App() {
                               </button>
                             </div>
                             <p className="text-xs text-slate-300 leading-relaxed">
-                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 클릭 시 즉시 내 기준 제안으로 등록됩니다.
+                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 추천된 기준은 제안 목록에 자동 반영됩니다.
                             </p>
 
                             {aiSuggestedCriteria.length > 0 && (
@@ -2585,9 +2632,9 @@ export default function App() {
                                 {aiSuggestedCriteria.map((item, idx) => (
                                   <div
                                     key={idx}
-                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition flex items-start justify-between gap-3 text-left"
+                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left"
                                   >
-                                    <div className="space-y-0.5 min-w-0 flex-1">
+                                    <div className="space-y-0.5 min-w-0">
                                       <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
                                         <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
                                         {item.name}
@@ -2596,14 +2643,6 @@ export default function App() {
                                         {item.description}
                                       </p>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleProposeCriterion(undefined, `${item.name}: ${item.description}`)}
-                                      disabled={myProposalsCount >= 3}
-                                      className="shrink-0 text-xs font-bold bg-white text-slate-900 hover:bg-slate-100 disabled:bg-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg transition"
-                                    >
-                                      {myProposalsCount >= 3 ? '제안 완료 (최대 3개)' : '이 기준 제안 선택'}
-                                    </button>
                                   </div>
                                 ))}
                               </div>
@@ -2675,22 +2714,27 @@ export default function App() {
                               {(roomDetails.proposals || []).length === 0 ? (
                                 <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
                                   <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
-                                  <p className="text-[11px] text-slate-400">좌측에서 AI 추천 기준을 선택하거나 직접 입력해 주세요. (최소 1개 필수)</p>
+                                  <p className="text-[11px] text-slate-400">상단 'AI 기준 생성' 버튼을 누르거나 직접 입력해 주세요. (최소 1개 필수)</p>
                                 </div>
                               ) : (
-                                (roomDetails.proposals || []).map((p, idx) => (
-                                  <div key={p.id || idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-left">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
-                                        익명 제안 #{idx + 1}
-                                      </span>
-                                      <span className="text-[10px] text-slate-400">🔒 작성자 익명 보장</span>
+                                (roomDetails.proposals || []).map((p: any, idx: number) => {
+                                  const isAi = p.isAiSuggested || p.proposerId === 'gemini-ai' || (p.rawText && (p.rawText.includes('가능성') || p.rawText.includes('적정성') || p.rawText.includes('차별성') || p.rawText.includes('용이성') || p.rawText.includes('해소력') || p.rawText.includes('인가?')));
+                                  return (
+                                    <div key={p.id || idx} className={`p-3 rounded-xl space-y-1 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
+                                      <div className="flex items-center justify-between">
+                                        <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
+                                          기준 #{idx + 1}
+                                        </span>
+                                        <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
+                                          {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                        {p.rawText}
+                                      </p>
                                     </div>
-                                    <p className="text-xs text-slate-800 font-medium leading-relaxed">
-                                      {p.rawText}
-                                    </p>
-                                  </div>
-                                ))
+                                  );
+                                })
                               )}
                             </div>
                           </div>

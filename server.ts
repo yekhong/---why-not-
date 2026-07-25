@@ -1065,52 +1065,270 @@ ${description}
 });
 
 /**
- * 6-1. AI Suggest 3 Criteria Based on Registered Ideas (Potens AI)
+ * 6-1. AI Suggest 3 Criteria Based on Registered Ideas (Gemini AI)
  */
 app.post('/api/rooms/:id/criteria/suggest', async (req, res) => {
   const { id } = req.params;
-  const roomIdeas = ideas.get(id) || [];
+  const room = rooms.get(id);
+  
+  // 1단계 제출된 아이디어 목록 (클라이언트 전송 또는 서버 메모리 데이터)
+  const clientIdeas = req.body?.ideas;
+  const roomIdeas: Idea[] = (Array.isArray(clientIdeas) && clientIdeas.length > 0)
+    ? clientIdeas
+    : (ideas.get(id) || []).filter(i => i.status !== 'ELIMINATED');
 
-  if (roomIdeas.length === 0) {
-    return res.json({
-      suggestions: [
-        { name: '실현 가능성 및 난이도', description: '팀의 기술 역량 및 주어진 인력/시간 내에서 구현이 가능한가?' },
-        { name: '비용 및 리소스 효율성', description: '예산 범위 내에서 개발 및 운영이 지속될 수 있는가?' },
-        { name: '사용자 파급력 및 효용', description: '타겟 고객에게 뚜렷한 해결 가치와 효용을 제공하는가?' }
-      ]
-    });
-  }
+  const category = room?.category || '기획';
+  const roomTitle = room?.title || '프로젝트 아이디어 선별';
+  const roomDesc = room?.description || '팀 내 아이디어 평가 및 선별';
+  const goal = `${roomTitle}${roomDesc ? ` (${roomDesc})` : ''}`;
+  const target = category === '디자인' ? '사용자 및 고객' : '프로젝트 타겟 사용자 및 이해관계자';
+  const deadline = room?.deadlines?.ideaSubmissionAt ? `마감일: ${room.deadlines.ideaSubmissionAt}` : '진행 기간 내';
+  const team = `최대 ${room?.maxParticipants || 6}명 참여`;
+  const environment = '가용 예산 및 기술 스택 범위 내';
 
-  const ideasSummary = roomIdeas.map((idea, idx) => `아이디어 ${idx + 1}: ${idea.title}\n설명: ${idea.description}`).join('\n\n');
+  // 아이디어가 2개 미만인 경우: 회의방 개설 정보(카테고리, 주제, 설명, 제약조건) 기반 Gemini 분석
+  if (roomIdeas.length < 2) {
+    const roomMetadataPrompt = `당신은 20년 경력의 아이디어 평가 퍼실리테이터입니다.
+현재 회의방에 등록된 아이디어가 아직 수집 중(2개 미만)입니다. 회의방 개설 조건(카테고리, 주제, 한 줄 설명, 제약조건)을 분석하여, 추후 제출될 아이디어들을 비교 평가하기에 적합한 핵심 기준 3가지를 제안하세요.
 
-  const prompt = `
-당신은 IT 서비스 아이디어 평가 퍼실리테이터입니다.
-팀이 등록한 아래의 아이디어 목록들을 다각도로 검토하고, 이 아이디어들을 필터링하고 선별하기에 가장 적합한 핵심 '평가 기준' 3개를 제안해 주십시오.
+## 입력 정보
+* 평가 분야(카테고리): ${category}
+* 회의 주제(방 제목): ${roomTitle}
+* 한 줄 설명 및 제약 조건: ${roomDesc}
+* 프로젝트 기간/마감: ${deadline}
+* 팀 구성/인원: ${team}
+* 실행 환경/제약 조건: ${environment}
 
-[등록된 아이디어 목록]
-${ideasSummary}
-
-각 평가 기준은 간결한 기준명("name")과 명확한 구체 설명 문장("description")을 가져야 합니다.
-반드시 마크다운 없이 아래 스키마에 정합한 Pure JSON 배열 형태로만 3개를 출력해 주십시오.다른 설명은 절대 포함하지 마십시오.
+## 작성 지침
+1. 회의 주제 및 제약 조건(예산, 인력, 기한)을 종합 반영한 핵심 평가 기준 3개를 도출하세요.
+2. 각 평가 기준은 15자 이내의 기준명("name")과 1문장의 구체 설명("description")을 작성하세요.
+3. 마크다운 없이 Pure JSON 배열 포맷으로만 출력하세요.
 
 JSON 출력 예시:
 [
-  { "name": "실현 가능성 및 난이도", "description": "팀 내부 기술 스택 및 주어진 기간 내에 구현이 가능한지 평가" },
-  { "name": "사용자 파급력 및 차별성", "description": "기존 서비스 대비 차별화된 가치와 타겟 사용자층에 유의미한 효용을 주는지 평가" },
-  { "name": "비용 및 운영 지속성", "description": "프로젝트 예산 한계 및 유지보수 부담이 적정 범위 내에 있는지 평가" }
-]
-`;
+  { "name": "기준명 1", "description": "설명 1" },
+  { "name": "기준명 2", "description": "설명 2" },
+  { "name": "기준명 3", "description": "설명 3" }
+]`;
+
+    try {
+      let rawText = '';
+      const ai = getGeminiClient();
+      if (ai) {
+        try {
+          const resp = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: roomMetadataPrompt,
+            config: { responseMimeType: 'application/json' }
+          });
+          rawText = resp.text || '';
+        } catch (e) {}
+      }
+      if (!rawText) {
+        try { rawText = await callPotensAI(roomMetadataPrompt, 'gemini-2.5-flash'); } catch (e) {}
+      }
+
+      if (rawText) {
+        const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed) && parsed.length >= 3) {
+          return res.json({ suggestions: parsed.slice(0, 3) });
+        }
+      }
+    } catch (e) {
+      console.warn('Gemini room metadata criteria generation error, using dynamic fallback:', e);
+    }
+
+    // 카테고리/회의주제/제약조건 기반 동적 기본 추천 기준
+    let categorySuggestions = [];
+    if (category === '디자인') {
+      categorySuggestions = [
+        { name: '콘셉트 독창성 및 표현력', description: `[${roomTitle}] 주제의 브랜딩 및 시각적 콘셉트를 명확하게 표현하는가` },
+        { name: '사용 편의성 및 UI/UX', description: '타겟 고객이 직관적이고 편리하게 이용할 수 있는 구조인가' },
+        { name: '제조 및 제작 가능성', description: '주어진 기간과 리소스 범위 내에서 현실적으로 제작 가능한가' }
+      ];
+    } else if (category === '개발' || category === 'IT') {
+      categorySuggestions = [
+        { name: '기술 스택 및 구현 가능성', description: '팀의 역량으로 주어진 마감 기간 내 아키텍처 구축 및 개발이 가능한가' },
+        { name: '시스템 확장성 및 보안', description: '유저 데이터 취급 및 서비스 확장 시 보안 리스크가 제어되는가' },
+        { name: '핵심 기능 페인포인트 해소', description: `[${roomTitle}] 회의가 정의한 타겟 문제를 기술적으로 해결하는가` }
+      ];
+    } else if (category === '마케팅') {
+      categorySuggestions = [
+        { name: '타겟 파급력 및 바이럴성', description: '예산 범위 내에서 타겟 고객의 수월한 참여와 확산을 유도하는가' },
+        { name: '예산 대비 ROI 효율성', description: '가용한 마케팅 예산 대비 기대 효과와 ROI가 뛰어난가' },
+        { name: '단기 실행 및 준비 난이도', description: '현재 인력과 스케줄 범위 내에서 1달 이내 즉시 집행 가능한가' }
+      ];
+    } else {
+      categorySuggestions = [
+        { name: '핵심 문제 해결력', description: `[${roomTitle}] 회의 주제가 정의한 타겟 고객의 불편함을 명확히 해결하는가` },
+        { name: '단기 MVP 실현 가능성', description: '팀 역량 및 가용 인력/스케줄 범위 내에서 1달 이내 구축 가능한가' },
+        { name: '비용 및 운영 적정성', description: '가용 예산 한계를 초과하지 않으며 부작용 리스크가 제어 가능한가' }
+      ];
+    }
+
+    return res.json({
+      suggestions: categorySuggestions,
+      notice: '아이디어가 2개 미만이어서 회의 카테고리/주제/제약조건 기반 맞춤 기준이 제안되었습니다.'
+    });
+  }
+
+  // 18개 초과 시 제약
+  if (roomIdeas.length > 18) {
+    return res.status(400).json({
+      error: '입력 정보 확인 필요 (등록된 아이디어가 18개 이하이어야 평가 기준을 생성할 수 있습니다.)',
+      message: '입력 정보 확인 필요'
+    });
+  }
+  const ideaCount = roomIdeas.length;
+  
+  // 1단계 제출된 아이디어 목록 포맷팅
+  const ideasListText = roomIdeas.map((idea, idx) => {
+    const desc = idea.description ? idea.description.replace(/\n+/g, ' ').trim() : '';
+    return `  ${idx + 1}. ${idea.title}${desc ? `: ${desc}` : ''}`;
+  }).join('\n');
+
+  const prompt = `당신은 다양한 분야에서 대중의 공감과 선택을 이끌어낸 프로젝트를 다수 기획한 20년 경력의 아이디어 평가 전문가입니다.
+
+프로젝트의 목적과 조건, 등록된 아이디어의 공통점과 차이점을 종합적으로 분석하여 아이디어를 공정하게 비교할 수 있는 평가 기준 3가지를 추천하세요.
+
+## 입력 정보
+
+* 평가 분야: ${category}
+* 프로젝트 목표: ${goal}
+* 핵심 대상: ${target}
+* 프로젝트 기간: ${deadline}
+* 팀 구성: ${team}
+* 실행 환경: ${environment}
+* 등록된 아이디어 수: ${ideaCount}개
+* 등록된 아이디어:
+
+${ideasListText}
+
+## 분석 절차
+
+다음 과정을 내부적으로 수행하되 분석 내용은 출력하지 마세요.
+
+1. 프로젝트의 핵심 목표와 성공 조건을 파악합니다.
+2. 등록된 아이디어들의 공통점과 주요 차이점을 분석합니다.
+3. 아이디어 간 우열을 실질적으로 구분할 수 있는 후보 기준을 도출합니다.
+4. 공정성, 변별력, 평가 가능성을 검토하여 최종 기준 3개를 선정합니다.
+
+## 기준 선정 원칙
+
+* 아이디어를 직접 평가하거나 순위를 매기지 마세요.
+* 모든 아이디어에 동일하게 적용할 수 있는 기준을 선정하세요.
+* 프로젝트 목표와 핵심 대상에게 제공하는 가치를 우선 고려하세요.
+* 프로젝트 기간, 팀 역량과 실행 환경 안에서 실현 가능한지를 고려하세요.
+* 등록된 아이디어의 차이를 명확하게 구분할 수 있는 기준을 우선하세요.
+* 특정 아이디어에만 유리하거나 불리한 기준은 제외하세요.
+* 의미나 평가 대상이 서로 겹치는 기준은 제외하세요.
+* 모든 프로젝트에 적용할 수 있는 지나치게 일반적인 기준은 피하세요.
+* 주관적인 취향보다 관찰하거나 비교할 수 있는 요소를 기준으로 삼으세요.
+* 팀원이 별도의 설명 없이 이해할 수 있는 구체적이고 간결한 표현을 사용하세요.
+
+## 분야별 분석 관점
+
+평가 분야에 따라 다음 관점을 참고하세요.
+
+* 기획: 문제 해결력, 대상 가치, 차별성, 구조의 논리성, 서비스 흐름, 실행 범위
+* 디자인: 사용성, 정보 전달력, 콘셉트 적합성, 시각적 일관성, 제작 가능성
+* 기타 분야: 해당 분야의 목적, 대상 가치, 결과물의 품질과 실행 조건을 분석하여 적합한 관점을 설정
+
+위 항목을 그대로 복사하지 말고, 프로젝트 조건과 등록된 아이디어의 특성에 맞는 평가 기준으로 구체화하세요.
+
+## 입력 검증
+
+* 등록된 아이디어가 2개 미만이거나 18개를 초과하면 평가 기준을 생성하지 마세요.
+* 아이디어를 비교하는 데 필요한 정보가 부족하면 임의로 가정하지 마세요.
+* 입력이 유효하지 않은 경우에만 다음과 같이 출력하세요.
+
+입력 정보 확인 필요
+
+## 출력 형식
+
+1. 기준명
+2. 기준명
+3. 기준명
+
+## 출력 제한
+
+* 평가 기준은 반드시 3개만 작성하세요.
+* 각 기준명은 15자 이내로 작성하세요.
+* 세 기준은 서로 다른 평가 대상을 측정해야 합니다.
+* 기준명만 출력하고 부가 설명은 작성하지 마세요.
+* 이유, 평가 질문, 점수, 가중치, 순위, 서론과 결론은 작성하지 마세요.
+* 입력 정보에 없는 사실을 추측하거나 추가하지 마세요.`;
 
   try {
-    const rawText = await callPotensAI(prompt, 'claude-4-6-sonnet');
-    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleanedText);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return res.json({ suggestions: parsed.slice(0, 3) });
+    let rawResponseText = '';
+
+    // 1. Try Gemini AI Client (@google/genai)
+    const ai = getGeminiClient();
+    if (ai) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+        });
+        rawResponseText = response.text || '';
+      } catch (gErr) {
+        console.warn('Gemini AI SDK call failed, fallback to Potens Gemini proxy...', gErr);
+      }
     }
-    throw new Error('Invalid JSON format');
+
+    // 2. Try Potens Gemini AI Proxy
+    if (!rawResponseText) {
+      try {
+        rawResponseText = await callPotensAI(prompt, 'gemini-2.5-flash');
+      } catch (potensErr) {
+        console.warn('Potens Gemini proxy failed:', potensErr);
+      }
+    }
+
+    if (rawResponseText.includes('입력 정보 확인 필요')) {
+      return res.status(400).json({ error: '입력 정보 확인 필요' });
+    }
+
+    let parsedNames: string[] = [];
+
+    // Try parsing JSON format
+    try {
+      const cleaned = rawResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+      if (cleaned.startsWith('[') || cleaned.startsWith('{')) {
+        const jsonParsed = JSON.parse(cleaned);
+        if (Array.isArray(jsonParsed)) {
+          parsedNames = jsonParsed.map(item => typeof item === 'string' ? item : (item.name || item.title || item.rawText || ''));
+        }
+      }
+    } catch (e) {
+      // Continue to line parsing
+    }
+
+    // Parse line by line "1. 기준명"
+    if (parsedNames.length === 0 && rawResponseText) {
+      const lines = rawResponseText.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const cleanedLine = trimmed.replace(/^(\d+[\.\)]|[\*\-])\s*/, '').trim();
+        if (cleanedLine && !cleanedLine.startsWith('#') && !cleanedLine.startsWith('입력 정보')) {
+          parsedNames.push(cleanedLine.slice(0, 15));
+        }
+      }
+    }
+
+    if (parsedNames.length >= 3) {
+      const suggestions = parsedNames.slice(0, 3).map(name => ({
+        name: name,
+        description: 'Gemini AI 분석 맞춤 평가 기준 (15자 이내)'
+      }));
+      return res.json({ suggestions });
+    }
+
+    throw new Error('Could not parse 3 valid criteria names');
   } catch (err) {
-    console.warn('Potens AI criteria suggestion failed, using fallback:', err);
+    console.warn('Gemini criteria suggestion failed, using fallback:', err);
     res.json({
       suggestions: [
         { name: '기술적 실현 가능성', description: '팀의 현재 역량과 리소스로 한 달 이내 안정적으로 구현 및 배포가 가능한가?' },
