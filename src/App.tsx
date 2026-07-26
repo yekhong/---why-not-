@@ -2301,16 +2301,16 @@ export default function App() {
   // Score details calculated on frontend
   // ----------------------------------------------------------------
   const activeIdeasCount = useMemo(() => {
-    if (!roomDetails) return 0;
-    return roomDetails.ideas.filter(i => i.status === 'ACTIVE').length;
+    if (!roomDetails || !Array.isArray(roomDetails.ideas)) return 0;
+    return roomDetails.ideas.filter(i => i && i.status === 'ACTIVE').length;
   }, [roomDetails]);
 
   // Find objective constraint removal candidates (those with high objective exclusions)
   const objectiveCandidates = useMemo(() => {
-    if (!roomDetails || !roomDetails.aggregatedScores) return [];
+    if (!roomDetails || !Array.isArray(roomDetails.ideas) || !roomDetails.aggregatedScores) return [];
 
     return roomDetails.ideas.filter(idea => {
-      if (idea.status !== 'ACTIVE') return false;
+      if (!idea || idea.status !== 'ACTIVE') return false;
       const stats = roomDetails.aggregatedScores?.[idea.id];
       if (!stats) return false;
 
@@ -2321,10 +2321,11 @@ export default function App() {
 
   // Find controversial / split-opinion ideas (high keep & exclude counts or close competition)
   const controversialIdeas = useMemo(() => {
-    if (!roomDetails || !roomDetails.ideas) return [];
+    if (!roomDetails || !Array.isArray(roomDetails.ideas)) return [];
 
     const starVoteCounts = roomDetails.starVotes || {};
     return roomDetails.ideas.filter(idea => {
+      if (!idea) return false;
       const stats = roomDetails.aggregatedScores?.[idea.id];
       const starCount = starVoteCounts[idea.id] || 0;
       if (stats) {
@@ -2346,10 +2347,10 @@ export default function App() {
 
   // Determine candidate ideas for Roulette Preview / Tie-breaker
   const rouletteCandidateIdeas = useMemo(() => {
-    if (!roomDetails || !roomDetails.ideas) return [];
+    if (!roomDetails || !Array.isArray(roomDetails.ideas)) return [];
 
     const starVoteCounts = roomDetails.starVotes || {};
-    const activeOrWinnerIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE' || i.status === 'WINNER');
+    const activeOrWinnerIdeas = roomDetails.ideas.filter(i => i && (i.status === 'ACTIVE' || i.status === 'WINNER'));
     
     // Sort by star votes desc
     const sorted = [...activeOrWinnerIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
@@ -4469,12 +4470,12 @@ export default function App() {
                         </div>
 
                         <div className="grid grid-cols-1 gap-4 pt-1">
-                          {roomDetails.ideas.filter(i => i.status === 'WINNER').length === 0 ? (
+                          {(!roomDetails?.ideas || roomDetails.ideas.filter(i => i && i.status === 'WINNER').length === 0) ? (
                             <div className="text-center py-6 text-slate-500 text-xs font-medium bg-slate-50 rounded-2xl border border-slate-100">
                               최종 확정된 우승 아이디어를 불러오는 중입니다.
                             </div>
                           ) : (
-                            roomDetails.ideas.filter(i => i.status === 'WINNER').map(winner => (
+                            roomDetails.ideas.filter(i => i && i.status === 'WINNER').map(winner => (
                               <div key={winner.id} className="p-5 bg-gradient-to-br from-indigo-50/50 to-amber-50/30 rounded-2xl border border-indigo-100 space-y-2.5">
                                 <div className="flex items-center justify-between gap-2">
                                   <h3 className="text-lg font-black text-indigo-950 tracking-tight">
@@ -4537,7 +4538,7 @@ export default function App() {
                         </div>
 
                         <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
-                          {roomDetails.rounds.length === 0 ? (
+                          {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
                             <div className="space-y-1 relative">
                               <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-600" />
                               <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
@@ -4547,12 +4548,12 @@ export default function App() {
                               </p>
                             </div>
                           ) : (
-                            roomDetails.rounds.map(round => (
+                            (roomDetails.rounds || []).map(round => (
                               <div key={round.id} className="space-y-1 relative">
                                 <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-rose-500" />
                                 <span className="text-[10px] font-black text-rose-500">{round.roundNumber}라운드 탈락 및 소거 이력</span>
                                 <h4 className="text-xs md:text-sm font-bold text-slate-900">
-                                  {round.eliminatedIdeaIds.map(id => roomDetails.ideas.find(i => i.id === id)?.title).join(', ')} 소거
+                                  {(round.eliminatedIdeaIds || []).map(id => roomDetails?.ideas?.find(i => i.id === id)?.title || '아이디어').join(', ')} 소거
                                 </h4>
                                 <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
                                   {round.aiSummaryText}
