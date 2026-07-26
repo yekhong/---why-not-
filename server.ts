@@ -462,7 +462,77 @@ seedData();
 // ----------------------------------------------------------------
 
 /**
- * 1. Cluster criteria proposal texts into 3-5 confirmed criteria candidates
+ * Helper: Smart local clustering algorithm for proposals when offline
+ * Clusters proposals based on key topic words (e.g., "호빵", "기술", "비용", "유저")
+ */
+function clusterProposalsLocally(proposals: string[]): { name: string; description: string }[] {
+  if (!proposals || proposals.length === 0) {
+    return [
+      { name: '기술적 구현 가능성', description: '가용한 팀 리소스 및 스케줄 범위 내에서 MVP 구축이 가능한가' },
+      { name: '타겟 사용자 차별 가치', description: '기존 서비스 대비 타겟 사용자에게 명확한 페인포인트 해소 가치를 제공하는가' },
+      { name: '비용 및 운영 리스크 적정성', description: '가용 예산을 초과하지 않으며 법적/보안 리스크가 제어 가능한가' }
+    ];
+  }
+
+  // Group proposals by common keywords/topics
+  const groups: { [key: string]: string[] } = {};
+
+  for (const rawProp of proposals) {
+    const text = rawProp.trim();
+    if (!text) continue;
+
+    const mainTopic = text.split(/[:\s]/)[0]?.replace(/[^\w가-힣]/g, '') || text.slice(0, 4);
+    let matchedKey = '';
+
+    for (const k of Object.keys(groups)) {
+      if (text.includes(k) || k.includes(mainTopic.slice(0, 2))) {
+        matchedKey = k;
+        break;
+      }
+    }
+
+    if (!matchedKey) {
+      matchedKey = mainTopic.length >= 2 ? mainTopic : text.slice(0, 4);
+    }
+
+    if (!groups[matchedKey]) {
+      groups[matchedKey] = [];
+    }
+    groups[matchedKey].push(text);
+  }
+
+  const result: { name: string; description: string }[] = [];
+
+  for (const [groupKey, itemTexts] of Object.entries(groups)) {
+    const firstTitle = itemTexts[0].split(':')[0]?.trim() || `${groupKey} 평가`;
+    const cleanTitle = firstTitle.length > 15 ? firstTitle.slice(0, 15) : firstTitle;
+
+    if (itemTexts.length > 1) {
+      const titlesSummary = itemTexts.map(t => `'${t.split(':')[0]?.slice(0, 8)}'`).join(', ');
+      result.push({
+        name: cleanTitle.includes(groupKey) ? cleanTitle : `${groupKey} 기호도 및 관련성`,
+        description: `제안된 ${titlesSummary} 등 ${itemTexts.length}개 의견을 통합한 평가 기준`
+      });
+    } else {
+      const fullText = itemTexts[0];
+      const parts = fullText.split(':');
+      const descPart = parts[1]?.trim() || fullText;
+      result.push({
+        name: cleanTitle,
+        description: `제안된 '${descPart.slice(0, 35)}...' 의견을 반영한 평가 기준`
+      });
+    }
+  }
+
+  return result.length > 0 ? result : [
+    { name: '기술적 구현 가능성', description: '가용한 팀 리소스 및 스케줄 범위 내에서 MVP 구축이 가능한가' },
+    { name: '타겟 사용자 차별 가치', description: '기존 서비스 대비 타겟 사용자에게 명확한 페인포인트 해소 가치를 제공하는가' },
+    { name: '비용 및 운영 리스크 적정성', description: '가용 예산을 초과하지 않으며 법적/보안 리스크가 제어 가능한가' }
+  ];
+}
+
+/**
+ * 1. Cluster criteria proposal texts into 3-5 confirmed criteria candidates using Potens AI only
  */
 async function aiClusterCriteria(
   proposals: string[],
@@ -522,26 +592,11 @@ JSON 출력 예시:
 
   try {
     let rawText = '';
-    // 1. Try Potens AI API endpoint first
+    // Exclusively call Potens AI
     try {
       rawText = await callPotensAI(prompt, 'gemini-2.5-flash');
     } catch (potensErr) {
-      console.warn('Potens AI call failed in aiClusterCriteria, trying Gemini SDK fallback...', potensErr);
-    }
-
-    // 2. Fallback to Gemini SDK if Potens AI fails
-    if (!rawText) {
-      const ai = getGeminiClient();
-      if (ai) {
-        try {
-          const resp = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: { responseMimeType: 'application/json' }
-          });
-          rawText = resp.text || '';
-        } catch (e) {}
-      }
+      console.warn('Potens AI call failed in aiClusterCriteria:', potensErr);
     }
 
     if (rawText) {
@@ -560,35 +615,18 @@ JSON 출력 예시:
             };
           }).filter(item => item.name);
 
-          if (suggestions.length >= 3) {
-            return suggestions.slice(0, 5);
+          if (suggestions.length > 0) {
+            return suggestions;
           }
         }
       }
     }
   } catch (err) {
-    console.warn('aiClusterCriteria failed, using dynamic proposal fallback:', err);
+    console.warn('aiClusterCriteria failed, executing smart local clustering algorithm:', err);
   }
 
-  // Dynamic Fallback based on submitted proposal content
-  const firstProp = proposals[0] || '제안 항목';
-  const secondProp = proposals[1] || proposals[0] || '제안 항목';
-  const thirdProp = proposals[2] || proposals[0] || '제안 항목';
-
-  return [
-    {
-      name: firstProp.split(':')[0]?.slice(0, 15) || '기술적 구현 가능성',
-      description: `제안된 '${firstProp.slice(0, 25)}...' 등 팀원 제안 의견을 종합하여 1달 내 실현 가능성 검토`
-    },
-    {
-      name: secondProp.split(':')[0]?.slice(0, 15) || '타겟 사용자 차별 가치',
-      description: `제안된 '${secondProp.slice(0, 25)}...' 요소를 바탕으로 타겟 유저의 핵심 페인포인트 해소 평가`
-    },
-    {
-      name: thirdProp.split(':')[0]?.slice(0, 15) || '비용 및 운영 리스크',
-      description: `제안된 '${thirdProp.slice(0, 25)}...' 관점을 종합 반영하여 가용 리소스 및 부작용 리스크 제어 검토`
-    }
-  ];
+  // Execute Smart Local Clustering Algorithm for Fallback
+  return clusterProposalsLocally(proposals);
 }
 
 /**

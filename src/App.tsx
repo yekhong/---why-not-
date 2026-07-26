@@ -681,8 +681,8 @@ export default function App() {
       if (res.ok) {
         const data: RoomDetails = await res.json();
         setRoomDetails(data);
-        if (data.room.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
-          setEditableCriteria(data.criteria);
+        if (data.room.status === 'CRITERIA_REVIEW') {
+          setEditableCriteria(data.criteria || []);
         }
         const isWinnerState = data.room.status === 'CLOSED';
         if (isWinnerState && !hasShownWinnerModalRef.current.has(data.room.id)) {
@@ -1467,30 +1467,43 @@ export default function App() {
 
     const proposals = roomDetails?.proposals || [];
 
-    // Default clustered criteria based on proposals / room ideas
-    const defaultClusteredCriteria: Criterion[] = [
-      {
-        id: `crit-clustered-1`,
-        roomId: activeRoomId!,
-        name: '기술적 구현 가능성 및 난이도',
-        description: '가용한 팀 리소스 및 스케줄 내에서 1달 이내 MVP 구축이 가능한가',
-        confirmed: true
-      },
-      {
-        id: `crit-clustered-2`,
-        roomId: activeRoomId!,
-        name: '타겟 사용자 체감 가치 및 차별성',
-        description: '기존 서비스 대비 뚜렷한 해결 효용을 제공하고 핵심 문제를 해소하는가',
-        confirmed: true
-      },
-      {
-        id: `crit-clustered-3`,
-        roomId: activeRoomId!,
-        name: '비용 및 운영 리스크 적정성',
-        description: '초기 예산 범위 내 유지보수가 가능하며 법적/보안 리스크가 제어 가능한가',
-        confirmed: true
-      }
-    ];
+    // Default clustered criteria dynamically mapping ALL submitted proposals
+    const defaultClusteredCriteria: Criterion[] = proposals.length > 0
+      ? proposals.map((p, i) => {
+          const parts = (p.rawText || '').split(':');
+          const namePart = parts[0]?.trim() || `제안 기준 #${i + 1}`;
+          const descPart = parts[1]?.trim() || p.rawText || '제안 의견을 반영한 평가 기준';
+          return {
+            id: `crit-clustered-${i + 1}-${Math.random().toString(36).substr(2, 5)}`,
+            roomId: activeRoomId!,
+            name: namePart.slice(0, 15),
+            description: `제안된 '${descPart.slice(0, 35)}...' 반영 평가 기준`,
+            confirmed: true
+          };
+        })
+      : [
+          {
+            id: `crit-clustered-1`,
+            roomId: activeRoomId!,
+            name: '기술적 구현 가능성 및 난이도',
+            description: '가용한 팀 리소스 및 스케줄 내에서 1달 이내 MVP 구축이 가능한가',
+            confirmed: true
+          },
+          {
+            id: `crit-clustered-2`,
+            roomId: activeRoomId!,
+            name: '타겟 사용자 체감 가치 및 차별성',
+            description: '기존 서비스 대비 뚜렷한 해결 효용을 제공하고 핵심 문제를 해소하는가',
+            confirmed: true
+          },
+          {
+            id: `crit-clustered-3`,
+            roomId: activeRoomId!,
+            name: '비용 및 운영 리스크 적정성',
+            description: '초기 예산 범위 내 유지보수가 가능하며 법적/보안 리스크가 제어 가능한가',
+            confirmed: true
+          }
+        ];
 
     let finalCriteria = defaultClusteredCriteria;
 
