@@ -4030,7 +4030,7 @@ export default function App() {
 
                           {/* 🧪 Test Assist Box for 4단계 Star Voting Simulation */}
                           {(() => {
-                            const rParticipantsCount = Math.max(roomDetails.room.minResponseThreshold || 1, (roomDetails.participants || []).length || 1);
+                            const rParticipantsCount = (roomDetails.ideas || []).length || 1;
                             const currentStarCount = roomDetails.starVoteCount || 0;
                             const neededCount = Math.max(0, rParticipantsCount - currentStarCount);
 

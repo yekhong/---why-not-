@@ -1059,9 +1059,8 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
   });
 
-  // Determine starVoteStatus
-  const rParticipants = participants.get(id);
-  const targetThreshold = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  // Determine starVoteStatus using submitted ideas count (roomIdeas.length)
+  const targetThreshold = roomIdeas.length || 1;
   let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
   if (room.status === 'CLOSED') {
     starVoteStatus = 'finalized';
@@ -2032,12 +2031,11 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
   if (!room || room.status === 'CLOSED') return { status: room?.status || 'CLOSED', message: '' };
 
   const rStarVotes = starVotesMap.get(roomId) || new Map<string, string[]>();
-  const rParticipants = participants.get(roomId);
   const roomIdeas = ideas.get(roomId) || [];
   const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
 
-  // Determine total required participants: max of participants size, minResponseThreshold, or star votes count
-  const requiredCount = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  // Determine total required participants: submitted ideas count (roomIdeas.length)
+  const requiredCount = roomIdeas.length || 1;
   const currentVoteCount = rStarVotes.size;
 
   if (currentVoteCount < requiredCount) {
@@ -2071,7 +2069,10 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
   }
 
   if (isTieAtBoundary) {
-    return { status: room.status, starVoteStatus: 'tie_pending', message: '최종 선정 경계에서 동률이 발생하여 대기 중입니다.' };
+    // If tie occurs at boundary, set room status to CLOSED so view advances to 5단계, but with tie_pending flag for roulette
+    room.status = 'CLOSED';
+    rooms.set(roomId, room);
+    return { status: 'CLOSED', starVoteStatus: 'tie_pending', message: '최종 선정 경계에서 동률이 발생하여 5단계 결정 게임(룰렛)으로 이동합니다.' };
   }
 
   // No tie: auto-transition to 5단계 CLOSED & mark winners
@@ -2155,8 +2156,8 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
     starVotesMap.set(id, rStarVotes);
   }
 
-  const rParticipants = participants.get(id);
-  const targetThreshold = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  // Quorum equals submitted ideas count (roomIdeas.length)
+  const targetThreshold = roomIdeas.length || 1;
   const currentCount = rStarVotes.size;
 
   if (currentCount >= targetThreshold) {
@@ -2165,7 +2166,6 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
 
   const neededCount = targetThreshold - currentCount;
   const targetWinners = room.targetWinnerCount || 1;
-  const greekLetters = ['가상참여자_알파', '가상참여자_베타', '가상참여자_감마', '가상참여자_델타', '가상참여자_엡실론'];
   const timestamp = Date.now();
 
   for (let i = 0; i < neededCount; i++) {
@@ -2185,7 +2185,7 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
   res.json({
     success: true,
     addedCount: neededCount,
-    message: `가상 참여자 ${neededCount}명의 별 스티커 투표가 생성되었습니다!`,
+    message: `가상 참여자 ${neededCount}명의 별 스티커 투표가 성공적으로 생성되어 전체 투표(${targetThreshold}명)가 완료되었습니다!`,
     ...transitionResult
   });
 });
