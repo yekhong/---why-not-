@@ -1379,38 +1379,91 @@ JSON 출력 예시:
   }
   const ideaCount = roomIdeas.length;
   
-  // 1단계 제출된 아이디어 목록 포맷팅
-  const ideasListText = roomIdeas.map((idea, idx) => {
-    const desc = idea.description ? idea.description.replace(/\n+/g, ' ').trim() : '';
-    return `  ${idx + 1}. ${idea.title}${desc ? `: ${desc}` : ''}`;
-  }).join('\n');
+  // 1단계 제출된 아이디어 목록 포맷팅 (없을 경우 안내 텍스트)
+  const ideasListText = roomIdeas.length > 0 
+    ? roomIdeas.map((idea, idx) => {
+        const desc = idea.description ? idea.description.replace(/\n+/g, ' ').trim() : '';
+        return `  ${idx + 1}. ${idea.title}${desc ? `: ${desc}` : ''}`;
+      }).join('\n')
+    : '  - 등록된 아이디어 없음 (회의방 카테고리, 주제, 한 줄 설명 및 제약 조건을 반영하여 기준 생성 필요)';
 
-  const prompt = `당신은 20년 경력의 아이디어 평가 퍼실리테이터입니다.
-회의방에 등록된 아이디어가 존재하므로, 제출된 아이디어들을 종합 분석하여 추후 비교 평가하기에 적합한 핵심 기준 3가지를 제안하세요.
-회의방에 등록된 아이디어가 존재하지 않으면, 회의방 개설 조건(카테고리, 주제, 한 줄 설명, 제약조건)을 분석하여, 추후 제출될 아이디어들을 비교 평가하기에 적합한 핵심 기준 3가지를 제안하세요.
+  const prompt = `# 아이디어 평가 기준 추천 프롬프트
+
+당신은 다양한 분야에서 대중의 공감과 선택을 이끌어낸 프로젝트를 다수 기획한 20년 경력의 아이디어 평가 전문가입니다.
+
+프로젝트의 목적과 조건, 등록된 아이디어의 공통점과 차이점을 종합적으로 분석하여 아이디어를 공정하게 비교할 수 있는 평가 기준 3가지를 추천하세요.
 
 ## 입력 정보
-* 평가 분야(카테고리): ${category}
-* 회의 주제(방 제목): ${roomTitle}
-* 한 줄 설명 및 제약 조건: ${roomDesc}
-* 프로젝트 기간/마감: ${deadline}
-* 팀 구성/인원: ${team}
-* 실행 환경/제약 조건: ${environment}
-* 등록된 아이디어 수: ${ideaCount}개
-* 등록된 아이디어 목록:
+
+- 평가 분야: ${category}
+- 프로젝트 목표: ${goal}
+- 핵심 대상: ${target}
+- 프로젝트 기간: ${deadline}
+- 팀 구성: ${team}
+- 실행 환경: ${environment}
+- 등록된 아이디어 수: ${ideaCount}개
+- 등록된 아이디어:
 ${ideasListText}
 
-## 작성 지침
-1. 회의 주제 및 제약 조건(예산, 인력, 기한)과 등록된 아이디어들의 공통점/차이점을 종합 반영한 핵심 평가 기준 3개를 도출하세요.
-2. 각 평가 기준은 15자 이내의 기준명("name")과 1문장의 구체 설명("description")을 작성하세요.
-3. 마크다운 없이 Pure JSON 배열 포맷으로만 출력하세요.
+## 분석 절차
 
-JSON 출력 예시:
-[
-  { "name": "기준명 1", "description": "설명 1" },
-  { "name": "기준명 2", "description": "설명 2" },
-  { "name": "기준명 3", "description": "설명 3" }
-]`;
+다음 과정을 내부적으로 수행하되 분석 내용은 출력하지 마세요.
+
+1. 프로젝트의 핵심 목표와 성공 조건을 파악합니다.
+2. 등록된 아이디어들의 공통점과 주요 차이점을 분석합니다.
+3. 아이디어 간 우열을 실질적으로 구분할 수 있는 후보 기준을 도출합니다.
+4. 공정성, 변별력, 평가 가능성을 검토하여 최종 기준 3개를 선정합니다.
+
+## 기준 선정 원칙
+
+- 아이디어를 직접 평가하거나 순위를 매기지 마세요.
+- 모든 아이디어에 동일하게 적용할 수 있는 기준을 선정하세요.
+- 프로젝트 목표와 핵심 대상에게 제공하는 가치를 우선 고려하세요.
+- 프로젝트 기간, 팀 역량과 실행 환경 안에서 실현 가능한지를 고려하세요.
+- 등록된 아이디어의 차이를 명확하게 구분할 수 있는 기준을 우선하세요.
+- 특정 아이디어에만 유리하거나 불리한 기준은 제외하세요.
+- 의미나 평가 대상이 서로 겹치는 기준은 제외하세요.
+- 모든 프로젝트에 적용할 수 있는 지나치게 일반적인 기준은 피하세요.
+- 주관적인 취향보다 관찰하거나 비교할 수 있는 요소를 기준으로 삼으세요.
+- 팀원이 별도의 설명 없이 이해할 수 있는 구체적이고 간결한 표현을 사용하세요.
+
+## 분야별 분석 관점
+
+평가 분야에 따라 다음 관점을 참고하세요.
+
+- 기획: 문제 해결력, 대상 가치, 차별성, 구조의 논리성, 서비스 흐름, 실행 범위
+- 디자인: 사용성, 정보 전달력, 콘셉트 적합성, 시각적 일관성, 제작 가능성
+- 기타 분야: 해당 분야의 목적, 대상 가치, 결과물의 품질과 실행 조건을 분석하여 적합한 관점을 설정
+
+위 항목을 그대로 복사하지 말고, 프로젝트 조건과 등록된 아이디어의 특성에 맞는 평가 기준으로 구체화하세요.
+
+## 입력 검증
+
+- 등록된 아이디어가 없다면, 회의방 생성에 사용되는 회의 주제(방 제목), 한 줄 설명 및 제약 조건, 카테고리의 내용을 반영하여 평가 기준을 생성하세요.
+- 등록된 아이디어가 18개를 초과하면 평가 기준을 생성하지 마세요.
+- 아이디어를 비교하는 데 필요한 정보가 부족하면 임의로 가정하지 마세요.
+- 입력이 유효하지 않은 경우에만 다음과 같이 출력하세요.
+
+\`\`\`text
+입력 정보 확인 필요
+\`\`\`
+
+## 출력 형식
+
+\`\`\`text
+1. 기준명: 1문장의 구체적인 맞춤 평가 설명
+2. 기준명: 1문장의 구체적인 맞춤 평가 설명
+3. 기준명: 1문장의 구체적인 맞춤 평가 설명
+\`\`\`
+
+## 출력 제한
+
+- 평가 기준은 반드시 3개만 작성하세요.
+- 각 기준명은 15자 이내로 작성하세요.
+- 각 기준마다 프로젝트 조건과 아이디어 특성을 반영한 1문장의 구체적인 평가 설명을 작성하세요.
+- 세 기준은 서로 다른 평가 대상을 측정해야 합니다.
+- 이유, 평가 질문, 점수, 가중치, 순위, 서론과 결론은 작성하지 마세요.
+- 입력 정보에 없는 사실을 추측하거나 추가하지 마세요.`;
 
   try {
     let rawResponseText = '';
@@ -1438,11 +1491,11 @@ JSON 출력 예시:
       }
     }
 
-    if (rawResponseText.includes('입력 정보 확인 필요')) {
+    if (rawResponseText.trim() === '입력 정보 확인 필요') {
       return res.status(400).json({ error: '입력 정보 확인 필요' });
     }
 
-    let parsedNames: string[] = [];
+    let parsedItems: { name: string; description: string }[] = [];
 
     // Try parsing JSON format
     try {
@@ -1450,30 +1503,56 @@ JSON 출력 예시:
       if (cleaned.startsWith('[') || cleaned.startsWith('{')) {
         const jsonParsed = JSON.parse(cleaned);
         if (Array.isArray(jsonParsed)) {
-          parsedNames = jsonParsed.map(item => typeof item === 'string' ? item : (item.name || item.title || item.rawText || ''));
+          parsedItems = jsonParsed.map(item => {
+            if (typeof item === 'string') {
+              const parts = item.split(/[:\-\=]/);
+              return {
+                name: (parts[0] || item).trim().slice(0, 15),
+                description: parts[1] ? parts.slice(1).join(':').trim() : `${category} 분야 [${roomTitle}] 맞춤 평가 기준`
+              };
+            }
+            return {
+              name: (item.name || item.title || item.rawText || '맞춤 평가 기준').trim().slice(0, 15),
+              description: item.description || item.desc || `${category} 분야 [${roomTitle}] 맞춤 평가 기준`
+            };
+          });
         }
       }
     } catch (e) {
       // Continue to line parsing
     }
 
-    // Parse line by line "1. 기준명"
-    if (parsedNames.length === 0 && rawResponseText) {
+    // Parse line by line "1. 기준명: 설명"
+    if (parsedItems.length === 0 && rawResponseText) {
       const lines = rawResponseText.split('\n');
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+        if (trimmed.startsWith('```') || trimmed.startsWith('#') || trimmed.includes('입력 정보 확인 필요')) continue;
+
         const cleanedLine = trimmed.replace(/^(\d+[\.\)]|[\*\-])\s*/, '').trim();
-        if (cleanedLine && !cleanedLine.startsWith('#') && !cleanedLine.startsWith('입력 정보')) {
-          parsedNames.push(cleanedLine.slice(0, 15));
+        if (cleanedLine && !cleanedLine.startsWith('```') && !cleanedLine.startsWith('#')) {
+          const colonIndex = cleanedLine.search(/[:\-\=]/);
+          let name = cleanedLine;
+          let desc = '';
+          if (colonIndex > 0) {
+            name = cleanedLine.substring(0, colonIndex).trim();
+            desc = cleanedLine.substring(colonIndex + 1).trim();
+          }
+          if (name) {
+            parsedItems.push({
+              name: name.slice(0, 15),
+              description: desc || `등록된 아이디어 특성 및 [${roomTitle}] 목표 달성에 부합하는지 평가`
+            });
+          }
         }
       }
     }
 
-    if (parsedNames.length >= 3) {
-      const suggestions = parsedNames.slice(0, 3).map(name => ({
-        name: name,
-        description: 'Gemini AI 분석 맞춤 평가 기준 (15자 이내)'
+    if (parsedItems.length >= 3) {
+      const suggestions = parsedItems.slice(0, 3).map((item, idx) => ({
+        name: item.name,
+        description: item.description || `${category} 분야 [${roomTitle}] 핵심 맞춤 평가 기준 #${idx + 1}`
       }));
       return res.json({ suggestions });
     }
