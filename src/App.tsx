@@ -1133,8 +1133,9 @@ export default function App() {
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
   const [isGeneratingAiSuggestions, setIsGeneratingAiSuggestions] = useState(false);
 
-  const autoRegisterAiProposals = (suggestions: any[]) => {
+  const autoRegisterAiProposals = async (suggestions: any[]) => {
     if (!suggestions || suggestions.length === 0 || !activeRoomId) return;
+
     setRoomDetails(prev => {
       if (!prev) return prev;
       const existing = prev.proposals || [];
@@ -1161,16 +1162,37 @@ export default function App() {
       };
     });
 
-    // Background API sync
-    suggestions.forEach(item => {
+    // Background API sync & Supabase DB Direct insertion fallback
+    for (let idx = 0; idx < suggestions.length; idx++) {
+      const item = suggestions[idx];
       const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
-      if (!text) return;
-      fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
-      }).catch(() => {});
-    });
+      if (!text) continue;
+
+      let apiSuccess = false;
+      try {
+        const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
+        });
+        if (res.ok) apiSuccess = true;
+      } catch (e) {}
+
+      // Supabase Direct DB Fallback
+      if (!apiSuccess && activeRoomId && activeRoomId !== 'room-gominhajo') {
+        try {
+          const newPropId = `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`;
+          await supabase.from('criterion_proposals').insert({
+            id: newPropId,
+            room_id: activeRoomId,
+            raw_text: text,
+            proposer_id: 'gemini-ai'
+          });
+        } catch (supaErr) {
+          console.warn('Supabase DB auto proposal insert notice:', supaErr);
+        }
+      }
+    }
   };
 
   // Fetch AI suggested criteria candidates based on registered ideas (Potens AI dynamically analyzing registered ideas)
@@ -1192,8 +1214,8 @@ export default function App() {
         const data = await res.json();
         if (data.suggestions && data.suggestions.length > 0) {
           setAiSuggestedCriteria(data.suggestions);
-          autoRegisterAiProposals(data.suggestions);
-          triggerToast('Gemini AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
+          await autoRegisterAiProposals(data.suggestions);
+          triggerToast('Potens AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
           setIsGeneratingAiSuggestions(false);
           return;
         }
@@ -1205,7 +1227,7 @@ export default function App() {
     // 2. Dynamic Frontend Idea Analyzer based on current room ideas
     const titles = currentIdeas.map(i => i.title).join(', ');
 
-    setTimeout(() => {
+    setTimeout(async () => {
       let dynamicSuggestions: any[] = [];
 
       if (titles.includes('회의록') || titles.includes('마감할인') || titles.includes('건강기록')) {
@@ -1241,8 +1263,8 @@ export default function App() {
       }
 
       setAiSuggestedCriteria(dynamicSuggestions);
-      autoRegisterAiProposals(dynamicSuggestions);
-      triggerToast('Gemini AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
+      await autoRegisterAiProposals(dynamicSuggestions);
+      triggerToast('Potens AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
       setIsGeneratingAiSuggestions(false);
     }, 600);
   };
