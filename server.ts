@@ -1165,19 +1165,26 @@ JSON 출력 예시:
 
     try {
       let rawText = '';
-      const ai = getGeminiClient();
-      if (ai) {
-        try {
-          const resp = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: roomMetadataPrompt,
-            config: { responseMimeType: 'application/json' }
-          });
-          rawText = resp.text || '';
-        } catch (e) {}
+      // 1. Try Potens AI API endpoint first
+      try {
+        rawText = await callPotensAI(roomMetadataPrompt, 'gemini-2.5-flash');
+      } catch (potensErr) {
+        console.warn('Potens AI call failed, fallback to Gemini SDK...', potensErr);
       }
+
+      // 2. Fallback to Gemini SDK if Potens AI fails
       if (!rawText) {
-        try { rawText = await callPotensAI(roomMetadataPrompt, 'gemini-2.5-flash'); } catch (e) {}
+        const ai = getGeminiClient();
+        if (ai) {
+          try {
+            const resp = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: roomMetadataPrompt,
+              config: { responseMimeType: 'application/json' }
+            });
+            rawText = resp.text || '';
+          } catch (e) {}
+        }
       }
 
       if (rawText) {
@@ -1315,26 +1322,26 @@ ${ideasListText}
   try {
     let rawResponseText = '';
 
-    // 1. Try Gemini AI Client (@google/genai)
-    const ai = getGeminiClient();
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt,
-        });
-        rawResponseText = response.text || '';
-      } catch (gErr) {
-        console.warn('Gemini AI SDK call failed, fallback to Potens Gemini proxy...', gErr);
-      }
+    // 1. Try Potens AI API endpoint first
+    try {
+      rawResponseText = await callPotensAI(prompt, 'gemini-2.5-flash');
+    } catch (potensErr) {
+      console.warn('Potens AI call failed, fallback to Gemini SDK...', potensErr);
     }
 
-    // 2. Try Potens Gemini AI Proxy
+    // 2. Fallback to Gemini AI Client (@google/genai) if Potens AI fails
     if (!rawResponseText) {
-      try {
-        rawResponseText = await callPotensAI(prompt, 'gemini-2.5-flash');
-      } catch (potensErr) {
-        console.warn('Potens Gemini proxy failed:', potensErr);
+      const ai = getGeminiClient();
+      if (ai) {
+        try {
+          const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+          });
+          rawResponseText = response.text || '';
+        } catch (gErr) {
+          console.warn('Gemini AI SDK call failed:', gErr);
+        }
       }
     }
 
