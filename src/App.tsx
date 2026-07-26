@@ -4615,110 +4615,221 @@ export default function App() {
       </AnimatePresence>
 
       {/* Final Candidate Vote Modal ("최종 후보 투표하기") */}
+      {/* Final Candidate Vote Modal ("2차 별 스티커 투표하기 모달") */}
       <AnimatePresence>
         {showFinalVoteModal && (
-          <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6 overflow-hidden">
             <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
+              initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-xl w-full shadow-2xl space-y-6 text-left border border-indigo-100 relative overflow-hidden"
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl w-full max-w-2xl max-h-[85vh] md:max-h-[80vh] shadow-2xl flex flex-col border border-indigo-100 relative overflow-hidden text-left"
             >
-              <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-indigo-700" />
+              {/* Top Accent Line */}
+              <div className="h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-indigo-700 shrink-0" />
               
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold border border-amber-200">
-                    🗳️
+              {/* Fixed Header */}
+              <div className="p-5 md:px-6 md:pt-5 md:pb-4 border-b border-slate-100 shrink-0 space-y-3 bg-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold border border-amber-200 shrink-0">
+                      ⭐
+                    </div>
+                    <div>
+                      <h3 className="text-base font-extrabold text-slate-900">4단계 2차 별 스티커 투표</h3>
+                      <p className="text-xs text-slate-500 font-medium">생존한 후보 아이디어 중 최종 결과로 채택할 후보에 별 스티커를 붙여주세요.</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-base font-black text-slate-900">🎉 최종 후보 투표하기</h3>
-                    <p className="text-xs text-slate-500 font-medium">남은 2개 후보 아이디어 중 우승작을 투표해 주십시오.</p>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFinalVoteModal(false)}
+                    className="text-slate-400 hover:text-slate-600 transition p-1 rounded-lg hover:bg-slate-100 shrink-0"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowFinalVoteModal(false)}
-                  className="text-slate-400 hover:text-slate-600 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
 
-              <p className="text-xs text-slate-600 leading-relaxed bg-amber-50/60 p-3.5 rounded-xl border border-amber-200/60 font-medium">
-                💡 방 개설 시 설정한 <strong>최종 결과 수({roomDetails?.room.targetWinnerCount}개)</strong> 기준에 맞춰, 남은 2개 활성 후보 중 최종 우승작으로 채택할 아이디어를 하나 선택하십시오.
-              </p>
-
-              {/* List the 2 active ideas */}
-              <div className="space-y-3">
-                {(roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(idea => {
-                  const isSelected = selectedFinalIdeaId === idea.id;
-                  const stats = roomDetails?.aggregatedScores?.[idea.id];
+                {/* Star Status Display Header Banner */}
+                {(() => {
+                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+                  const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
+                  const currentSelectedCount = isSubmitted ? (roomDetails?.myStarVotes?.length || 0) : mySelectedStarIdeaIds.length;
+                  const remainingStars = targetWinners - currentSelectedCount;
 
                   return (
-                    <div
-                      key={idea.id}
-                      onClick={() => setSelectedFinalIdeaId(idea.id)}
-                      className={`p-4.5 rounded-2xl border transition cursor-pointer flex items-start gap-3.5 ${
-                        isSelected
-                          ? 'bg-indigo-50/70 border-indigo-500 ring-2 ring-indigo-500/20 shadow-sm'
-                          : 'bg-white border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="finalWinnerSelection"
-                        checked={isSelected}
-                        onChange={() => setSelectedFinalIdeaId(idea.id)}
-                        className="mt-1 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <div className="space-y-1 flex-1">
-                        <div className="flex items-center justify-between">
-                          <h4 className="text-sm font-extrabold text-slate-900">{idea.title}</h4>
-                          {stats && (
-                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
-                              {stats.score}점 ({stats.keepCount}표 유지)
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line">
-                          {idea.description}
-                        </p>
-                        <span className="text-[11px] text-slate-400 font-semibold block pt-1">
-                          제안자: {idea.submitterName}
+                    <div className="bg-slate-900 text-white p-3 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-300">최종 결과 목표: <strong className="text-white">{targetWinners}개</strong></span>
+                        <span className="text-slate-600">|</span>
+                        <span className="text-amber-300 font-bold">내 별 스티커: ⭐ {targetWinners}개</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="bg-amber-400/20 text-amber-300 px-2.5 py-0.5 rounded-md font-bold border border-amber-400/30">
+                          사용한 별: <span className="text-white">{currentSelectedCount}개</span>
+                        </span>
+                        <span className="bg-white/10 text-slate-200 px-2.5 py-0.5 rounded-md font-bold border border-white/20">
+                          남은 별: <span className="text-amber-400">{remainingStars}개</span>
                         </span>
                       </div>
                     </div>
                   );
-                })}
+                })()}
               </div>
 
-              <div className="pt-2 flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowFinalVoteModal(false)}
-                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSubmitFinalVote}
-                  disabled={!selectedFinalIdeaId || isSubmittingFinalVote}
-                  className={`flex-1 py-3 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 ${
-                    selectedFinalIdeaId && !isSubmittingFinalVote
-                      ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  }`}
-                >
-                  {isSubmittingFinalVote ? (
-                    <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-                  ) : (
-                    <Sparkles className="w-4 h-4 text-slate-950" />
-                  )}
-                  <span>{isSubmittingFinalVote ? '결과 수집 및 확정 중...' : '투표 완료 및 최종 결과 확정'}</span>
-                </button>
+              {/* Scrollable Middle Candidates List */}
+              <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
+                {(() => {
+                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+                  const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
+                  const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
+
+                  if (activeIdeas.length === 0) {
+                    return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
+                  }
+
+                  return activeIdeas.map(idea => {
+                    const isSelectedByMe = isSubmitted
+                      ? (roomDetails?.myStarVotes || []).includes(idea.id)
+                      : mySelectedStarIdeaIds.includes(idea.id);
+                    const stats = roomDetails?.aggregatedScores?.[idea.id];
+                    const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
+
+                    return (
+                      <div
+                        key={idea.id}
+                        onClick={() => handleToggleStarIdea(idea.id)}
+                        className={`p-4 md:p-4.5 rounded-2xl border transition cursor-pointer flex flex-col space-y-2.5 ${
+                          isSelectedByMe
+                            ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30 shadow-xs'
+                            : 'bg-white border-slate-200 hover:bg-slate-50/80 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1 flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">{idea.title}</h4>
+                              {isSelectedByMe ? (
+                                <span className="text-[10px] font-black text-amber-950 bg-amber-200/90 border border-amber-300/80 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                  ★ 내가 선택한 후보
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  ☆ 선택 전
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-slate-600 leading-normal line-clamp-3 whitespace-pre-line">
+                              {idea.description}
+                            </p>
+                          </div>
+
+                          {/* Star Toggle Display Button */}
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleStarIdea(idea.id);
+                              }}
+                              disabled={isSubmitted}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${
+                                isSelectedByMe
+                                  ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
+                              } disabled:opacity-80 disabled:cursor-not-allowed`}
+                            >
+                              <span className="text-sm">{isSelectedByMe ? '★' : '☆'}</span>
+                              <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
+                            </button>
+
+                            {roomDetails?.room.hostId === userId && totalStarVotes > 0 && (
+                              <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                                ⭐ {totalStarVotes}표 득표
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-100/80">
+                          <span>제안자: {idea.submitterName}</span>
+                          {stats && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
+                              1차 종합점수 {stats.score}점 ({stats.keepCount}표 유지)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
+
+              {/* Fixed Footer with Submission Controls */}
+              {(() => {
+                const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+                const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
+                const currentSelectedCount = isSubmitted ? (roomDetails?.myStarVotes?.length || 0) : mySelectedStarIdeaIds.length;
+                const remainingStars = targetWinners - currentSelectedCount;
+
+                return (
+                  <div className="p-4 md:px-6 border-t border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between gap-3">
+                    <div className="text-xs font-bold text-slate-600 hidden sm:block">
+                      {isSubmitted ? (
+                        <span className="text-emerald-600 flex items-center gap-1">
+                          <Check className="w-4 h-4" />
+                          이미 투표가 제출되었습니다
+                        </span>
+                      ) : (
+                        <span>별 스티커 {remainingStars === 0 ? '완료' : `${remainingStars}개 선택 필요`}</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() => setShowFinalVoteModal(false)}
+                        className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex-1 sm:flex-none"
+                      >
+                        닫기
+                      </button>
+
+                      {!isSubmitted ? (
+                        <button
+                          type="button"
+                          onClick={handleSubmitStarVote}
+                          disabled={remainingStars > 0 || isSubmittingStarVote}
+                          className={`px-5 py-2.5 rounded-xl text-xs font-extrabold transition flex-1 sm:flex-none flex items-center justify-center gap-1.5 shadow-md ${
+                            remainingStars === 0 && !isSubmittingStarVote
+                              ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 cursor-pointer active:scale-95'
+                              : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                          }`}
+                        >
+                          {isSubmittingStarVote ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              제출 중...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>{remainingStars === 0 ? '별 스티커 투표 제출' : `별 ${remainingStars}개 추가 선택 필요`}</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowFinalVoteModal(false)}
+                          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1 flex-1 sm:flex-none"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>투표 제출 완료됨</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </motion.div>
           </div>
         )}
