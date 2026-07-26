@@ -802,6 +802,21 @@ app.post('/api/rooms/:id/pin', (req, res) => {
 });
 
 /**
+ * Update Room Status (Milestone Transition)
+ */
+app.post('/api/rooms/:id/status', (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  const room = rooms.get(id);
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+
+  if (status) {
+    room.status = status as RoomStatus;
+  }
+  res.json({ success: true, status: room.status });
+});
+
+/**
  * 5. Submit an Idea (Public)
  */
 app.post('/api/rooms/:id/ideas', (req, res) => {

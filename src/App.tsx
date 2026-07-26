@@ -415,6 +415,7 @@ export default function App() {
       console.error(e);
     }
     localStorage.setItem('why_not_logged_in', 'false');
+    localStorage.removeItem('why_not_active_room_id');
     setIsLoggedIn(false);
     setActiveRoomId(null);
     triggerToast('로그아웃되었습니다.');
@@ -472,13 +473,16 @@ export default function App() {
     const urlRoomId = params.get('room') || params.get('roomId');
     const urlRole = params.get('role') || 'member';
 
-    if (urlRoomId) {
+    const savedRoomId = localStorage.getItem('why_not_active_room_id');
+    const targetRoomId = urlRoomId || savedRoomId;
+
+    if (targetRoomId) {
       if (urlRole === 'voter') {
         localStorage.setItem('why_not_user_role', 'VOTER');
       } else {
         localStorage.setItem('why_not_user_role', 'MEMBER');
       }
-      handleSelectRoom(urlRoomId, savedId, savedName);
+      handleSelectRoom(targetRoomId, savedId, savedName);
     }
   }, []);
 
@@ -998,6 +1002,48 @@ export default function App() {
     }
   };
 
+  // Force Change Room Status / Milestone (Host or Debug stage selector)
+  const handleForceChangeStatus = async (nextStatus: RoomStatus) => {
+    if (!activeRoomId) return;
+
+    // 1. Instant local UI update
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        room: {
+          ...prev.room,
+          status: nextStatus
+        }
+      };
+    });
+
+    triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
+
+    // 2. Persist to Express API or Supabase DB
+    try {
+      const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus })
+      });
+      if (res.ok) return;
+    } catch (e) {
+      console.warn('Express status API unreachable, persisting to Supabase...');
+    }
+
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('rooms')
+          .update({ status: nextStatus })
+          .eq('id', activeRoomId);
+      }
+    } catch (supaErr) {
+      console.error('Supabase status update error:', supaErr);
+    }
+  };
+
   // Target pending room selection
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
@@ -1017,6 +1063,7 @@ export default function App() {
     }
 
     setActiveRoomId(id);
+    localStorage.setItem('why_not_active_room_id', id);
     const uId = customUserId || userId;
     const nick = customNickname || currentSavedNickname || nickname;
     try {
@@ -2065,47 +2112,7 @@ export default function App() {
     }
   };
 
-  // Helper to change status manually (Host bypass)
-  const handleForceChangeStatus = async (status: RoomStatus) => {
-    // 1. Instant local UI state update
-    if (roomDetails) {
-      setRoomDetails({
-        ...roomDetails,
-        room: {
-          ...roomDetails.room,
-          status: status
-        }
-      });
-    }
 
-    triggerToast(`방 상태를 [${status}]로 변경했습니다.`);
-
-    // 2. Persist to API or Supabase DB in background
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-      if (res.ok && activeRoomId !== 'room-gominhajo') {
-        fetchRoomDetails(activeRoomId!);
-        return;
-      }
-    } catch (err) {
-      console.warn('Express API unavailable, status updated locally.');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: status })
-          .eq('id', activeRoomId);
-      }
-    } catch (supaErr) {
-      console.error('Supabase status update error:', supaErr);
-    }
-  };
 
   // Utility to copy share link (URL에 roomId 포함하여 링크 복사)
   const copyShareLink = () => {
