@@ -1059,6 +1059,10 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
   });
 
+  // Calculate unique participants who have submitted 1 or more ideas
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
+  const completedParticipantsCount = uniqueSubmitters.size;
+
   // Determine starVoteStatus using unique submitters count (uniqueSubmitters.size)
   const targetThreshold = uniqueSubmitters.size || 1;
   let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
@@ -1076,10 +1080,6 @@ app.get('/api/rooms/:id', async (req, res) => {
       }
     }
   }
-
-  // Calculate unique participants who have submitted 1 or more ideas
-  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
-  const completedParticipantsCount = uniqueSubmitters.size;
 
   const result: RoomDetails = {
     room,
@@ -2040,7 +2040,7 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
   const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
 
   // Determine total required participants: unique submitters count (completed participants)
-  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
   const requiredCount = uniqueSubmitters.size || 1;
   const currentVoteCount = rStarVotes.size;
 
@@ -2163,7 +2163,7 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
   }
 
   // Quorum equals unique submitters count (completed participants)
-  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
   const targetThreshold = uniqueSubmitters.size || 1;
   const currentCount = rStarVotes.size;
 

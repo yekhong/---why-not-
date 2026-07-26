@@ -696,12 +696,21 @@ export default function App() {
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
 
+    console.log(`[SYNC] 회의 정보 조회 시작 (roomId: ${id})`);
+
+    // 10-second timeout controller to prevent infinite loading
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     let isFetched = false;
 
     try {
-      const res = await fetch(`/api/rooms/${id}?userId=${userId}`);
+      const res = await fetch(`/api/rooms/${id}?userId=${userId}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
+        console.log(`[SYNC] 회의 정보 조회 완료. 현재 단계: ${data?.room?.status}, 아이디어 수: ${data?.ideas?.length}`);
+        console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
         setRoomDetails(data);
         if (data.room.status === 'CRITERIA_REVIEW') {
           setEditableCriteria(data.criteria || []);
@@ -711,13 +720,22 @@ export default function App() {
           hasShownWinnerModalRef.current.add(data.room.id);
           setShowWinnerModal(true);
         }
+        console.log('[SYNC] 현재 단계 적용 완료');
         isFetched = true;
+      } else {
+        console.warn(`[SYNC ERROR] Express backend responded with status: ${res.status}`);
       }
-    } catch (err) {
-      console.warn('Express backend fetchRoomDetails failed, reading from Supabase DB...');
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        console.error('[SYNC ERROR] 10초 데이터 조회 타임아웃 발생');
+      } else {
+        console.warn('[SYNC ERROR] Express backend fetchRoomDetails failed, reading from Supabase DB...', err);
+      }
     }
 
     if (isFetched) {
+      console.log('[SYNC] 초기 로딩 종료 (Express 성공)');
       setLoading(false);
       setRefreshing(false);
       return;
@@ -725,6 +743,7 @@ export default function App() {
 
     // Special fallback for room-gominhajo
     if (id === 'room-gominhajo') {
+      console.log('[SYNC] Default gominhajo room fallback applied');
       setRoomDetails(prev => {
         if (prev && prev.room.id === 'room-gominhajo') {
           return prev;
@@ -745,11 +764,16 @@ export default function App() {
         .single();
 
       if (roomErr || !roomData) throw new Error('방을 찾을 수 없습니다.');
+      console.log('[SYNC] Supabase DB 방 정보 조회 완료');
 
       const { data: ideasData } = await supabase.from('ideas').select('*').eq('room_id', id);
+      console.log(`[SYNC] Supabase DB 아이디어 조회 완료 (${ideasData?.length || 0}개)`);
+
       const { data: criteriaData } = await supabase.from('criteria').select('*').eq('room_id', id);
       const { data: proposalsData } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
       const { data: participantsData } = await supabase.from('participants').select('*').eq('room_id', id);
+      console.log(`[SYNC] Supabase DB 참여자 조회 완료 (${participantsData?.length || 0}명)`);
+
       const { data: evaluationsData } = await supabase.from('evaluations').select('*').eq('room_id', id);
 
       const roomObj: Room = {
@@ -809,12 +833,19 @@ export default function App() {
 
       const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id));
 
+      // Calculate unique submitters with fallbacks
+      const uniqueSubmitters = new Set(
+        mappedIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean)
+      );
+      console.log(`[SYNC] Supabase DB 고유 참여자 계산 완료 (${uniqueSubmitters.size}명)`);
+
       const dataObj: RoomDetails = {
         room: roomObj,
         ideas: mappedIdeas,
         criteria: mappedCriteria,
         proposals: mappedProposals,
         proposalsCount: mappedProposals.length,
+        completedParticipantsCount: uniqueSubmitters.size,
         participants: mappedParticipants,
         rounds: [],
         evaluatorsCount: uniqueEvaluators.size || (participantsData || []).length || 1,
@@ -838,10 +869,12 @@ export default function App() {
       if (roomObj.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
         setEditableCriteria(mappedCriteria);
       }
+      console.log('[SYNC] 현재 단계 적용 완료');
     } catch (supaErr) {
-      console.error('Supabase fetchRoomDetails failed:', supaErr);
+      console.error('[SYNC ERROR] Supabase fetchRoomDetails failed:', supaErr);
       triggerToast('방 정보를 불러오는 데 실패했습니다.', 'error');
     } finally {
+      console.log('[SYNC] 초기 로딩 종료');
       setLoading(false);
       setRefreshing(false);
     }
@@ -2882,15 +2915,15 @@ export default function App() {
                 </div>
                 <div className="space-y-1">
                   <h3 className="text-base font-extrabold text-slate-900">회의 정보를 불러오지 못했습니다.</h3>
-                  <p className="text-xs text-slate-500">네트워크 상태를 확인하신 후 다시 시도해주세요.</p>
+                  <p className="text-xs text-slate-500">기존 데이터는 유지되어 있습니다. 다시 시도해 주세요.</p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => fetchRoomDetails(activeRoomId)}
-                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5"
+                  onClick={() => activeRoomId && fetchRoomDetails(activeRoomId)}
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  <span>다시 시도하기</span>
+                  <span>다시 시도</span>
                 </button>
               </div>
             )}
