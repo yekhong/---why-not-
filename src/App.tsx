@@ -1052,6 +1052,17 @@ export default function App() {
       return;
     }
 
+    // Check duplicate idea title or description
+    const existingIdeas = roomDetails.ideas || [];
+    const trimmedTitle = ideaTitle.trim();
+    const trimmedDesc = ideaDesc.trim();
+    const isDupTitle = existingIdeas.some(i => i.title && i.title.trim() === trimmedTitle);
+    const isDupDesc = trimmedDesc && existingIdeas.some(i => i.description && i.description.trim() === trimmedDesc);
+    if (isDupTitle || isDupDesc) {
+      triggerToast('⚠️ 동일한 내용의 아이디어가 등록되어 있습니다.', 'error');
+      return;
+    }
+
     // Generate anonymous label (e.g. "익명 아이디어 #1", "익명 아이디어 #2")
     const nextAnonIndex = (roomDetails.ideas || []).length + 1;
     const anonLabel = `익명 아이디어 #${nextAnonIndex}`;
@@ -1300,6 +1311,15 @@ export default function App() {
 
     // Check user max 3 limit
     const existingProposals = roomDetails.proposals || [];
+
+    // Check duplicate content
+    const trimmedInput = textToSubmit.trim();
+    const isDuplicate = existingProposals.some(p => p.rawText && p.rawText.trim() === trimmedInput);
+    if (isDuplicate) {
+      triggerToast('⚠️ 동일한 내용의 기준이 등록되어 있습니다.', 'error');
+      return;
+    }
+
     const myProposals = existingProposals.filter(p => p.proposerId === userId);
     if (myProposals.length >= 3) {
       triggerToast('⚠️ 기준 제안은 1인당 최대 3개까지만 가능합니다.', 'error');

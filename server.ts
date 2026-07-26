@@ -1007,6 +1007,16 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
   // If the same user wants to edit their idea before submission closes:
   const existingIdeaIndex = roomIdeas.findIndex(i => i.submitterId === submitterId && i.id === req.body.id);
   
+  if (existingIdeaIndex < 0) {
+    const trimmedTitle = title.trim();
+    const trimmedDesc = description ? description.trim() : '';
+    const isDupTitle = roomIdeas.some(i => i.title.trim() === trimmedTitle);
+    const isDupDesc = trimmedDesc && roomIdeas.some(i => i.description && i.description.trim() === trimmedDesc);
+    if (isDupTitle || isDupDesc) {
+      return res.status(400).json({ error: '동일한 내용의 아이디어가 등록되어 있습니다.' });
+    }
+  }
+  
   const newIdea: Idea = {
     id: req.body.id || `idea-${Math.random().toString(36).substr(2, 9)}`,
     roomId: id,
@@ -1396,7 +1406,7 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   // Prevent duplicate proposal content
   const existingDup = proposals.find(p => p.rawText.trim() === trimmedText);
   if (existingDup) {
-    return res.status(200).json(existingDup);
+    return res.status(400).json({ error: '동일한 내용의 기준이 등록되어 있습니다.' });
   }
 
   if (proposerId) {
