@@ -1376,8 +1376,7 @@ export default function App() {
         const data = await res.json();
         if (data.suggestions && data.suggestions.length > 0) {
           setAiSuggestedCriteria(data.suggestions);
-          await autoRegisterAiProposals(data.suggestions);
-          triggerToast('Potens AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
+          triggerToast('Potens AI가 3가지 평가 기준을 생성했습니다. 아래에서 원하는 기준을 제안하세요!');
           setIsGeneratingAiSuggestions(false);
           return;
         }
@@ -1425,8 +1424,7 @@ export default function App() {
       }
 
       setAiSuggestedCriteria(dynamicSuggestions);
-      await autoRegisterAiProposals(dynamicSuggestions);
-      triggerToast('Potens AI가 추천한 기준 3개가 제안 목록에 즉시 반영되었습니다!');
+      triggerToast('Potens AI가 3가지 평가 기준을 생성했습니다. 아래에서 원하는 기준을 제안하세요!');
       setIsGeneratingAiSuggestions(false);
     }, 600);
   };
@@ -3166,27 +3164,53 @@ export default function App() {
                               </button>
                             </div>
                             <p className="text-xs text-slate-300 leading-relaxed">
-                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 추천된 기준은 제안 목록에 자동 반영됩니다.
+                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 마음에 드는 기준을 선택하여 제안 목록에 추가할 수 있습니다.
                             </p>
 
                             {aiSuggestedCriteria.length > 0 && (
                               <div className="space-y-2 pt-1">
-                                {aiSuggestedCriteria.map((item, idx) => (
-                                  <div
-                                    key={idx}
-                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left"
-                                  >
-                                    <div className="space-y-0.5 min-w-0">
-                                      <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
-                                        <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-                                        {item.name}
-                                      </h4>
-                                      <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
-                                        {item.description}
-                                      </p>
+                                {aiSuggestedCriteria.map((item, idx) => {
+                                  const text = `${item.name}${item.description ? `: ${item.description}` : ''}`;
+                                  const existingProposals = roomDetails?.proposals || [];
+                                  const isAlreadyAdded = existingProposals.some(p => p.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === item.name.trim()));
+                                  const isMaxLimitReached = myProposalsCount >= 3;
+
+                                  return (
+                                    <div
+                                      key={idx}
+                                      className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left flex items-center justify-between gap-3"
+                                    >
+                                      <div className="space-y-0.5 min-w-0 flex-1">
+                                        <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
+                                          <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                          {item.name}
+                                        </h4>
+                                        <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
+                                          {item.description}
+                                        </p>
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        disabled={isAlreadyAdded || isMaxLimitReached}
+                                        onClick={() => handleProposeCriterion(undefined, text)}
+                                        className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
+                                      >
+                                        {isAlreadyAdded ? (
+                                          <>
+                                            <Check className="w-3 h-3" />
+                                            제안 완료
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Plus className="w-3 h-3" />
+                                            제안하기
+                                          </>
+                                        )}
+                                      </button>
                                     </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
