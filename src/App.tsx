@@ -2347,15 +2347,19 @@ export default function App() {
     // Compute center angle of the chosen candidate sector
     const sliceCenterAngle = randomIndex * sliceAngle + sliceAngle / 2;
 
-    // Add safe random jitter within sector (+/- 35% of half-slice) to avoid exact border and exact static feel while staying inside sector
-    const maxJitter = (sliceAngle / 2) * 0.7;
-    const randomJitter = (Math.random() - 0.5) * maxJitter;
+    // Add safe random jitter strictly inside sector (keeping >= 20% margin from borders)
+    const marginRatio = 0.20; // 20% margin from left and right borders of sector
+    const safeHalfWidth = (sliceAngle / 2) * (1 - 2 * marginRatio);
+    const randomJitter = (Math.random() - 0.5) * 2 * safeHalfWidth;
 
     // Target stopping angle relative to top pointer (12 o'clock = 0 deg)
     const targetSectorStopAngle = sliceCenterAngle + randomJitter;
 
-    // Calculate base rotation to align target angle to top pointer (360 - targetSectorStopAngle)
-    const normalizedStopAngle = (360 - targetSectorStopAngle + 360) % 360;
+    // SVG -rotate-90 offset adjustment: SVG start angle 0 is at 3 o'clock (-90 deg offset)
+    const svgPointerStopAngle = (targetSectorStopAngle - 90 + 360) % 360;
+
+    // Calculate base rotation to align target angle to top pointer (360 - svgPointerStopAngle)
+    const normalizedStopAngle = (360 - svgPointerStopAngle + 360) % 360;
 
     // Calculate next cumulative rotation (minimum 5 full extra spins = 1800 deg)
     const currentRot = rouletteRotation;
@@ -4644,42 +4648,85 @@ export default function App() {
               </div>
 
               {/* Roulette Graphical Wheel */}
-              <div className="relative w-56 h-56 mx-auto my-4 flex items-center justify-center">
-                {/* Top Pointer Arrow */}
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 w-0 h-0 border-l-[12px] border-l-transparent border-r-[12px] border-r-transparent border-t-[18px] border-t-rose-600 drop-shadow-md" />
+              <div className="relative w-60 h-60 mx-auto my-4 flex items-center justify-center">
+                {/* Top Pointer Arrow (Points to 12 o'clock = 0 deg) */}
+                <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-30 w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[22px] border-t-rose-600 drop-shadow-lg" />
 
                 {/* Spinning Wheel Disk */}
                 <div
-                  className="w-full h-full rounded-full border-4 border-slate-900 shadow-xl overflow-hidden relative transition-all ease-out"
+                  className="w-full h-full rounded-full border-4 border-slate-900 shadow-xl overflow-hidden relative transition-transform ease-out"
                   style={{
                     transform: `rotate(${rouletteRotation}deg)`,
                     transitionDuration: isSpinningRoulette ? '3.5s' : '0s'
                   }}
                 >
-                  {rouletteCandidateIdeas.map((candidate, idx) => {
-                    const total = rouletteCandidateIdeas.length;
-                    const rotateAngle = (360 / total) * idx;
-                    const colors = ['bg-indigo-600 text-white', 'bg-amber-400 text-slate-950', 'bg-emerald-600 text-white', 'bg-rose-500 text-white'];
-                    const colorClass = colors[idx % colors.length];
+                  <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+                    {(() => {
+                      const total = rouletteCandidateIdeas.length;
+                      const sliceAngle = 360 / total;
+                      const colorPalette = [
+                        '#4f46e5', // indigo-600
+                        '#fbbf24', // amber-400
+                        '#059669', // emerald-600
+                        '#e11d48', // rose-600
+                        '#8b5cf6', // violet-600
+                        '#0284c7'  // sky-600
+                      ];
 
-                    return (
-                      <div
-                        key={candidate.id || idx}
-                        className={`absolute w-1/2 h-1/2 top-0 right-0 origin-bottom-left flex items-center justify-center p-2 text-[10px] font-extrabold text-center select-none border border-white/20 ${colorClass}`}
-                        style={{
-                          transform: `rotate(${rotateAngle}deg)`
-                        }}
-                      >
-                        <span className="transform -rotate-45 block truncate max-w-[80px]">
-                          {candidate.title}
-                        </span>
-                      </div>
-                    );
-                  })}
+                      return rouletteCandidateIdeas.map((candidate, idx) => {
+                        const startAngle = idx * sliceAngle;
+                        const endAngle = (idx + 1) * sliceAngle;
+                        const midAngle = startAngle + sliceAngle / 2;
+
+                        // Calculate SVG Arc coordinates (radius = 50, center = 50, 50)
+                        const startRad = (Math.PI * startAngle) / 180;
+                        const endRad = (Math.PI * endAngle) / 180;
+                        const midRad = (Math.PI * midAngle) / 180;
+
+                        const x1 = 50 + 50 * Math.cos(startRad);
+                        const y1 = 50 + 50 * Math.sin(startRad);
+                        const x2 = 50 + 50 * Math.cos(endRad);
+                        const y2 = 50 + 50 * Math.sin(endRad);
+
+                        const largeArcFlag = sliceAngle > 180 ? 1 : 0;
+                        const pathData = total === 1 
+                          ? 'M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0'
+                          : `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+
+                        // Text position at 68% radius
+                        const textX = 50 + 32 * Math.cos(midRad);
+                        const textY = 50 + 32 * Math.sin(midRad);
+
+                        return (
+                          <g key={candidate.id || idx}>
+                            <path
+                              d={pathData}
+                              fill={colorPalette[idx % colorPalette.length]}
+                              stroke="#ffffff"
+                              strokeWidth="1.5"
+                            />
+                            <text
+                              x={textX}
+                              y={textY}
+                              fill="#ffffff"
+                              fontSize={total > 4 ? "4.5" : "5.5"}
+                              fontWeight="900"
+                              textAnchor="middle"
+                              dominantBaseline="central"
+                              transform={`rotate(${midAngle + 90}, ${textX}, ${textY})`}
+                              className="select-none font-sans drop-shadow-xs"
+                            >
+                              {candidate.title.length > 8 ? candidate.title.slice(0, 7) + '..' : candidate.title}
+                            </text>
+                          </g>
+                        );
+                      });
+                    })()}
+                  </svg>
                 </div>
 
                 {/* Center Hub Button */}
-                <div className="absolute w-12 h-12 bg-slate-900 text-white rounded-full border-2 border-white shadow-md flex items-center justify-center font-black text-xs z-10">
+                <div className="absolute w-12 h-12 bg-slate-900 text-white rounded-full border-2 border-white shadow-md flex items-center justify-center font-black text-xs z-20 pointer-events-none">
                   🎯
                 </div>
               </div>
