@@ -1059,8 +1059,8 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
   });
 
-  // Determine starVoteStatus using submitted ideas count (roomIdeas.length)
-  const targetThreshold = roomIdeas.length || 1;
+  // Determine starVoteStatus using unique submitters count (uniqueSubmitters.size)
+  const targetThreshold = uniqueSubmitters.size || 1;
   let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
   if (room.status === 'CLOSED') {
     starVoteStatus = 'finalized';
@@ -1077,12 +1077,17 @@ app.get('/api/rooms/:id', async (req, res) => {
     }
   }
 
+  // Calculate unique participants who have submitted 1 or more ideas
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
+  const completedParticipantsCount = uniqueSubmitters.size;
+
   const result: RoomDetails = {
     room,
     ideas: roomIdeas,
     criteria: roomCriteria,
     proposals: roomProposals,
     proposalsCount: roomProposals.length,
+    completedParticipantsCount,
     rounds: roomRounds,
     evaluatorsCount,
     myEvaluations,
@@ -2034,8 +2039,9 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
   const roomIdeas = ideas.get(roomId) || [];
   const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
 
-  // Determine total required participants: submitted ideas count (roomIdeas.length)
-  const requiredCount = roomIdeas.length || 1;
+  // Determine total required participants: unique submitters count (completed participants)
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
+  const requiredCount = uniqueSubmitters.size || 1;
   const currentVoteCount = rStarVotes.size;
 
   if (currentVoteCount < requiredCount) {
@@ -2156,8 +2162,9 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
     starVotesMap.set(id, rStarVotes);
   }
 
-  // Quorum equals submitted ideas count (roomIdeas.length)
-  const targetThreshold = roomIdeas.length || 1;
+  // Quorum equals unique submitters count (completed participants)
+  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId).filter(Boolean));
+  const targetThreshold = uniqueSubmitters.size || 1;
   const currentCount = rStarVotes.size;
 
   if (currentCount >= targetThreshold) {

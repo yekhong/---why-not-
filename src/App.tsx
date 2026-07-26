@@ -2999,7 +2999,9 @@ export default function App() {
                         <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
                           <span>📊 등록 완료 현황판:</span>
                           <span className="text-indigo-600 font-extrabold">
-                            {(roomDetails.ideas || []).length} / {roomDetails.room.maxParticipants || 6}명 완료
+                            {roomDetails.completedParticipantsCount !== undefined 
+                              ? roomDetails.completedParticipantsCount 
+                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room.maxParticipants || 6}명 완료
                           </span>
                         </div>
                         <button
@@ -4030,7 +4032,9 @@ export default function App() {
 
                           {/* 🧪 Test Assist Box for 4단계 Star Voting Simulation */}
                           {(() => {
-                            const rParticipantsCount = (roomDetails.ideas || []).length || 1;
+                            const rParticipantsCount = roomDetails.completedParticipantsCount !== undefined
+                              ? roomDetails.completedParticipantsCount
+                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size || 1;
                             const currentStarCount = roomDetails.starVoteCount || 0;
                             const neededCount = Math.max(0, rParticipantsCount - currentStarCount);
 

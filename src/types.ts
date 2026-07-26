@@ -111,6 +111,7 @@ export interface RoomDetails {
   criteria: Criterion[];
   proposals?: CriterionProposal[];
   proposalsCount: number;
+  completedParticipantsCount?: number; // count of unique participants who submitted 1 or more ideas
   participants?: Participant[];
   rounds: EliminationRound[];
   evaluatorsCount: number;
