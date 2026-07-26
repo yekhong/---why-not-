@@ -351,6 +351,14 @@ export default function App() {
   const [ideaPdfName, setIdeaPdfName] = useState('');
   const [ideaTags, setIdeaTags] = useState('');
 
+  // Editing Idea state
+  const [editingIdeaId, setEditingIdeaId] = useState<string | null>(null);
+  const [editIdeaTitle, setEditIdeaTitle] = useState('');
+  const [editIdeaDesc, setEditIdeaDesc] = useState('');
+  const [editIdeaLink, setEditIdeaLink] = useState('');
+  const [editIdeaPdfName, setEditIdeaPdfName] = useState('');
+
+
   // Submitting Proposal
   const [proposalText, setProposalText] = useState('');
 
@@ -1139,6 +1147,131 @@ export default function App() {
     setIdeaTags('');
     fetchRoomDetails(activeRoomId!);
   };
+
+  // Update Idea Handler
+  const handleUpdateIdea = async (ideaId: string) => {
+    if (!editIdeaTitle.trim()) {
+      triggerToast('아이디어 제목을 입력해 주세요.', 'error');
+      return;
+    }
+    if (!editIdeaDesc.trim()) {
+      triggerToast('아이디어 상세 설명을 입력해 주세요.', 'error');
+      return;
+    }
+
+    let updatedSuccess = false;
+
+    // Try Express backend endpoint first
+    try {
+      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editIdeaTitle.trim(),
+          description: editIdeaDesc.trim(),
+          attachmentUrl: editIdeaLink.trim(),
+          pdfAttachmentUrl: editIdeaPdfName.trim(),
+          submitterId: userId,
+        }),
+      });
+      if (res.ok) updatedSuccess = true;
+    } catch (e) {
+      console.warn('Express API server unaccessible for edit, trying direct Supabase update...', e);
+    }
+
+    // Supabase DB Direct update fallback
+    if (!updatedSuccess) {
+      try {
+        const { error: supaErr } = await supabase
+          .from('ideas')
+          .update({
+            title: editIdeaTitle.trim(),
+            description: editIdeaDesc.trim(),
+            attachment_url: editIdeaLink.trim() || null,
+            pdf_attachment_url: editIdeaPdfName.trim() || null,
+          })
+          .eq('id', ideaId)
+          .eq('submitter_id', userId);
+
+        if (supaErr) throw supaErr;
+        updatedSuccess = true;
+      } catch (err: any) {
+        console.error('Supabase DB update idea error:', err);
+        triggerToast(`아이디어 수정 도중 오류가 발생했습니다: ${err.message}`, 'error');
+        return;
+      }
+    }
+
+    // Update local roomDetails state if gominhajo or direct state match
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ideas: prev.ideas.map(i => i.id === ideaId ? {
+          ...i,
+          title: editIdeaTitle.trim(),
+          description: editIdeaDesc.trim(),
+          attachmentUrl: editIdeaLink.trim(),
+          pdfAttachmentUrl: editIdeaPdfName.trim(),
+        } : i)
+      };
+    });
+
+    triggerToast('아이디어가 성공적으로 수정되었습니다.');
+    setEditingIdeaId(null);
+    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+  };
+
+  // Delete Idea Handler
+  const handleDeleteIdea = async (ideaId: string) => {
+    if (!window.confirm('정말 삭제하시겠습니까?')) {
+      return;
+    }
+
+    let deletedSuccess = false;
+
+    // Try Express backend endpoint first
+    try {
+      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}?submitterId=${userId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) deletedSuccess = true;
+    } catch (e) {
+      console.warn('Express API server unaccessible for delete, trying direct Supabase deletion...', e);
+    }
+
+    // Supabase DB Direct deletion fallback
+    if (!deletedSuccess) {
+      try {
+        const { error: supaErr } = await supabase
+          .from('ideas')
+          .delete()
+          .eq('id', ideaId)
+          .eq('submitter_id', userId);
+
+        if (supaErr) throw supaErr;
+        deletedSuccess = true;
+      } catch (err: any) {
+        console.error('Supabase DB delete idea error:', err);
+        triggerToast(`아이디어 삭제 도중 오류가 발생했습니다: ${err.message}`, 'error');
+        return;
+      }
+    }
+
+    // Update local roomDetails state
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ideas: prev.ideas.filter(i => i.id !== ideaId)
+      };
+    });
+
+    triggerToast('아이디어가 삭제되었습니다.');
+    if (editingIdeaId === ideaId) setEditingIdeaId(null);
+    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+  };
+
 
   // AI Suggested Criteria state
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
@@ -2714,35 +2847,155 @@ export default function App() {
                           </div>
                         ) : (
                           <div className="space-y-4">
-                            {roomDetails.ideas.map((idea, idx) => (
-                              <motion.div
-                                key={idea.id}
-                                className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <h3 className="text-base font-bold text-slate-950">{idea.title}</h3>
-                                  <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full flex items-center gap-1">
-                                    <User className="w-3 h-3 text-indigo-400" />
-                                    {idea.submitterName || `익명 아이디어 #${idx + 1}`}
-                                  </span>
-                                </div>
-                                <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
-                                  {idea.description}
-                                </p>
-                                <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500 pt-1">
-                                  {idea.attachmentUrl && (
-                                    <div>
-                                      🔗 참고 링크: <a href={idea.attachmentUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline hover:text-indigo-800">{idea.attachmentUrl}</a>
+                            {roomDetails.ideas.map((idea, idx) => {
+                              const isMyIdea = idea.submitterId === userId;
+                              const isEditingThis = editingIdeaId === idea.id;
+
+                              if (isEditingThis) {
+                                return (
+                                  <motion.div
+                                    key={idea.id}
+                                    className="bg-white p-5 rounded-xl border border-indigo-200 shadow-md space-y-4"
+                                  >
+                                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                      <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-1.5">
+                                        <Edit className="w-4 h-4 text-indigo-600" />
+                                        아이디어 수정하기
+                                      </h3>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingIdeaId(null)}
+                                        className="text-xs font-semibold text-slate-400 hover:text-slate-600"
+                                      >
+                                        취소
+                                      </button>
                                     </div>
-                                  )}
-                                  {idea.pdfAttachmentUrl && (
-                                    <div>
-                                      📄 참고 파일 (PDF/PNG): <span className="text-slate-800 underline font-bold">{idea.pdfAttachmentUrl}</span>
+
+                                    <div className="space-y-3">
+                                      <div className="space-y-1">
+                                        <label className="text-xs font-bold text-slate-700">아이디어 제목 <span className="text-rose-500">*</span></label>
+                                        <input
+                                          type="text"
+                                          value={editIdeaTitle}
+                                          onChange={e => setEditIdeaTitle(e.target.value)}
+                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                        />
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
+                                        <textarea
+                                          value={editIdeaDesc}
+                                          onChange={e => setEditIdeaDesc(e.target.value)}
+                                          rows={4}
+                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                        />
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
+                                        <input
+                                          type="url"
+                                          value={editIdeaLink}
+                                          onChange={e => setEditIdeaLink(e.target.value)}
+                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                        />
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
+                                        <input
+                                          type="file"
+                                          accept=".pdf,.png"
+                                          onChange={e => {
+                                            const file = e.target.files?.[0];
+                                            if (file) setEditIdeaPdfName(file.name);
+                                          }}
+                                          className="w-full text-xs text-slate-500 file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                                        />
+                                      </div>
                                     </div>
-                                  )}
-                                </div>
-                              </motion.div>
-                            ))}
+
+                                    <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingIdeaId(null)}
+                                        className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-200 transition"
+                                      >
+                                        취소
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateIdea(idea.id)}
+                                        className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
+                                      >
+                                        저장
+                                      </button>
+                                    </div>
+                                  </motion.div>
+                                );
+                              }
+
+                              return (
+                                <motion.div
+                                  key={idea.id}
+                                  className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3"
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <h3 className="text-base font-bold text-slate-950">{idea.title}</h3>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full flex items-center gap-1">
+                                        <User className="w-3 h-3 text-indigo-400" />
+                                        {idea.submitterName || `익명 아이디어 #${idx + 1}`}
+                                      </span>
+                                      {isMyIdea && (
+                                        <div className="flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setEditingIdeaId(idea.id);
+                                              setEditIdeaTitle(idea.title || '');
+                                              setEditIdeaDesc(idea.description || '');
+                                              setEditIdeaLink(idea.attachmentUrl || '');
+                                              setEditIdeaPdfName(idea.pdfAttachmentUrl || '');
+                                            }}
+                                            className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-lg border border-slate-200 flex items-center gap-1 transition"
+                                            title="수정"
+                                          >
+                                            <Edit2 className="w-3 h-3" />
+                                            수정
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteIdea(idea.id)}
+                                            className="px-2 py-1 text-xs font-medium text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-100 flex items-center gap-1 transition"
+                                            title="삭제"
+                                          >
+                                            <Trash2 className="w-3 h-3" />
+                                            삭제
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
+                                    {idea.description}
+                                  </p>
+                                  <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500 pt-1">
+                                    {idea.attachmentUrl && (
+                                      <div>
+                                        🔗 참고 링크: <a href={idea.attachmentUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline hover:text-indigo-800">{idea.attachmentUrl}</a>
+                                      </div>
+                                    )}
+                                    {idea.pdfAttachmentUrl && (
+                                      <div>
+                                        📄 참고 파일 (PDF/PNG): <span className="text-slate-800 underline font-bold">{idea.pdfAttachmentUrl}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </motion.div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>

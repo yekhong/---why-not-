@@ -850,6 +850,64 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
 });
 
 /**
+ * Update an Idea (Public / Owner only)
+ */
+app.put('/api/rooms/:id/ideas/:ideaId', (req, res) => {
+  const { id, ideaId } = req.params;
+  const { title, description, submitterId, attachmentUrl, pdfAttachmentUrl, tags } = req.body;
+
+  const roomIdeas = ideas.get(id) || [];
+  const existingIdeaIndex = roomIdeas.findIndex(i => i.id === ideaId);
+
+  if (existingIdeaIndex === -1) {
+    return res.status(404).json({ error: '아이디어를 찾을 수 없습니다.' });
+  }
+
+  const existingIdea = roomIdeas[existingIdeaIndex];
+  if (existingIdea.submitterId !== submitterId) {
+    return res.status(403).json({ error: '작성자 본인만 수정할 수 있습니다.' });
+  }
+
+  const updatedIdea: Idea = {
+    ...existingIdea,
+    title: title || existingIdea.title,
+    description: description !== undefined ? description : existingIdea.description,
+    attachmentUrl: attachmentUrl !== undefined ? attachmentUrl : existingIdea.attachmentUrl,
+    pdfAttachmentUrl: pdfAttachmentUrl !== undefined ? pdfAttachmentUrl : existingIdea.pdfAttachmentUrl,
+    tags: Array.isArray(tags) ? tags : existingIdea.tags,
+  };
+
+  roomIdeas[existingIdeaIndex] = updatedIdea;
+  ideas.set(id, roomIdeas);
+  res.json(updatedIdea);
+});
+
+/**
+ * Delete an Idea (Public / Owner only)
+ */
+app.delete('/api/rooms/:id/ideas/:ideaId', (req, res) => {
+  const { id, ideaId } = req.params;
+  const submitterId = req.query.submitterId as string || req.body.submitterId;
+
+  const roomIdeas = ideas.get(id) || [];
+  const existingIdeaIndex = roomIdeas.findIndex(i => i.id === ideaId);
+
+  if (existingIdeaIndex === -1) {
+    return res.status(404).json({ error: '아이디어를 찾을 수 없습니다.' });
+  }
+
+  const existingIdea = roomIdeas[existingIdeaIndex];
+  if (submitterId && existingIdea.submitterId !== submitterId) {
+    return res.status(403).json({ error: '작성자 본인만 삭제할 수 있습니다.' });
+  }
+
+  roomIdeas.splice(existingIdeaIndex, 1);
+  ideas.set(id, roomIdeas);
+  res.json({ success: true, deletedId: ideaId });
+});
+
+
+/**
  * Health Check
  */
 app.get('/api/health', (req, res) => {
