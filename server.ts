@@ -1389,7 +1389,7 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   }
 
   const newProposal: CriterionProposal = {
-    id: `prop-${Math.random().toString(36).substr(2, 9)}`,
+    id: req.body.id || `prop-${Math.random().toString(36).substr(2, 9)}`,
     roomId: id,
     rawText: rawText.trim(),
     proposerId: proposerId || 'anon'
@@ -1398,7 +1398,41 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   proposals.push(newProposal);
   criterionProposals.set(id, proposals);
 
-  res.status(201).json({ success: true, count: proposals.length });
+  res.status(201).json(newProposal);
+});
+
+/**
+ * 6-2. Edit a Criterion Proposal
+ */
+app.put('/api/rooms/:id/criteria/proposals/:proposalId', (req, res) => {
+  const { id, proposalId } = req.params;
+  const { rawText } = req.body;
+
+  const proposals = criterionProposals.get(id) || [];
+  const target = proposals.find(p => p.id === proposalId);
+  if (!target) {
+    return res.status(404).json({ error: '제안을 찾을 수 없습니다.' });
+  }
+
+  if (rawText && rawText.trim()) {
+    target.rawText = rawText.trim();
+  }
+
+  res.json({ success: true, proposal: target });
+});
+
+/**
+ * 6-3. Delete a Criterion Proposal
+ */
+app.delete('/api/rooms/:id/criteria/proposals/:proposalId', (req, res) => {
+  const { id, proposalId } = req.params;
+
+  let proposals = criterionProposals.get(id) || [];
+  const initialCount = proposals.length;
+  proposals = proposals.filter(p => p.id !== proposalId);
+  criterionProposals.set(id, proposals);
+
+  res.json({ success: true, count: proposals.length, deleted: proposals.length < initialCount });
 });
 
 /**

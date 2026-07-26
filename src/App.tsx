@@ -1316,6 +1316,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: newProposalObj.id,
           rawText: textToSubmit.trim(),
           proposerId: userId,
         }),
@@ -1373,6 +1374,12 @@ export default function App() {
     triggerToast('제안된 평가 기준이 수정되었습니다.');
 
     try {
+      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText: updatedText })
+      }).catch(() => {});
+
       if (activeRoomId && activeRoomId !== 'room-gominhajo') {
         await supabase
           .from('criterion_proposals')
@@ -1380,7 +1387,7 @@ export default function App() {
           .eq('id', proposalId);
       }
     } catch (err) {
-      console.error('Supabase update proposal error:', err);
+      console.error('Update proposal error:', err);
     }
   };
 
@@ -1401,6 +1408,10 @@ export default function App() {
     triggerToast('제안된 평가 기준이 삭제되었습니다.');
 
     try {
+      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+        method: 'DELETE'
+      }).catch(() => {});
+
       if (activeRoomId && activeRoomId !== 'room-gominhajo') {
         await supabase
           .from('criterion_proposals')
@@ -1408,7 +1419,7 @@ export default function App() {
           .eq('id', proposalId);
       }
     } catch (err) {
-      console.error('Supabase delete proposal error:', err);
+      console.error('Delete proposal error:', err);
     }
   };
 
