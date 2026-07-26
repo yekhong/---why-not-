@@ -716,11 +716,25 @@ export default function App() {
         const data: RoomDetails = await res.json();
         console.log(`[SYNC] 회의 정보 조회 완료. 현재 단계: ${data?.room?.status}, 아이디어 수: ${data?.ideas?.length}`);
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
-        setRoomDetails(data);
-        if (data.room.status === 'CRITERIA_REVIEW') {
+
+        setRoomDetails(prev => {
+          // If previous roomDetails exists and incoming status is invalid/missing, preserve previous valid status
+          if (prev && prev.room.id === data.room.id && (!data.room || !data.room.status)) {
+            return {
+              ...data,
+              room: {
+                ...data.room,
+                status: prev.room.status
+              }
+            };
+          }
+          return data;
+        });
+
+        if (data?.room?.status === 'CRITERIA_REVIEW') {
           setEditableCriteria(data.criteria || []);
         }
-        const isWinnerState = data.room.status === 'CLOSED';
+        const isWinnerState = data?.room?.status === 'CLOSED';
         if (isWinnerState && !hasShownWinnerModalRef.current.has(data.room.id)) {
           hasShownWinnerModalRef.current.add(data.room.id);
           setShowWinnerModal(true);
