@@ -2221,18 +2221,30 @@ export default function App() {
 
   // 4단계 정족수 달성용 가상 시뮬레이션 별 스티커 투표 생성 함수
   const handleSeedMockStarVotes = async () => {
-    if (!activeRoomId) return;
+    if (!activeRoomId || !roomDetails) return;
+
+    // Check if active candidates exist
+    const activeCandidates = (roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE');
+    if (activeCandidates.length === 0) {
+      triggerToast('2차 투표를 진행할 후보가 없습니다.', 'error');
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/seed-star-votes`, {
         method: 'POST',
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || '오류가 발생했습니다.');
+      const data = await res.json().catch(() => ({}));
 
-      triggerToast(data.message || '가상 참여자 별 스티커 투표 데이터가 성공적으로 생성되었습니다!');
-      fetchRoomDetails(activeRoomId);
+      if (!res.ok) {
+        throw new Error(data?.error || '가상 투표 생성 중 문제가 발생했습니다.');
+      }
+
+      triggerToast(data?.message || '가상 참여자 별 스티커 투표 데이터가 성공적으로 생성되었습니다!');
+      await fetchRoomDetails(activeRoomId);
     } catch (err: any) {
+      console.error('2차 투표 시뮬레이션 오류:', err);
       triggerToast(err?.message || '가상 투표 추가 실패', 'error');
     } finally {
       setLoading(false);
