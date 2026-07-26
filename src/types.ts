@@ -128,6 +128,7 @@ export interface RoomDetails {
   myStarVotes?: string[]; // array of selected ideaIds for current user
   isStarVoteSubmitted?: boolean;
   starVoteCount?: number;
+  starVoteStatus?: 'voting' | 'tie_pending' | 'finalized';
   // If threshold is met, we might send aggregated scores or AI-rephrased comments:
   aggregatedScores?: Record<string, {
     score: number;

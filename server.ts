@@ -1059,6 +1059,25 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
   });
 
+  // Determine starVoteStatus
+  const rParticipants = participants.get(id);
+  const targetThreshold = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
+  if (room.status === 'CLOSED') {
+    starVoteStatus = 'finalized';
+  } else if (rStarVotes.size >= targetThreshold) {
+    const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
+    const targetWinners = room.targetWinnerCount || 1;
+    const sortedIdeas = [...activeIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
+    if (sortedIdeas.length > targetWinners) {
+      const boundaryScore = starVoteCounts[sortedIdeas[targetWinners - 1].id] || 0;
+      const nextScore = starVoteCounts[sortedIdeas[targetWinners].id] || 0;
+      if (boundaryScore === nextScore) {
+        starVoteStatus = 'tie_pending';
+      }
+    }
+  }
+
   const result: RoomDetails = {
     room,
     ideas: roomIdeas,
@@ -1075,7 +1094,8 @@ app.get('/api/rooms/:id', async (req, res) => {
     starVotes: starVoteCounts,
     myStarVotes,
     isStarVoteSubmitted,
-    starVoteCount: rStarVotes.size
+    starVoteCount: rStarVotes.size,
+    starVoteStatus
   };
 
   // ---------------------------------------------------------------
@@ -2006,10 +2026,81 @@ app.post('/api/rooms/:id/status', (req, res) => {
   res.json({ success: true, status: room.status });
 });
 
+// Helper function to check if all participants completed star votes and auto-transition to 5단계 CLOSED
+async function checkAndAutoTransitionStarVotes(roomId: string) {
+  const room = rooms.get(roomId);
+  if (!room || room.status === 'CLOSED') return { status: room?.status || 'CLOSED', message: '' };
+
+  const rStarVotes = starVotesMap.get(roomId) || new Map<string, string[]>();
+  const rParticipants = participants.get(roomId);
+  const roomIdeas = ideas.get(roomId) || [];
+  const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
+
+  // Determine total required participants: max of participants size, minResponseThreshold, or star votes count
+  const requiredCount = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  const currentVoteCount = rStarVotes.size;
+
+  if (currentVoteCount < requiredCount) {
+    return { status: room.status, starVoteStatus: 'voting', message: `현재 투표 진행 중 (${currentVoteCount}/${requiredCount}명 완료)` };
+  }
+
+  // Calculate total star votes per active idea
+  const starVoteCounts: Record<string, number> = {};
+  activeIdeas.forEach(i => { starVoteCounts[i.id] = 0; });
+  rStarVotes.forEach(selectedArr => {
+    selectedArr.forEach(ideaId => {
+      if (starVoteCounts[ideaId] !== undefined) {
+        starVoteCounts[ideaId] += 1;
+      }
+    });
+  });
+
+  const targetWinners = room.targetWinnerCount || 1;
+
+  // Sort active ideas by starVoteCounts desc
+  const sortedIdeas = [...activeIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
+
+  // Check if tie exists at boundary
+  let isTieAtBoundary = false;
+  if (sortedIdeas.length > targetWinners) {
+    const boundaryScore = starVoteCounts[sortedIdeas[targetWinners - 1].id] || 0;
+    const nextScore = starVoteCounts[sortedIdeas[targetWinners].id] || 0;
+    if (boundaryScore === nextScore) {
+      isTieAtBoundary = true;
+    }
+  }
+
+  if (isTieAtBoundary) {
+    return { status: room.status, starVoteStatus: 'tie_pending', message: '최종 선정 경계에서 동률이 발생하여 대기 중입니다.' };
+  }
+
+  // No tie: auto-transition to 5단계 CLOSED & mark winners
+  const winnerIdeas = sortedIdeas.slice(0, targetWinners);
+  const winnerIds = new Set(winnerIdeas.map(i => i.id));
+
+  roomIdeas.forEach(idea => {
+    if (winnerIds.has(idea.id)) {
+      idea.status = 'WINNER';
+    } else if (idea.status === 'ACTIVE') {
+      idea.status = 'ELIMINATED';
+    }
+  });
+
+  room.status = 'CLOSED';
+  rooms.set(roomId, room);
+  ideas.set(roomId, roomIdeas);
+
+  const roomRounds = eliminationRounds.get(roomId) || [];
+  aiCommentsCache.delete(roomId);
+  await generateFinalRoomReport(roomId, room, roomIdeas, roomRounds);
+
+  return { status: 'CLOSED', starVoteStatus: 'finalized', message: '🎉 모든 참여자의 2차 투표가 완료되어 5단계 최종 결과로 자동 전환되었습니다!' };
+}
+
 /**
  * 10.2 Submit Star Vote (4단계 2차 투표 별 스티커 투표)
  */
-app.post('/api/rooms/:id/star-vote', (req, res) => {
+app.post('/api/rooms/:id/star-vote', async (req, res) => {
   const { id } = req.params;
   const { userId, selectedIdeaIds } = req.body;
 
@@ -2035,7 +2126,68 @@ app.post('/api/rooms/:id/star-vote', (req, res) => {
 
   rStarVotes.set(String(userId), selectedIdeaIds);
 
-  res.json({ success: true, count: selectedIdeaIds.length });
+  const transitionResult = await checkAndAutoTransitionStarVotes(id);
+
+  res.json({ success: true, count: selectedIdeaIds.length, ...transitionResult });
+});
+
+/**
+ * 10.3 Seed Mock Star Votes (4단계 정족수 달성용 가상 시뮬레이션 버튼 API)
+ */
+app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
+  const { id } = req.params;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  const roomIdeas = ideas.get(id) || [];
+  const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
+
+  if (activeIdeas.length === 0) {
+    return res.status(400).json({ error: '투표 대상 활성 후보가 없습니다.' });
+  }
+
+  let rStarVotes = starVotesMap.get(id);
+  if (!rStarVotes) {
+    rStarVotes = new Map<string, string[]>();
+    starVotesMap.set(id, rStarVotes);
+  }
+
+  const rParticipants = participants.get(id);
+  const targetThreshold = Math.max(room.minResponseThreshold || 1, rParticipants ? rParticipants.size : 1);
+  const currentCount = rStarVotes.size;
+
+  if (currentCount >= targetThreshold) {
+    return res.status(400).json({ error: '이미 2차 투표 정족수가 달성되었습니다.' });
+  }
+
+  const neededCount = targetThreshold - currentCount;
+  const targetWinners = room.targetWinnerCount || 1;
+  const greekLetters = ['가상참여자_알파', '가상참여자_베타', '가상참여자_감마', '가상참여자_델타', '가상참여자_엡실론'];
+  const timestamp = Date.now();
+
+  for (let i = 0; i < neededCount; i++) {
+    const mockUserId = `mock-star-voter-${timestamp}-${i + 1}`;
+    
+    // Pick distinct targetWinners ideas for this mock voter
+    const shuffledIdeas = [...activeIdeas].sort(() => 0.5 - Math.random());
+    const selectedIds = shuffledIdeas.slice(0, Math.min(targetWinners, activeIdeas.length)).map(item => item.id);
+
+    rStarVotes.set(mockUserId, selectedIds);
+  }
+
+  starVotesMap.set(id, rStarVotes);
+
+  const transitionResult = await checkAndAutoTransitionStarVotes(id);
+
+  res.json({
+    success: true,
+    addedCount: neededCount,
+    message: `가상 참여자 ${neededCount}명의 별 스티커 투표가 생성되었습니다!`,
+    ...transitionResult
+  });
 });
 
 /**

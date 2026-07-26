@@ -2159,6 +2159,26 @@ export default function App() {
     }
   };
 
+  // 4단계 정족수 달성용 가상 시뮬레이션 별 스티커 투표 생성 함수
+  const handleSeedMockStarVotes = async () => {
+    if (!activeRoomId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/rooms/${activeRoomId}/seed-star-votes`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || '오류가 발생했습니다.');
+
+      triggerToast(data.message || '가상 참여자 별 스티커 투표 데이터가 성공적으로 생성되었습니다!');
+      fetchRoomDetails(activeRoomId);
+    } catch (err: any) {
+      triggerToast(err?.message || '가상 투표 추가 실패', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Submit Final Vote for remaining 2 candidates
   const handleSubmitFinalVote = async () => {
     if (!activeRoomId) return;
@@ -4007,6 +4027,52 @@ export default function App() {
                               </div>
                             );
                           })}
+
+                          {/* 🧪 Test Assist Box for 4단계 Star Voting Simulation */}
+                          {(() => {
+                            const rParticipantsCount = Math.max(roomDetails.room.minResponseThreshold || 1, (roomDetails.participants || []).length || 1);
+                            const currentStarCount = roomDetails.starVoteCount || 0;
+                            const neededCount = Math.max(0, rParticipantsCount - currentStarCount);
+
+                            return (
+                              <div className="bg-amber-50/70 p-4.5 rounded-2xl border border-amber-200 space-y-2.5 text-left shadow-xs">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-black text-amber-900 flex items-center gap-1.5">
+                                    <Sparkles className="w-4 h-4 text-amber-600" />
+                                    🧪 미리보기 테스트 기능 (4단계 2차 투표 정족수 달성)
+                                  </span>
+                                  <span className="text-[11px] font-extrabold text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300">
+                                    투표 상태: {currentStarCount} / {rParticipantsCount}명 완료
+                                  </span>
+                                </div>
+                                <p className="text-xs text-amber-900/80 leading-relaxed font-medium">
+                                  실제 참여자가 부족한 경우 가상 참여자의 별 투표 데이터를 생성하여 전체 투표 완료 및 5단계(최종 결과) 자동 전환을 테스트합니다.
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={handleSeedMockStarVotes}
+                                  disabled={neededCount === 0 || loading}
+                                  className={`w-full py-2.5 rounded-xl text-xs font-black transition flex items-center justify-center gap-2 ${
+                                    neededCount > 0 && !loading
+                                      ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 shadow-sm cursor-pointer active:scale-95'
+                                      : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                                  }`}
+                                >
+                                  {loading ? (
+                                    <>
+                                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                      가상 투표 생성 중...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="w-3.5 h-3.5" />
+                                      <span>{neededCount > 0 ? `시뮬레이션 가상 투표 ${neededCount}명 데이터 추가` : '투표 정족수가 이미 완료되었습니다'}</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
 
