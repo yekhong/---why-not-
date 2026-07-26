@@ -833,7 +833,18 @@ app.get('/api/rooms/:id', async (req, res) => {
 
   const roomIdeas = ideas.get(id) || [];
   const roomCriteria = criteria.get(id) || [];
-  const roomProposals = criterionProposals.get(id) || [];
+  const rawProposals = criterionProposals.get(id) || [];
+  const seenProposalTexts = new Set<string>();
+  const roomProposals = rawProposals.filter(p => {
+    const key = p.rawText ? p.rawText.trim() : '';
+    if (!key || seenProposalTexts.has(key)) return false;
+    seenProposalTexts.add(key);
+    return true;
+  });
+  if (roomProposals.length !== rawProposals.length) {
+    criterionProposals.set(id, roomProposals);
+  }
+
   const roomEvals = evaluations.get(id) || [];
   const roomRounds = eliminationRounds.get(id) || [];
 
@@ -1380,6 +1391,13 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   }
 
   const proposals = criterionProposals.get(id) || [];
+  const trimmedText = rawText.trim();
+
+  // Prevent duplicate proposal content
+  const existingDup = proposals.find(p => p.rawText.trim() === trimmedText);
+  if (existingDup) {
+    return res.status(200).json(existingDup);
+  }
 
   if (proposerId) {
     const userProposals = proposals.filter(p => p.proposerId === proposerId);
@@ -1391,7 +1409,7 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   const newProposal: CriterionProposal = {
     id: req.body.id || `prop-${Math.random().toString(36).substr(2, 9)}`,
     roomId: id,
-    rawText: rawText.trim(),
+    rawText: trimmedText,
     proposerId: proposerId || 'anon'
   };
 

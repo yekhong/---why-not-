@@ -1136,12 +1136,21 @@ export default function App() {
   const autoRegisterAiProposals = async (suggestions: any[]) => {
     if (!suggestions || suggestions.length === 0 || !activeRoomId) return;
 
+    // Deduplicate suggestions internally
+    const seenInputs = new Set<string>();
+    const uniqueSuggestions = suggestions.filter((item: any) => {
+      const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
+      if (!text || seenInputs.has(text.trim())) return false;
+      seenInputs.add(text.trim());
+      return true;
+    });
+
     setRoomDetails(prev => {
       if (!prev) return prev;
       const existing = prev.proposals || [];
-      const existingTexts = new Set(existing.map(p => p.rawText));
+      const existingTexts = new Set(existing.map(p => p.rawText?.trim()));
 
-      const newProposals = suggestions.map((item: any, idx: number) => {
+      const newProposals = uniqueSuggestions.map((item: any, idx: number) => {
         const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
         return {
           id: `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`,
@@ -1151,7 +1160,7 @@ export default function App() {
           isAiSuggested: true,
           createdAt: new Date().toISOString()
         };
-      }).filter((p: any) => p.rawText && !existingTexts.has(p.rawText));
+      }).filter((p: any) => p.rawText && !existingTexts.has(p.rawText.trim()));
 
       if (newProposals.length === 0) return prev;
       const updated = [...existing, ...newProposals];
@@ -1163,8 +1172,8 @@ export default function App() {
     });
 
     // Background API sync & Supabase DB Direct insertion fallback
-    for (let idx = 0; idx < suggestions.length; idx++) {
-      const item = suggestions[idx];
+    for (let idx = 0; idx < uniqueSuggestions.length; idx++) {
+      const item = uniqueSuggestions[idx];
       const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
       if (!text) continue;
 
@@ -1181,13 +1190,21 @@ export default function App() {
       // Supabase Direct DB Fallback
       if (!apiSuccess && activeRoomId && activeRoomId !== 'room-gominhajo') {
         try {
-          const newPropId = `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`;
-          await supabase.from('criterion_proposals').insert({
-            id: newPropId,
-            room_id: activeRoomId,
-            raw_text: text,
-            proposer_id: 'gemini-ai'
-          });
+          const { data: existingProps } = await supabase
+            .from('criterion_proposals')
+            .select('id')
+            .eq('room_id', activeRoomId)
+            .eq('raw_text', text);
+
+          if (!existingProps || existingProps.length === 0) {
+            const newPropId = `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`;
+            await supabase.from('criterion_proposals').insert({
+              id: newPropId,
+              room_id: activeRoomId,
+              raw_text: text,
+              proposer_id: 'gemini-ai'
+            });
+          }
         } catch (supaErr) {
           console.warn('Supabase DB auto proposal insert notice:', supaErr);
         }
