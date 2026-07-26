@@ -393,6 +393,11 @@ export default function App() {
   const [selectedFinalIdeaId, setSelectedFinalIdeaId] = useState('');
   const [isSubmittingFinalVote, setIsSubmittingFinalVote] = useState(false);
   const [inviteEmailInput, setInviteEmailInput] = useState('');
+  // Roulette Preview Modal States (Test & Demo mode)
+  const [showRouletteModal, setShowRouletteModal] = useState(false);
+  const [isSpinningRoulette, setIsSpinningRoulette] = useState(false);
+  const [rouletteWinnerResult, setRouletteWinnerResult] = useState<string | null>(null);
+  const [rouletteRotation, setRouletteRotation] = useState(0);
 
   // Dual link copy helpers (① Participant link vs ② Voter link)
   const copyParticipantLink = () => {
@@ -2300,6 +2305,55 @@ export default function App() {
     });
   }, [roomDetails]);
 
+  // Determine candidate ideas for Roulette Preview / Tie-breaker
+  const rouletteCandidateIdeas = useMemo(() => {
+    if (!roomDetails || !roomDetails.ideas) return [];
+
+    const starVoteCounts = roomDetails.starVotes || {};
+    const activeOrWinnerIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE' || i.status === 'WINNER');
+    
+    // Sort by star votes desc
+    const sorted = [...activeOrWinnerIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
+
+    if (sorted.length >= 2) {
+      return sorted.slice(0, 4); // top 2 to 4 candidates
+    }
+
+    // Fallback: if only 1 idea in list, add any other idea from room to ensure at least 2 candidates
+    if (roomDetails.ideas.length >= 2) {
+      return roomDetails.ideas.slice(0, 2);
+    }
+
+    // Fallback mock candidates if room only has 1 idea total
+    return [
+      sorted[0] || { id: 'mock-1', title: 'AI 회의록 자동 요약 서비스', description: '', submitterId: '', submitterName: 'GOMINHAJO', status: 'ACTIVE' },
+      { id: 'mock-2', title: '동네 소상공인 마감할인 매칭 앱', description: '', submitterId: '', submitterName: '익명 참여자 A', status: 'ACTIVE' }
+    ];
+  }, [roomDetails]);
+
+  // Roulette spin handler
+  const handleSpinRoulette = () => {
+    if (isSpinningRoulette || rouletteCandidateIdeas.length === 0) return;
+    setIsSpinningRoulette(true);
+    setRouletteWinnerResult(null);
+
+    // Pick random index
+    const randomIndex = Math.floor(Math.random() * rouletteCandidateIdeas.length);
+    const chosenIdea = rouletteCandidateIdeas[randomIndex];
+
+    // Compute rotation degrees (minimum 5 full spins + slice angle)
+    const segmentAngle = 360 / rouletteCandidateIdeas.length;
+    const targetAngle = 360 * 5 + (360 - (randomIndex * segmentAngle + segmentAngle / 2));
+
+    setRouletteRotation(targetAngle);
+
+    setTimeout(() => {
+      setIsSpinningRoulette(false);
+      setRouletteWinnerResult(chosenIdea.title);
+      triggerToast(`🎲 룰렛 추첨 결과: [${chosenIdea.title}] 이(가) 선택되었습니다! 🎉`);
+    }, 3500);
+  };
+
 
   const myProposals = (roomDetails?.proposals || []).filter(p => p.proposerId === userId);
   const myAiProposalsCount = myProposals.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
@@ -4197,18 +4251,16 @@ export default function App() {
                                     {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
                                     {roomDetails.rounds.length + 1}라운드 하위 후보 소거 진행
                                   </button>
+
+                                  <button
+                                    onClick={handleManuallyCloseRoom}
+                                    className="w-full py-2 border border-dashed border-slate-600 text-slate-300 hover:text-white hover:bg-slate-800 transition rounded-xl text-xs font-bold"
+                                  >
+                                    소거 중단하고 현시점 최상위 생존 후보 확정
+                                  </button>
                                 </>
                               );
                             })()}
-
-                            {activeIdeasCount > 0 && (
-                              <button
-                                onClick={handleManuallyCloseRoom}
-                                className="w-full py-2 border border-dashed border-slate-600 text-slate-300 hover:text-white hover:bg-slate-800 transition rounded-xl text-xs font-bold"
-                              >
-                                소거 중단하고 현시점 최상위 생존 후보 확정
-                              </button>
-                            )}
                           </div>
                         )}
 
@@ -4300,7 +4352,7 @@ export default function App() {
                         </div>
 
                         {/* IA 5.2: 최종 결정 미니 게임 (동률/합의 난항 해결) */}
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 text-left">
                           <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                             <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
                               🎯 5.2 최종 결정 미니 게임 (동률/합의 난항 해결)
@@ -4308,22 +4360,29 @@ export default function App() {
                             <span className="text-[10px] text-slate-400 font-medium">동점 또는 최종 결정이 어려울 때 사용</span>
                           </div>
 
-                          <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center space-y-3">
-                            <p className="text-xs text-slate-600 font-medium">
-                              팀원 간 최종 득표가 같거나 합의가 어려운 경우, 운명의 룰렛을 돌려 결정하십시오!
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const activeOrWinnerIdeas = roomDetails.ideas.map(i => i.title);
-                                if (activeOrWinnerIdeas.length === 0) return;
-                                const randomChosen = activeOrWinnerIdeas[Math.floor(Math.random() * activeOrWinnerIdeas.length)];
-                                triggerToast(`🎲 룰렛 추첨 결과: [${randomChosen}] 이(가) 선택되었습니다! 🎉`);
-                              }}
-                              className="py-2.5 px-5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5"
-                            >
-                              <span>🎲 운명의 룰렛 돌리기</span>
-                            </button>
+                          <div className="bg-slate-50 p-4.5 rounded-2xl border border-slate-200/80 text-center space-y-3">
+                            <div className="space-y-1">
+                              <p className="text-xs text-slate-700 font-bold">
+                                팀원 간 최종 득표가 같거나 합의가 어려운 경우, 운명의 룰렛을 돌려 결정하십시오!
+                              </p>
+                              <p className="text-[11px] text-slate-500 font-medium">
+                                (실제 서비스에서는 4단계 최종 선정 경계 동률 시 룰렛이 자동 켜지며, 아래는 테스트/미리보기 전용 버튼입니다)
+                              </p>
+                            </div>
+
+                            <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRouletteWinnerResult(null);
+                                  setShowRouletteModal(true);
+                                }}
+                                className="py-2.5 px-5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-xl text-xs transition shadow-md inline-flex items-center gap-1.5 cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95"
+                              >
+                                <Sparkles className="w-4 h-4 text-slate-950" />
+                                <span>🧪 룰렛 미리보기 (테스트 전용)</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -4526,6 +4585,118 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Roulette Preview Modal (Test & Demo mode) */}
+      <AnimatePresence>
+        {showRouletteModal && (
+          <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white p-6 md:p-8 rounded-3xl max-w-md w-full shadow-2xl space-y-5 text-center border border-indigo-100 relative overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-amber-500" />
+              
+              <button
+                type="button"
+                onClick={() => setShowRouletteModal(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1 bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-black px-3 py-0.5 rounded-full mb-1">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                  <span>🧪 테스트용 룰렛 미리보기</span>
+                </div>
+                <h3 className="text-lg font-black text-slate-900">🎲 운명의 룰렛 돌리기</h3>
+                <p className="text-xs text-rose-600 font-bold bg-rose-50 border border-rose-100 p-2 rounded-xl">
+                  ⚠️ 이 결과는 실제 최종 선정 결과에 반영되지 않는 미리보기 테스트입니다.
+                </p>
+              </div>
+
+              {/* Roulette Graphical Wheel */}
+              <div className="relative w-56 h-56 mx-auto my-4 flex items-center justify-center">
+                {/* Top Pointer Arrow */}
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 w-0 h-0 border-l-[12px] border-l-transparent border-r-[12px] border-r-transparent border-t-[18px] border-t-rose-600 drop-shadow-md" />
+
+                {/* Spinning Wheel Disk */}
+                <div
+                  className="w-full h-full rounded-full border-4 border-slate-900 shadow-xl overflow-hidden relative transition-all ease-out"
+                  style={{
+                    transform: `rotate(${rouletteRotation}deg)`,
+                    transitionDuration: isSpinningRoulette ? '3.5s' : '0s'
+                  }}
+                >
+                  {rouletteCandidateIdeas.map((candidate, idx) => {
+                    const total = rouletteCandidateIdeas.length;
+                    const rotateAngle = (360 / total) * idx;
+                    const colors = ['bg-indigo-600 text-white', 'bg-amber-400 text-slate-950', 'bg-emerald-600 text-white', 'bg-rose-500 text-white'];
+                    const colorClass = colors[idx % colors.length];
+
+                    return (
+                      <div
+                        key={candidate.id || idx}
+                        className={`absolute w-1/2 h-1/2 top-0 right-0 origin-bottom-left flex items-center justify-center p-2 text-[10px] font-extrabold text-center select-none border border-white/20 ${colorClass}`}
+                        style={{
+                          transform: `rotate(${rotateAngle}deg)`
+                        }}
+                      >
+                        <span className="transform -rotate-45 block truncate max-w-[80px]">
+                          {candidate.title}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Center Hub Button */}
+                <div className="absolute w-12 h-12 bg-slate-900 text-white rounded-full border-2 border-white shadow-md flex items-center justify-center font-black text-xs z-10">
+                  🎯
+                </div>
+              </div>
+
+              {/* Result Indicator */}
+              {rouletteWinnerResult && (
+                <div className="bg-amber-50 border border-amber-300 p-3 rounded-2xl space-y-1 animate-fade-in">
+                  <span className="text-[10px] font-bold text-amber-800">🎉 룰렛 미리보기 당첨 후보</span>
+                  <p className="text-sm font-black text-indigo-950">[{rouletteWinnerResult}]</p>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRouletteModal(false)}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+                >
+                  닫기
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSpinRoulette}
+                  disabled={isSpinningRoulette}
+                  className="flex-1 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSpinningRoulette ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      회전 중...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+                      <span>{rouletteWinnerResult ? '다시 돌리기' : '룰렛 돌리기'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
