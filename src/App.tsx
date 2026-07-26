@@ -2319,6 +2319,31 @@ export default function App() {
     });
   }, [roomDetails]);
 
+  // Find controversial / split-opinion ideas (high keep & exclude counts or close competition)
+  const controversialIdeas = useMemo(() => {
+    if (!roomDetails || !roomDetails.ideas) return [];
+
+    const starVoteCounts = roomDetails.starVotes || {};
+    return roomDetails.ideas.filter(idea => {
+      const stats = roomDetails.aggregatedScores?.[idea.id];
+      const starCount = starVoteCounts[idea.id] || 0;
+      if (stats) {
+        // Idea with both keep and exclude votes or high discussion
+        if (stats.keepCount >= 1 && stats.excludeCount >= 1) return true;
+      }
+      // Or idea that reached final stage with star votes > 0
+      return starCount > 0 && idea.status !== 'WINNER';
+    }).slice(0, 3);
+  }, [roomDetails]);
+
+  // Download Final Report PDF handler (uses native clean print dialog)
+  const handleDownloadPDF = () => {
+    triggerToast('📄 최종 결과 리포트 PDF 인쇄/다운로드 창을 불러옵니다.');
+    setTimeout(() => {
+      window.print();
+    }, 500);
+  };
+
   // Determine candidate ideas for Roulette Preview / Tie-breaker
   const rouletteCandidateIdeas = useMemo(() => {
     if (!roomDetails || !roomDetails.ideas) return [];
@@ -4351,136 +4376,235 @@ export default function App() {
                   )}
 
                   {/* -----------------------------------------------------------
-                    VIEW 6: CLOSED (FINAL REPORT SHOWCASE)
+                    VIEW 6: CLOSED (FINAL REPORT SHOWCASE - UX IMPROVED)
                     ----------------------------------------------------------- */}
                   {roomDetails.room.status === 'CLOSED' && (
-                    <div className="space-y-6 max-w-4xl mx-auto">
+                    <div className="space-y-6 max-w-4xl mx-auto text-left">
 
-                      {/* Winning Spotlight Card */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg text-center space-y-4 relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-1.5 bg-indigo-600" />
-
-                        <div className="w-14 h-14 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-full flex items-center justify-center mx-auto shadow-md">
-                          <Award className="w-6 h-6 text-amber-500 animate-bounce" />
+                      {/* ① 최종 결과 헤더 & PDF 저장 버튼 */}
+                      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 md:p-8 rounded-3xl text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-400/30 px-2.5 py-0.5 rounded-full">
+                            최종 결과 보고서
+                          </span>
+                          <h1 className="text-xl md:text-2xl font-black tracking-tight text-white">
+                            {roomDetails.room.title}
+                          </h1>
+                          <p className="text-xs text-slate-300 font-medium">
+                            익명 아이디어 제안, 1차 심층 평가 및 2차 별 스티커 투표 집계 결과입니다.
+                          </p>
                         </div>
-
                         <button
                           type="button"
-                          onClick={() => setShowWinnerModal(true)}
-                          className="py-2 px-4 bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-xs hover:bg-amber-300 transition flex items-center justify-center gap-1.5 mx-auto mb-1 cursor-pointer"
+                          onClick={handleDownloadPDF}
+                          className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black transition shadow-md flex items-center gap-2 cursor-pointer shrink-0 border border-amber-500 active:scale-95"
                         >
-                          <Award className="w-4 h-4 text-slate-950" />
-                          <span>"최종 아이디어가 선정되었습니다" 팝업 열기</span>
+                          <Download className="w-4 h-4 text-slate-950" />
+                          <span>최종 결과 리포트 PDF 저장</span>
                         </button>
-
-                        <div className="space-y-2">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">최종 우승 및 생존 아이디어</span>
-
-                          {roomDetails.ideas.filter(i => i.status === 'WINNER').map(winner => (
-                            <div key={winner.id} className="space-y-2 max-w-xl mx-auto">
-                              <h2 className="text-xl md:text-2xl font-bold text-indigo-950 tracking-tight">
-                                {winner.title}
-                              </h2>
-                              <p className="text-xs md:text-sm text-slate-600 leading-relaxed">
-                                {winner.description}
-                              </p>
-                              <span className="inline-block text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 py-1 px-3.5 rounded-full mt-2">
-                                제안자 : {winner.submitterName}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-
-                        {/* IA 5.2: 최종 결정 미니 게임 (동률/합의 난항 해결) */}
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 text-left">
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                            <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
-                              🎯 5.2 최종 결정 미니 게임 (동률/합의 난항 해결)
-                            </h3>
-                            <span className="text-[10px] text-slate-400 font-medium">동점 또는 최종 결정이 어려울 때 사용</span>
-                          </div>
-
-                          <div className="bg-slate-50 p-4.5 rounded-2xl border border-slate-200/80 text-center space-y-3">
-                            <div className="space-y-1">
-                              <p className="text-xs text-slate-700 font-bold">
-                                팀원 간 최종 득표가 같거나 합의가 어려운 경우, 운명의 룰렛을 돌려 결정하십시오!
-                              </p>
-                              <p className="text-[11px] text-slate-500 font-medium">
-                                (실제 서비스에서는 4단계 최종 선정 경계 동률 시 룰렛이 자동 켜지며, 아래는 테스트/미리보기 전용 버튼입니다)
-                              </p>
-                            </div>
-
-                            <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRouletteWinnerResult(null);
-                                  setShowRouletteModal(true);
-                                }}
-                                className="py-2.5 px-5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-xl text-xs transition shadow-md inline-flex items-center gap-1.5 cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95"
-                              >
-                                <Sparkles className="w-4 h-4 text-slate-950" />
-                                <span>🧪 룰렛 미리보기 (테스트 전용)</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
                       </div>
 
-                      {/* AI Summary report details */}
-                      {roomDetails.aiFinalSummary ? (
-                        <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                            <Sparkles className="w-4 h-4 text-amber-500" />
-                            <h3 className="text-base font-extrabold text-slate-900">AI 세션 종합 결론 보고서</h3>
+                      {/* ② 동률 여부 확인 & 룰렛 섹션 (운영 정책: 동률 발생 시만 표시) */}
+                      {roomDetails.starVoteStatus === 'tie_pending' && (
+                        <div className="bg-amber-50 border-2 border-amber-400 p-6 rounded-3xl text-center space-y-4 shadow-md">
+                          <div className="inline-flex items-center gap-1.5 bg-amber-200 text-amber-950 font-black text-xs px-3.5 py-1 rounded-full border border-amber-300">
+                            <AlertCircle className="w-4 h-4 text-amber-800" />
+                            <span>⚠️ 최종 후보가 동률입니다</span>
                           </div>
-
-                          <SafeMarkdown content={roomDetails.aiFinalSummary} />
-                        </div>
-                      ) : (
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center py-12">
-                          <RefreshCw className="w-8 h-8 text-slate-300 animate-spin mx-auto mb-2" />
-                          <p className="text-sm font-bold text-slate-500">최종 의사결정 보고서를 생성하는 중입니다...</p>
+                          <p className="text-xs text-amber-900 font-bold max-w-lg mx-auto">
+                            최종 채택 경계에서 동점이 발생했습니다. 운명의 룰렛을 돌려 우승 아이디어를 확정해주십시오!
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleSpinRoulette}
+                            disabled={isSpinningRoulette}
+                            className="py-3 px-6 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg transition border border-amber-600 inline-flex items-center gap-2 cursor-pointer active:scale-95"
+                          >
+                            <Sparkles className="w-4 h-4 text-slate-950" />
+                            <span>[ 운명의 룰렛 돌리기 ]</span>
+                          </button>
                         </div>
                       )}
 
-                      {/* Historic rounds timeline review */}
-                      <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                          <FileText className="w-4 h-4 text-slate-600" />
-                          <h3 className="text-base font-extrabold text-slate-900">스크리닝 히스토리 타임라인</h3>
+                      {/* 테스트 환경 전용 룰렛 미리보기 카드 */}
+                      <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
+                        <div className="space-y-1 text-center sm:text-left">
+                          <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 justify-center sm:justify-start">
+                            <Sparkles className="w-4 h-4 text-amber-500" />
+                            🧪 테스트용 룰렛 미리보기
+                          </span>
+                          <p className="text-[11px] text-slate-500 font-medium">
+                            실제 최종 결과 및 DB 데이터에 영향을 주지 않으며, 룰렛 UI 및 회전 기능을 시연할 수 있습니다.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRouletteWinnerResult(null);
+                            setShowRouletteModal(true);
+                          }}
+                          className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs shrink-0 border border-amber-500 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>룰렛 돌리기 (미리보기)</span>
+                        </button>
+                      </div>
+
+                      {/* ③ 최종 선정 아이디어 카드 (Spotlight) */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg space-y-5 relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-600 via-amber-400 to-indigo-600" />
+
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                            <Award className="w-5 h-5 text-amber-500" />
+                            🏆 최종 선정 아이디어
+                          </h2>
+                          <button
+                            type="button"
+                            onClick={() => setShowWinnerModal(true)}
+                            className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-xl hover:bg-indigo-100 transition"
+                          >
+                            축하 팝업 열기
+                          </button>
                         </div>
 
-                        <div className="space-y-6 border-l-2 border-slate-200 pl-4 ml-2">
-                          {roomDetails.rounds.map(round => (
-                            <div key={round.id} className="space-y-1 relative">
-                              <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-slate-400" />
-                              <span className="text-[10px] font-black text-slate-400">{round.roundNumber}라운드 탈락 이력</span>
-                              <h4 className="text-xs md:text-sm font-bold text-slate-900">
-                                {round.eliminatedIdeaIds.map(id => roomDetails.ideas.find(i => i.id === id)?.title).join(', ')} 소거됨
-                              </h4>
-                              <p className="text-xs text-slate-500 leading-relaxed max-w-2xl bg-slate-50 p-3 rounded-lg border border-slate-100 mt-1">
-                                {round.aiSummaryText}
-                              </p>
+                        <div className="grid grid-cols-1 gap-4 pt-1">
+                          {roomDetails.ideas.filter(i => i.status === 'WINNER').length === 0 ? (
+                            <div className="text-center py-6 text-slate-500 text-xs font-medium bg-slate-50 rounded-2xl border border-slate-100">
+                              최종 확정된 우승 아이디어를 불러오는 중입니다.
                             </div>
-                          ))}
-
-                          <div className="relative">
-                            <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-slate-900" />
-                            <span className="text-[10px] font-black text-slate-400">세션 시작</span>
-                            <h4 className="text-xs md:text-sm font-bold text-slate-900">아이디어 수집 완료</h4>
-                            <p className="text-xs text-slate-500 mt-1">
-                              총 {roomDetails.ideas.length}개의 참여 아이디어와 {roomDetails.criteria.length}개의 투표 기준이 성립되었습니다.
-                            </p>
-                          </div>
+                          ) : (
+                            roomDetails.ideas.filter(i => i.status === 'WINNER').map(winner => (
+                              <div key={winner.id} className="p-5 bg-gradient-to-br from-indigo-50/50 to-amber-50/30 rounded-2xl border border-indigo-100 space-y-2.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <h3 className="text-lg font-black text-indigo-950 tracking-tight">
+                                    {winner.title}
+                                  </h3>
+                                  <span className="text-[11px] font-extrabold text-amber-900 bg-amber-200/90 border border-amber-300 px-2.5 py-0.5 rounded-full shrink-0">
+                                    최종 채택
+                                  </span>
+                                </div>
+                                <p className="text-xs md:text-sm text-slate-600 leading-relaxed font-medium">
+                                  {winner.description}
+                                </p>
+                                <div className="pt-2 border-t border-indigo-100/60 flex items-center justify-between text-xs font-bold text-indigo-600">
+                                  <span>제안자 : {winner.submitterName}</span>
+                                  <span>⭐ 최종 득표: {roomDetails.starVotes?.[winner.id] || 0}표</span>
+                                </div>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </div>
 
-                      {/* Share back to main button */}
+                      {/* ④ 최종 선정 이유 (AI 요약 리포트 및 근처 평가 근거) */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                          <Sparkles className="w-5 h-5 text-amber-500" />
+                          <h3 className="text-base font-black text-slate-900">최종 선정 이유 및 AI 리포트</h3>
+                        </div>
+
+                        {roomDetails.aiFinalSummary ? (
+                          <div className="space-y-4">
+                            <SafeMarkdown content={roomDetails.aiFinalSummary} />
+                          </div>
+                        ) : (
+                          <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200/80 text-center space-y-2">
+                            <p className="text-xs text-slate-600 font-bold">
+                              💡 평가 데이터 및 투표 근거를 종합하여 세부 리포트를 도출하는 중입니다.
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              (참여자의 평가 데이터가 충분하지 않을 경우 기본 평가 점수 및 별 스티커 집계 결과를 기준으로 표출됩니다)
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ⑤ 라운드별 의사결정 과정 타임라인 */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-5">
+                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                          <FileText className="w-5 h-5 text-indigo-600" />
+                          <h3 className="text-base font-black text-slate-900">라운드별 의사결정 및 소거 과정</h3>
+                        </div>
+
+                        {/* Process Step Progression Bar */}
+                        <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
+                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
+                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
+                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
+                          <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
+                        </div>
+
+                        <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
+                          {roomDetails.rounds.length === 0 ? (
+                            <div className="space-y-1 relative">
+                              <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-600" />
+                              <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
+                              <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
+                              <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
+                                전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
+                              </p>
+                            </div>
+                          ) : (
+                            roomDetails.rounds.map(round => (
+                              <div key={round.id} className="space-y-1 relative">
+                                <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-rose-500" />
+                                <span className="text-[10px] font-black text-rose-500">{round.roundNumber}라운드 탈락 및 소거 이력</span>
+                                <h4 className="text-xs md:text-sm font-bold text-slate-900">
+                                  {round.eliminatedIdeaIds.map(id => roomDetails.ideas.find(i => i.id === id)?.title).join(', ')} 소거
+                                </h4>
+                                <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
+                                  {round.aiSummaryText}
+                                </p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      {/* ⑥ 의견이 갈린 아이디어 (Controversial Ideas) */}
+                      {controversialIdeas.length > 0 && (
+                        <div className="bg-white p-6 md:p-8 rounded-3xl border border-amber-200 shadow-sm space-y-4">
+                          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                            <AlertCircle className="w-5 h-5 text-amber-600" />
+                            <h3 className="text-base font-black text-slate-900">의견이 팽팽했던 쟁점 아이디어</h3>
+                          </div>
+                          <p className="text-xs text-slate-500 leading-relaxed">
+                            유지 의견과 제외 의견이 동시에 높았거나, 4단계 별 스티커 투표 치열한 경합으로 인상 깊었던 쟁점 후보입니다.
+                          </p>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {controversialIdeas.map(idea => {
+                              const stats = roomDetails.aggregatedScores?.[idea.id];
+                              const stars = roomDetails.starVotes?.[idea.id] || 0;
+
+                              return (
+                                <div key={idea.id} className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/80 space-y-1.5">
+                                  <h4 className="text-xs font-extrabold text-slate-900">{idea.title}</h4>
+                                  <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-2">{idea.description}</p>
+                                  <div className="flex items-center gap-3 pt-1 text-[10px] font-bold text-amber-900">
+                                    {stats && (
+                                      <>
+                                        <span>👍 찬성: {stats.keepCount}표</span>
+                                        <span>👎 제외희망: {stats.excludeCount}표</span>
+                                      </>
+                                    )}
+                                    <span>⭐ 별스티커: {stars}표</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 로비 홈으로 이동 버튼 */}
                       <div className="text-center pt-4">
                         <button
+                          type="button"
                           onClick={() => { setActiveRoomId(null); setRoomDetails(null); }}
-                          className="px-6 py-2.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-xl text-xs font-bold transition shadow-sm"
+                          className="px-7 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
                         >
                           로비 홈화면으로 이동하기
                         </button>
