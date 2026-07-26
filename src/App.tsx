@@ -1440,8 +1440,9 @@ export default function App() {
 
     if (!roomDetails) return;
 
-    // Check user max 3 limit
+    // Check user limits (AI max 3, Direct max 3, Total max 6)
     const existingProposals = roomDetails.proposals || [];
+    const isAi = !!customText;
 
     // Check duplicate content
     const trimmedInput = textToSubmit.trim();
@@ -1451,17 +1452,30 @@ export default function App() {
       return;
     }
 
-    const myProposals = existingProposals.filter(p => p.proposerId === userId);
-    if (myProposals.length >= 3) {
-      triggerToast('⚠️ 기준 제안은 1인당 최대 3개까지만 가능합니다.', 'error');
+    const myProps = existingProposals.filter(p => p.proposerId === userId);
+    if (myProps.length >= 6) {
+      triggerToast('⚠️ 총 평가 기준 목록은 최대 6개까지만 등록이 가능합니다.', 'error');
+      return;
+    }
+
+    const myAiCount = myProps.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
+    const myDirectCount = myProps.length - myAiCount;
+
+    if (isAi && myAiCount >= 3) {
+      triggerToast('⚠️ AI 기반 평가 기준은 최대 3개까지만 등록할 수 있습니다.', 'error');
+      return;
+    }
+    if (!isAi && myDirectCount >= 3) {
+      triggerToast('⚠️ 직접 작성 평가 기준은 최대 3개까지만 등록할 수 있습니다.', 'error');
       return;
     }
 
     const newProposalObj = {
-      id: `prop-${Math.random().toString(36).substring(2, 9)}`,
+      id: isAi ? `prop-ai-${Math.random().toString(36).substring(2, 9)}` : `prop-${Math.random().toString(36).substring(2, 9)}`,
       roomId: activeRoomId!,
       rawText: textToSubmit.trim(),
       proposerId: userId,
+      isAiSuggested: isAi,
       createdAt: new Date().toISOString()
     };
 
@@ -2123,7 +2137,10 @@ export default function App() {
   }, [roomDetails]);
 
 
-  const myProposalsCount = (roomDetails?.proposals || []).filter(p => p.proposerId === userId).length;
+  const myProposals = (roomDetails?.proposals || []).filter(p => p.proposerId === userId);
+  const myAiProposalsCount = myProposals.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
+  const myDirectProposalsCount = myProposals.length - myAiProposalsCount;
+  const myProposalsCount = myProposals.length;
   const totalProposalsCount = roomDetails?.proposalsCount || (roomDetails?.proposals || []).length;
 
   // ----------------------------------------------------------------
@@ -3173,7 +3190,7 @@ export default function App() {
                                   const text = `${item.name}${item.description ? `: ${item.description}` : ''}`;
                                   const existingProposals = roomDetails?.proposals || [];
                                   const isAlreadyAdded = existingProposals.some(p => p.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === item.name.trim()));
-                                  const isMaxLimitReached = myProposalsCount >= 3;
+                                  const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6;
 
                                   return (
                                     <div
@@ -3192,7 +3209,7 @@ export default function App() {
 
                                       <button
                                         type="button"
-                                        disabled={isAlreadyAdded || isMaxLimitReached}
+                                        disabled={isAlreadyAdded || isAiMaxLimitReached}
                                         onClick={() => handleProposeCriterion(undefined, text)}
                                         className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
                                       >
@@ -3225,14 +3242,19 @@ export default function App() {
                                 </p>
                               </div>
                               <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                                1인당 최대 3개 (내 제안 {myProposalsCount}/3개)
+                                직접 제안 ({myDirectProposalsCount}/3개) · 전체 ({myProposalsCount}/6개)
                               </span>
                             </div>
 
-                            {myProposalsCount >= 3 && (
+                            {myProposalsCount >= 6 ? (
                               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
                                 <span>⚠️</span>
-                                1인당 평가 기준이 최대 제한인 3개까지 모두 제출되어 추가 등록이 제한됩니다.
+                                전체 제안된 평가 기준이 최대 등록 제한인 6개(AI 3개 + 직접 작성 3개)에 도달하였습니다.
+                              </div>
+                            ) : myDirectProposalsCount >= 3 && (
+                              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                                <span>⚠️</span>
+                                직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 추가 등록 가능)
                               </div>
                             )}
 
@@ -3241,10 +3263,16 @@ export default function App() {
                                 <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
                                 <textarea
                                   required={myProposalsCount === 0}
-                                  disabled={myProposalsCount >= 3}
+                                  disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
                                   value={proposalText}
                                   onChange={e => setProposalText(e.target.value)}
-                                  placeholder={myProposalsCount >= 3 ? "최대 3개 제안이 완료되었습니다." : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"}
+                                  placeholder={
+                                    myProposalsCount >= 6
+                                      ? "전체 최대 6개 제안이 완료되었습니다."
+                                      : myDirectProposalsCount >= 3
+                                      ? "직접 작성 최대 3개 제안이 완료되었습니다. (AI 추천 제안 가능)"
+                                      : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
+                                  }
                                   rows={3}
                                   className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
                                 />
@@ -3256,7 +3284,7 @@ export default function App() {
 
                               <button
                                 type="submit"
-                                disabled={myProposalsCount >= 3}
+                                disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
                                 className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
                               >
                                 익명 기준 제안 등록하기
@@ -3271,7 +3299,7 @@ export default function App() {
                             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                               <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
                               <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                                {totalProposalsCount}개 제출됨
+                                {totalProposalsCount} / 6개 제출됨
                               </span>
                             </div>
 
