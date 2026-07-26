@@ -94,6 +94,8 @@ const participants = new Map<string, Map<string, string>>(); // room_id -> Map<u
 const aiCommentsCache = new Map<string, Record<string, { objectiveComments: string[]; preferenceComments: string[] }>>();
 // Cache for AI final summaries
 const aiFinalSummaries = new Map<string, string>();
+// Map for 4단계 Star Votes: room_id -> Map<user_id, string[]> (userId to array of selected ideaIds)
+const starVotesMap = new Map<string, Map<string, string[]>>();
 
 // ----------------------------------------------------------------
 // Seed Mock Data Creator
@@ -1044,6 +1046,19 @@ app.get('/api/rooms/:id', async (req, res) => {
 
   const hasEvaluated = userId ? evaluators.includes(String(userId)) : false;
 
+  const rStarVotes = starVotesMap.get(id) || new Map<string, string[]>();
+  const myStarVotes = userId && rStarVotes.has(String(userId)) ? rStarVotes.get(String(userId))! : [];
+  const isStarVoteSubmitted = Boolean(userId && rStarVotes.has(String(userId)));
+
+  // Aggregate total star votes per ideaId
+  const starVoteCounts: Record<string, number> = {};
+  roomIdeas.forEach(i => { starVoteCounts[i.id] = 0; });
+  rStarVotes.forEach(selectedArr => {
+    selectedArr.forEach(ideaId => {
+      starVoteCounts[ideaId] = (starVoteCounts[ideaId] || 0) + 1;
+    });
+  });
+
   const result: RoomDetails = {
     room,
     ideas: roomIdeas,
@@ -1057,6 +1072,10 @@ app.get('/api/rooms/:id', async (req, res) => {
     minResponseThresholdMet,
     scoreConfig: SCORE_CONFIG,
     aiFinalSummary: aiFinalSummaries.get(id),
+    starVotes: starVoteCounts,
+    myStarVotes,
+    isStarVoteSubmitted,
+    starVoteCount: rStarVotes.size
   };
 
   // ---------------------------------------------------------------
@@ -1985,6 +2004,38 @@ app.post('/api/rooms/:id/status', (req, res) => {
   room.status = status;
   rooms.set(id, room);
   res.json({ success: true, status: room.status });
+});
+
+/**
+ * 10.2 Submit Star Vote (4단계 2차 투표 별 스티커 투표)
+ */
+app.post('/api/rooms/:id/star-vote', (req, res) => {
+  const { id } = req.params;
+  const { userId, selectedIdeaIds } = req.body;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (!userId || !Array.isArray(selectedIdeaIds)) {
+    return res.status(400).json({ error: '올바르지 않은 투표 정보입니다.' });
+  }
+
+  const targetWinners = room.targetWinnerCount || 1;
+  if (selectedIdeaIds.length !== targetWinners) {
+    return res.status(400).json({ error: `별 스티커 ${targetWinners}개를 모두 사용해 주세요.` });
+  }
+
+  let rStarVotes = starVotesMap.get(id);
+  if (!rStarVotes) {
+    rStarVotes = new Map<string, string[]>();
+    starVotesMap.set(id, rStarVotes);
+  }
+
+  rStarVotes.set(String(userId), selectedIdeaIds);
+
+  res.json({ success: true, count: selectedIdeaIds.length });
 });
 
 /**

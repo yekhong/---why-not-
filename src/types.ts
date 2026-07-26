@@ -97,6 +97,14 @@ export interface Participant {
   isIdeaDone?: boolean;
 }
 
+export interface StarVote {
+  id?: string;
+  roomId: string;
+  userId: string;
+  selectedIdeaIds: string[];
+  createdAt?: string;
+}
+
 export interface RoomDetails {
   room: Room;
   ideas: Idea[];
@@ -116,6 +124,10 @@ export interface RoomDetails {
     objectiveConstraintPenalty: number;
   };
   aiFinalSummary?: string;
+  starVotes?: Record<string, number>; // ideaId -> total star votes count
+  myStarVotes?: string[]; // array of selected ideaIds for current user
+  isStarVoteSubmitted?: boolean;
+  starVoteCount?: number;
   // If threshold is met, we might send aggregated scores or AI-rephrased comments:
   aggregatedScores?: Record<string, {
     score: number;

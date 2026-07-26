@@ -373,6 +373,14 @@ export default function App() {
     reasonType: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   }>>({});
 
+  // 4단계 2차 투표 별 스티커 투표 로컬 상태 (선택 중인 아이디어 ID 목록)
+  const [mySelectedStarIdeaIds, setMySelectedStarIdeaIds] = useState<string[]>([]);
+  const [isSubmittingStarVote, setIsSubmittingStarVote] = useState(false);
+
+  // 4단계 수동 소거 확인 팝업 modal state
+  const [pendingEliminationIdea, setPendingEliminationIdea] = useState<Idea | null>(null);
+  const [isEliminatingIdea, setIsEliminatingIdea] = useState(false);
+
   // Error/Success Alerts
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -2066,6 +2074,91 @@ export default function App() {
     }
   };
 
+  // 4단계 별 스티커 클릭 토글 함수
+  const handleToggleStarIdea = (ideaId: string) => {
+    if (!roomDetails) return;
+    if (roomDetails.isStarVoteSubmitted) {
+      triggerToast('이미 4단계 2차 투표를 제출하셨습니다.', 'error');
+      return;
+    }
+
+    const targetWinners = roomDetails.room.targetWinnerCount || 1;
+    setMySelectedStarIdeaIds(prev => {
+      if (prev.includes(ideaId)) {
+        return prev.filter(id => id !== ideaId);
+      } else {
+        if (prev.length >= targetWinners) {
+          triggerToast(`⭐ 별 스티커는 최대 ${targetWinners}개까지만 선택할 수 있습니다.`, 'error');
+          return prev;
+        }
+        return [...prev, ideaId];
+      }
+    });
+  };
+
+  // 4단계 별 스티커 투표 제출 함수
+  const handleSubmitStarVote = async () => {
+    if (!activeRoomId || !roomDetails) return;
+    const targetWinners = roomDetails.room.targetWinnerCount || 1;
+
+    if (mySelectedStarIdeaIds.length !== targetWinners) {
+      triggerToast(`⭐ 별 스티커 ${targetWinners}개를 모두 사용하셔야 투표를 제출할 수 있습니다.`, 'error');
+      return;
+    }
+
+    setIsSubmittingStarVote(true);
+
+    // Update local state immediately
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const newStarVotes = { ...(prev.starVotes || {}) };
+      mySelectedStarIdeaIds.forEach(id => {
+        newStarVotes[id] = (newStarVotes[id] || 0) + 1;
+      });
+      return {
+        ...prev,
+        isStarVoteSubmitted: true,
+        myStarVotes: mySelectedStarIdeaIds,
+        starVotes: newStarVotes,
+        starVoteCount: (prev.starVoteCount || 0) + 1
+      };
+    });
+
+    triggerToast('⭐ 4단계 2차 별 스티커 투표가 완료되었습니다!');
+
+    try {
+      const res = await fetch(`/api/rooms/${activeRoomId}/star-vote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          selectedIdeaIds: mySelectedStarIdeaIds
+        })
+      });
+      if (res.ok) {
+        fetchRoomDetails(activeRoomId);
+        return;
+      }
+    } catch (err) {
+      console.warn('Express star vote API unavailable, saved in local state.');
+    } finally {
+      setIsSubmittingStarVote(false);
+    }
+  };
+
+  // 4단계 수동 소거 팝업 확정 처리 함수
+  const handleConfirmManualElimination = async () => {
+    if (!pendingEliminationIdea || !activeRoomId) return;
+    const ideaIdToEliminate = pendingEliminationIdea.id;
+    setIsEliminatingIdea(true);
+    try {
+      await handleProceedElimination(ideaIdToEliminate);
+      setPendingEliminationIdea(null);
+    } finally {
+      setIsEliminatingIdea(false);
+    }
+  };
+
   // Submit Final Vote for remaining 2 candidates
   const handleSubmitFinalVote = async () => {
     if (!activeRoomId) return;
@@ -2158,6 +2251,64 @@ export default function App() {
   // ----------------------------------------------------------------
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans antialiased">
+      {/* 4단계 수동 소거 확인 팝업 (Modal) */}
+      <AnimatePresence>
+        {pendingEliminationIdea && (
+          <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white p-6 rounded-3xl max-w-md w-full shadow-2xl space-y-5 text-left border border-slate-200 relative overflow-hidden"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center font-bold border border-rose-100 shrink-0">
+                  <AlertCircle className="w-5 h-5 text-rose-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900">후보를 소거하시겠습니까?</h3>
+                  <p className="text-xs font-semibold text-rose-600">[{pendingEliminationIdea.title}]</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 text-xs text-slate-600 space-y-1.5 leading-relaxed">
+                <p className="font-bold text-slate-800">선택한 후보가 현재 활성 후보 목록에서 제외됩니다.</p>
+                <p>정말 소거하시겠습니까?</p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPendingEliminationIdea(null)}
+                  disabled={isEliminatingIdea}
+                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition disabled:opacity-50"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmManualElimination}
+                  disabled={isEliminatingIdea}
+                  className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  {isEliminatingIdea ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      소거 처리 중...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      소거하기
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Toast Alert */}
       <AnimatePresence>
         {toast && (
@@ -3845,7 +3996,8 @@ export default function App() {
                                 {roomDetails.room.hostId === userId && (
                                   <div className="flex justify-end pt-1">
                                     <button
-                                      onClick={() => handleProceedElimination(idea.id)}
+                                      type="button"
+                                      onClick={() => setPendingEliminationIdea(idea)}
                                       className="text-[10px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 py-1.5 px-3.5 rounded-lg border border-rose-100 transition"
                                     >
                                       이 후보 수동 소거 실행
