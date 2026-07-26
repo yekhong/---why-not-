@@ -2337,21 +2337,43 @@ export default function App() {
     setIsSpinningRoulette(true);
     setRouletteWinnerResult(null);
 
-    // Pick random index
-    const randomIndex = Math.floor(Math.random() * rouletteCandidateIdeas.length);
+    const N = rouletteCandidateIdeas.length;
+    const sliceAngle = 360 / N;
+
+    // Pick random winner candidate index [0 .. N-1]
+    const randomIndex = Math.floor(Math.random() * N);
     const chosenIdea = rouletteCandidateIdeas[randomIndex];
 
-    // Compute rotation degrees (minimum 5 full spins + slice angle)
-    const segmentAngle = 360 / rouletteCandidateIdeas.length;
-    const targetAngle = 360 * 5 + (360 - (randomIndex * segmentAngle + segmentAngle / 2));
+    // Compute center angle of the chosen candidate sector
+    const sliceCenterAngle = randomIndex * sliceAngle + sliceAngle / 2;
 
-    setRouletteRotation(targetAngle);
+    // Add safe random jitter within sector (+/- 35% of half-slice) to avoid exact border and exact static feel while staying inside sector
+    const maxJitter = (sliceAngle / 2) * 0.7;
+    const randomJitter = (Math.random() - 0.5) * maxJitter;
+
+    // Target stopping angle relative to top pointer (12 o'clock = 0 deg)
+    const targetSectorStopAngle = sliceCenterAngle + randomJitter;
+
+    // Calculate base rotation to align target angle to top pointer (360 - targetSectorStopAngle)
+    const normalizedStopAngle = (360 - targetSectorStopAngle + 360) % 360;
+
+    // Calculate next cumulative rotation (minimum 5 full extra spins = 1800 deg)
+    const currentRot = rouletteRotation;
+    const currentMod = currentRot % 360;
+    const additionalFullSpins = 360 * 5;
+
+    let deltaAngle = (normalizedStopAngle - currentMod + 360) % 360;
+    if (deltaAngle < 180) deltaAngle += 360; // Ensure minimum spin distance for visual feedback
+
+    const newTargetRotation = currentRot + additionalFullSpins + deltaAngle;
+
+    setRouletteRotation(newTargetRotation);
 
     setTimeout(() => {
       setIsSpinningRoulette(false);
       setRouletteWinnerResult(chosenIdea.title);
       triggerToast(`🎲 룰렛 추첨 결과: [${chosenIdea.title}] 이(가) 선택되었습니다! 🎉`);
-    }, 3500);
+    }, 3600);
   };
 
 
