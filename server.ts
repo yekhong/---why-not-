@@ -464,57 +464,130 @@ seedData();
 /**
  * 1. Cluster criteria proposal texts into 3-5 confirmed criteria candidates
  */
-async function aiClusterCriteria(proposals: string[]): Promise<{ name: string; description: string }[]> {
-  const prompt = `
-당신은 브레인스토밍 평가를 기획하는 정교한 퍼실리테이터입니다.
-등록된 아이디어/의견 목록을 바탕으로 3개의 정제되고 객관적인 핵심 '평가 기준(Criterion)' 후보를 제안해 주십시오.
+async function aiClusterCriteria(
+  proposals: string[],
+  roomMeta?: { category?: string; title?: string; description?: string; deadline?: string; team?: string; environment?: string }
+): Promise<{ name: string; description: string }[]> {
+  if (!proposals || proposals.length === 0) {
+    return [
+      { name: '기술적 구현 가능성', description: '가용한 팀 리소스 및 스케줄 범위 내에서 MVP 구축이 가능한가' },
+      { name: '타겟 사용자 차별 가치', description: '기존 서비스 대비 타겟 사용자에게 명확한 페인포인트 해소 가치를 제공하는가' },
+      { name: '비용 및 운영 리스크 적정성', description: '가용 예산을 초과하지 않으며 법적/보안 리스크가 제어 가능한가' }
+    ];
+  }
 
-[제출된 데이터 목록]
-${proposals.map((p, i) => `${i + 1}. ${p}`).join('\n')}
+  const proposalsListText = proposals.map((text, idx) => `${idx + 1}. ${text}`).join('\n');
+  const category = roomMeta?.category || '기획';
+  const roomTitle = roomMeta?.title || '아이디어 평가';
+  const roomDesc = roomMeta?.description || '제안된 아이디어 평가 및 비교';
+  const deadline = roomMeta?.deadline || '1달 이내';
+  const team = roomMeta?.team || '팀 프로젝트 팀원';
+  const environment = roomMeta?.environment || '가용 예산 및 인력 리소스 범위 내';
 
-각 평가 기준은 직관적이고 간결한 한글 이름("name")과 구체적인 의미를 파악할 수 있는 고급스러운 "description" 문장을 가져야 합니다.
-반드시 마크다운 없이 아래 스키마에 정합한 Pure JSON 배열 형태로만 출력해 주십시오. 다른 설명은 절대 포함하지 마십시오.
+  const prompt = `당신은 다양한 산업과 프로젝트에서 사용되는 평가 기준을 설계하고 구조화하는 평가 체계 설계 전문가이자 데이터 분류 전문가입니다.
+
+입력된 평가 기준 목록을 의미 기반으로 분석하여 다음 작업을 수행하세요:
+1. 의미가 같거나 유사한 평가 기준을 통합합니다.
+2. 하나의 기준에 여러 평가 개념이 섞여 있으면 분리합니다.
+3. 관련성이 높은 평가 기준끼리 의미 기반으로 클러스터링합니다.
+4. 모든 아이디어를 공정하게 평가할 수 있는 핵심 3개~5개 통합 평가 기준을 도출하세요.
+
+[평가 대상 분야]
+${category}
+
+[프로젝트 또는 평가 목적]
+${roomTitle}: ${roomDesc}
+
+[프로젝트 조건]
+프로젝트 목표: ${roomTitle} 아이디어 최적안 선정
+핵심 대상: 서비스 타겟 유저
+프로젝트 기간: ${deadline}
+팀 구성: ${team}
+실행 환경: ${environment}
+
+[평가 기준 목록]
+${proposalsListText}
+
+## 작성 지침
+1. 수집된 모든 제안 항목을 빠짐없이 분석하여 중복/유사 기준을 그룹화하고 핵심 3개~5개 기준을 도출하세요.
+2. 각 통합 평가 기준은 15자 이내의 명확한 기준명("name")과 1문장의 구체 설명("description")을 작성하세요.
+3. 마크다운 없이 Pure JSON 배열 포맷으로만 출력하세요.
 
 JSON 출력 예시:
 [
-  { "name": "실현 가능성 및 난이도", "description": "팀 내부 리브레/기술 스택으로 2주 내 실제 개발이 가능한지 평가" },
-  { "name": "사용자 파급력", "description": "서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용" },
-  { "name": "비용 및 운영 효율성", "description": "초기 구축 및 유지 보수 비용 대비 기대할 수 있는 ROI 분석" }
-]
-`;
+  { "name": "기준명 1", "description": "설명 1" },
+  { "name": "기준명 2", "description": "설명 2" },
+  { "name": "기준명 3", "description": "설명 3" }
+]`;
 
   try {
-    // 1. Try Potens AI API endpoint
-    const rawText = await callPotensAI(prompt, 'claude-4-6-sonnet');
-    const cleanedText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleanedText);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed.slice(0, 3);
-    }
-  } catch (potensErr) {
-    console.warn('Potens AI API failed, trying Gemini or fallback...', potensErr);
-  }
-
-  const ai = getGeminiClient();
-  if (ai) {
+    let rawText = '';
+    // 1. Try Potens AI API endpoint first
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: { responseMimeType: 'application/json' }
-      });
-      const parsed = JSON.parse(response.text || '[]');
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed.slice(0, 3);
-    } catch (gErr) {
-      console.error('Gemini fallback error:', gErr);
+      rawText = await callPotensAI(prompt, 'gemini-2.5-flash');
+    } catch (potensErr) {
+      console.warn('Potens AI call failed in aiClusterCriteria, trying Gemini SDK fallback...', potensErr);
     }
+
+    // 2. Fallback to Gemini SDK if Potens AI fails
+    if (!rawText) {
+      const ai = getGeminiClient();
+      if (ai) {
+        try {
+          const resp = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: { responseMimeType: 'application/json' }
+          });
+          rawText = resp.text || '';
+        } catch (e) {}
+      }
+    }
+
+    if (rawText) {
+      const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const jsonParsed = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(jsonParsed) && jsonParsed.length > 0) {
+          const suggestions = jsonParsed.map((item: any) => {
+            if (typeof item === 'string') {
+              return { name: item.slice(0, 15), description: 'Potens AI 통합 클러스터링 추천 기준' };
+            }
+            return {
+              name: String(item.name || item.title || item.rawText || '').slice(0, 15),
+              description: String(item.description || item.desc || 'Potens AI 통합 클러스터링 추천 기준')
+            };
+          }).filter(item => item.name);
+
+          if (suggestions.length >= 3) {
+            return suggestions.slice(0, 5);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('aiClusterCriteria failed, using dynamic proposal fallback:', err);
   }
 
-  // Final fallback candidates
+  // Dynamic Fallback based on submitted proposal content
+  const firstProp = proposals[0] || '제안 항목';
+  const secondProp = proposals[1] || proposals[0] || '제안 항목';
+  const thirdProp = proposals[2] || proposals[0] || '제안 항목';
+
   return [
-    { name: '실현 가능성 및 난이도', description: '팀 내부 기술 스택과 예산으로 2주 내 실제 구현 및 배포가 가능한지 여부' },
-    { name: '사용자 파급력', description: '서비스 출시 시 타겟 유저가 얻게 될 체감 가치 및 개선 효용' },
-    { name: '비용 및 운영 효율성', description: '초기 구축 비용 및 지속적인 리소스 투입 대비 기대 효과 및 ROI 분석' }
+    {
+      name: firstProp.split(':')[0]?.slice(0, 15) || '기술적 구현 가능성',
+      description: `제안된 '${firstProp.slice(0, 25)}...' 등 팀원 제안 의견을 종합하여 1달 내 실현 가능성 검토`
+    },
+    {
+      name: secondProp.split(':')[0]?.slice(0, 15) || '타겟 사용자 차별 가치',
+      description: `제안된 '${secondProp.slice(0, 25)}...' 요소를 바탕으로 타겟 유저의 핵심 페인포인트 해소 평가`
+    },
+    {
+      name: thirdProp.split(':')[0]?.slice(0, 15) || '비용 및 운영 리스크',
+      description: `제안된 '${thirdProp.slice(0, 25)}...' 관점을 종합 반영하여 가용 리소스 및 부작용 리스크 제어 검토`
+    }
   ];
 }
 
@@ -1460,7 +1533,6 @@ app.delete('/api/rooms/:id/criteria/proposals/:proposalId', (req, res) => {
   proposals = proposals.filter(p => p.id !== proposalId);
   criterionProposals.set(id, proposals);
 
-  res.json({ success: true, count: proposals.length, deleted: proposals.length < initialCount });
 });
 
 /**
@@ -1485,7 +1557,11 @@ app.post('/api/rooms/:id/criteria/cluster', async (req, res) => {
     return res.status(400).json({ error: '수집된 제안이 없습니다. 기준을 먼저 작성해 주세요.' });
   }
 
-  const clustered = await aiClusterCriteria(rawTexts);
+  const clustered = await aiClusterCriteria(rawTexts, {
+    category: room.category,
+    title: room.title,
+    description: room.description
+  });
 
   // Store them as unconfirmed criteria
   const candidates: Criterion[] = clustered.map((c, i) => ({
