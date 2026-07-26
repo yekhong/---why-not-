@@ -696,6 +696,8 @@ export default function App() {
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
 
+    let isFetched = false;
+
     try {
       const res = await fetch(`/api/rooms/${id}?userId=${userId}`);
       if (res.ok) {
@@ -709,10 +711,16 @@ export default function App() {
           hasShownWinnerModalRef.current.add(data.room.id);
           setShowWinnerModal(true);
         }
-        return;
+        isFetched = true;
       }
     } catch (err) {
       console.warn('Express backend fetchRoomDetails failed, reading from Supabase DB...');
+    }
+
+    if (isFetched) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
     }
 
     // Special fallback for room-gominhajo
@@ -2863,6 +2871,27 @@ export default function App() {
               <div className="flex flex-col items-center justify-center py-20">
                 <RefreshCw className="w-8 h-8 text-slate-400 animate-spin mb-2" />
                 <p className="text-sm font-bold text-slate-500">회의 정보를 동기화하는 중...</p>
+              </div>
+            )}
+
+            {/* Error Fallback Box when fetch fails */}
+            {!loading && !roomDetails && (
+              <div className="bg-white p-8 rounded-3xl border border-rose-200 shadow-md max-w-md mx-auto text-center space-y-4 my-12">
+                <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto">
+                  <AlertCircle className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-base font-extrabold text-slate-900">회의 정보를 불러오지 못했습니다.</h3>
+                  <p className="text-xs text-slate-500">네트워크 상태를 확인하신 후 다시 시도해주세요.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchRoomDetails(activeRoomId)}
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>다시 시도하기</span>
+                </button>
               </div>
             )}
 
