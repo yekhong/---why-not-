@@ -1132,6 +1132,7 @@ export default function App() {
   // AI Suggested Criteria state
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
   const [isGeneratingAiSuggestions, setIsGeneratingAiSuggestions] = useState(false);
+  const [isClusteringLoading, setIsClusteringLoading] = useState(false);
 
   const autoRegisterAiProposals = async (suggestions: any[]) => {
     if (!suggestions || suggestions.length === 0 || !activeRoomId) return;
@@ -1442,10 +1443,9 @@ export default function App() {
 
   // Trigger AI Clustering (Host only)
   const handleTriggerClustering = async () => {
-    setLoading(true);
+    setIsClusteringLoading(true);
 
     const proposals = roomDetails?.proposals || [];
-    const proposalsCount = proposals.length || roomDetails?.proposalsCount || 1;
 
     // Default clustered criteria based on proposals / room ideas
     const defaultClusteredCriteria: Criterion[] = [
@@ -1472,20 +1472,7 @@ export default function App() {
       }
     ];
 
-    // Update local state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        criteria: defaultClusteredCriteria,
-        room: {
-          ...prev.room,
-          status: 'CRITERIA_REVIEW'
-        }
-      };
-    });
-    setEditableCriteria(defaultClusteredCriteria);
-    triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
+    let finalCriteria = defaultClusteredCriteria;
 
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/cluster`, {
@@ -1494,13 +1481,52 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.candidates && data.candidates.length > 0) {
-          setEditableCriteria(data.candidates);
+          finalCriteria = data.candidates;
         }
       }
     } catch (err) {
       console.warn('Express API unavailable, criteria clustering updated locally.');
+    }
+
+    // Update local UI state
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        criteria: finalCriteria,
+        room: {
+          ...prev.room,
+          status: 'CRITERIA_REVIEW'
+        }
+      };
+    });
+    setEditableCriteria(finalCriteria);
+    triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
+
+    // Sync to Supabase DB
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        await supabase
+          .from('rooms')
+          .update({ status: 'CRITERIA_REVIEW' })
+          .eq('id', activeRoomId);
+
+        const supaCriteria = finalCriteria.map((c, i) => ({
+          id: c.id || `crit-candidate-${i}-${Math.random().toString(36).substr(2, 5)}`,
+          room_id: activeRoomId,
+          name: c.name,
+          description: c.description,
+          confirmed: false
+        }));
+
+        try {
+          await supabase.from('criteria').insert(supaCriteria);
+        } catch (e) {}
+      }
+    } catch (supaErr) {
+      console.error('Supabase DB criteria clustering sync error:', supaErr);
     } finally {
-      setLoading(false);
+      setIsClusteringLoading(false);
     }
   };
 
@@ -3038,10 +3064,10 @@ export default function App() {
                             </p>
                             <button
                               onClick={handleTriggerClustering}
-                              disabled={roomDetails.proposalsCount === 0 || loading}
-                              className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 transition rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm"
+                              disabled={roomDetails.proposalsCount === 0 || isClusteringLoading}
+                              className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 transition rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:cursor-not-allowed"
                             >
-                              {loading ? (
+                              {isClusteringLoading ? (
                                 <>
                                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                                   AI 자동 정리 진행 중...
