@@ -783,7 +783,8 @@ export default function App() {
         roomId: p.room_id,
         rawText: p.raw_text || (p as any).rawText || '',
         proposerId: p.proposer_id || (p as any).proposerId || '',
-        clusterId: p.cluster_id || (p as any).clusterId
+        clusterId: p.cluster_id || (p as any).clusterId,
+        isAiSuggested: p.is_ai_suggested !== undefined ? p.is_ai_suggested : (Boolean((p as any).isAiSuggested) || (p.id && p.id.startsWith('prop-ai-')) || p.proposer_id === 'gemini-ai')
       }));
 
       const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id));
@@ -1502,6 +1503,7 @@ export default function App() {
           id: newProposalObj.id,
           rawText: textToSubmit.trim(),
           proposerId: userId,
+          isAiSuggested: isAi,
         }),
       });
       if (res.ok) {
@@ -1520,7 +1522,8 @@ export default function App() {
             id: newProposalObj.id,
             room_id: activeRoomId,
             raw_text: textToSubmit.trim(),
-            proposer_id: userId
+            proposer_id: userId,
+            is_ai_suggested: isAi
           });
       }
     } catch (supaErr) {
@@ -3312,7 +3315,7 @@ export default function App() {
                                 </div>
                               ) : (
                                 (roomDetails.proposals || []).map((p: any, idx: number) => {
-                                  const isAi = p.isAiSuggested || p.proposerId === 'gemini-ai' || (p.rawText && (p.rawText.includes('가능성') || p.rawText.includes('적정성') || p.rawText.includes('차별성') || p.rawText.includes('용이성') || p.rawText.includes('해소력') || p.rawText.includes('인가?')));
+                                  const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai');
                                   const isMyProposal = p.proposerId === userId || roomDetails.room.hostId === userId;
                                   const isEditing = editingProposalId === p.id;
 

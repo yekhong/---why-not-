@@ -56,6 +56,7 @@ export interface CriterionProposal {
   rawText: string;
   proposerId?: string;
   clusterId?: string;
+  isAiSuggested?: boolean;
 }
 
 export interface Criterion {

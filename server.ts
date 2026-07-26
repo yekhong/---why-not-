@@ -1633,7 +1633,8 @@ ${ideasListText}
  */
 app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   const { id } = req.params;
-  const { rawText, proposerId } = req.body;
+  const { rawText, proposerId, isAiSuggested } = req.body;
+  const isAi = Boolean(isAiSuggested || req.body.id?.startsWith('prop-ai-') || proposerId === 'gemini-ai');
 
   const room = rooms.get(id);
   if (!room) {
@@ -1658,17 +1659,27 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   }
 
   if (proposerId) {
-    const userProposals = proposals.filter(p => p.proposerId === proposerId);
-    if (userProposals.length >= 3) {
-      return res.status(400).json({ error: '평가 기준은 참여자당 최대 3개까지만 제안할 수 있습니다.' });
+    const userProps = proposals.filter(p => p.proposerId === proposerId);
+    if (userProps.length >= 6) {
+      return res.status(400).json({ error: '총 평가 기준은 최대 6개까지만 등록할 수 있습니다.' });
+    }
+    const userAiCount = userProps.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
+    const userDirectCount = userProps.length - userAiCount;
+
+    if (isAi && userAiCount >= 3) {
+      return res.status(400).json({ error: 'AI 기반 평가 기준은 최대 3개까지만 등록할 수 있습니다.' });
+    }
+    if (!isAi && userDirectCount >= 3) {
+      return res.status(400).json({ error: '직접 작성 평가 기준은 최대 3개까지만 등록할 수 있습니다.' });
     }
   }
 
   const newProposal: CriterionProposal = {
-    id: req.body.id || `prop-${Math.random().toString(36).substr(2, 9)}`,
+    id: req.body.id || (isAi ? `prop-ai-${Math.random().toString(36).substr(2, 9)}` : `prop-${Math.random().toString(36).substr(2, 9)}`),
     roomId: id,
     rawText: trimmedText,
-    proposerId: proposerId || 'anon'
+    proposerId: proposerId || 'anon',
+    isAiSuggested: isAi,
   };
 
   proposals.push(newProposal);
