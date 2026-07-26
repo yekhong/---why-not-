@@ -2803,7 +2803,7 @@ export default function App() {
                         <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
                           <span>📊 등록 완료 현황판:</span>
                           <span className="text-indigo-600 font-extrabold">
-                            {(roomDetails.participants || []).filter(p => p.isIdeaDone).length} / {roomDetails.room.maxParticipants || 6}명 완료
+                            {(roomDetails.ideas || []).length} / {roomDetails.room.maxParticipants || 6}명 완료
                           </span>
                         </div>
                         <button
