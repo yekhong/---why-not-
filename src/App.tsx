@@ -24,7 +24,8 @@ import {
   Trash,
   Star,
   Edit2,
-  Edit
+  Edit,
+  Download
 } from 'lucide-react';
 import {
   Room,
