@@ -2020,9 +2020,20 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
   const { rawText, proposerId, isAiSuggested } = req.body;
   const isAi = Boolean(isAiSuggested || req.body.id?.startsWith('prop-ai-') || proposerId === 'gemini-ai');
 
-  const room = rooms.get(id);
+  let room = rooms.get(id);
   if (!room) {
-    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    room = {
+      id,
+      title: '회의실',
+      description: '',
+      hostId: proposerId || 'host',
+      status: 'CRITERIA_PROPOSAL',
+      minResponseThreshold: 3,
+      eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+      deadlines: {},
+      createdAt: new Date().toISOString()
+    };
+    rooms.set(id, room);
   }
 
   if (room.status !== 'CRITERIA_PROPOSAL') {

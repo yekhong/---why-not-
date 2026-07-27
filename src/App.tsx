@@ -1973,28 +1973,20 @@ export default function App() {
     triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
     setProposalText('');
 
-    // Background sync to API or Supabase
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: newProposalObj.id,
-          rawText: textToSubmit.trim(),
-          proposerId: userId,
-          isAiSuggested: isAi,
-        }),
-      });
-      if (res.ok) {
-        fetchRoomDetails(activeRoomId!);
-        return;
-      }
-    } catch (err) {
-      console.warn('Express API unavailable, proposal saved in local state.');
-    }
-
+    // Always persist to Supabase DB so data survives server restarts and realtime triggers
     try {
       if (activeRoomId) {
+        if (roomDetails?.room) {
+          await supabase.from('rooms').upsert({
+            id: activeRoomId,
+            title: roomDetails.room.title || '회의실',
+            description: roomDetails.room.description || '',
+            category: roomDetails.room.category || '기획',
+            host_id: roomDetails.room.hostId || userId || 'host-1',
+            status: roomDetails.room.status || 'CRITERIA_PROPOSAL'
+          }, { onConflict: 'id' });
+        }
+
         await supabase
           .from('criterion_proposals')
           .insert({
@@ -2006,8 +1998,26 @@ export default function App() {
           });
       }
     } catch (supaErr) {
-      console.error('Supabase DB proposal insert error:', supaErr);
+      console.warn('Supabase DB proposal insert notice:', supaErr);
     }
+
+    // Sync to Express API backend
+    try {
+      await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: newProposalObj.id,
+          rawText: textToSubmit.trim(),
+          proposerId: userId,
+          isAiSuggested: isAi,
+        }),
+      });
+    } catch (err) {
+      console.warn('Express API unavailable, proposal saved in Supabase & local state.');
+    }
+
+    fetchRoomDetails(activeRoomId!, true);
   };
 
   // State for Editing Proposal
