@@ -1202,13 +1202,18 @@ export default function App() {
         isAiSuggested: p.is_ai_suggested !== undefined ? p.is_ai_suggested : (Boolean((p as any).isAiSuggested) || (p.id && p.id.startsWith('prop-ai-')) || p.proposer_id === 'gemini-ai')
       }));
 
-      const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id));
+      const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id).filter(Boolean));
 
       // Calculate unique submitters with fallbacks
       const uniqueSubmitters = new Set(
         mappedIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean)
       );
       console.log(`[SYNC] Supabase DB 고유 참여자 계산 완료 (${uniqueSubmitters.size}명)`);
+
+      const targetMinThreshold = Math.max(roomData.min_response_threshold || 1, (participantsData || []).length || uniqueSubmitters.size || 1);
+      roomObj.minResponseThreshold = targetMinThreshold;
+      const evaluatorsCount = uniqueEvaluators.size;
+      const minResponseThresholdMet = evaluatorsCount >= targetMinThreshold;
 
       const dataObj: RoomDetails = {
         room: roomObj,
@@ -1219,7 +1224,7 @@ export default function App() {
         completedParticipantsCount: uniqueSubmitters.size,
         participants: mappedParticipants,
         rounds: [],
-        evaluatorsCount: uniqueEvaluators.size || (participantsData || []).length || 1,
+        evaluatorsCount,
         myEvaluations: (evaluationsData || []).filter(e => e.evaluator_id === userId).map(e => ({
           id: e.id,
           roomId: e.room_id,
@@ -1232,7 +1237,7 @@ export default function App() {
           round: e.round || 1
         })),
         hasEvaluated: (evaluationsData || []).some(e => e.evaluator_id === userId),
-        minResponseThresholdMet: true,
+        minResponseThresholdMet,
         scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
       };
 

@@ -1307,10 +1307,13 @@ app.get('/api/rooms/:id', async (req, res) => {
   const roomEvals = evaluations.get(id) || [];
   const roomRounds = eliminationRounds.get(id) || [];
 
-  // Compute unique evaluators
+  // Compute unique evaluators and dynamic target threshold
   const evaluators = Array.from(new Set(roomEvals.map(e => e.evaluatorId).filter(Boolean)));
   const evaluatorsCount = evaluators.length;
-  const minResponseThresholdMet = evaluatorsCount >= room.minResponseThreshold;
+  const roomParticipants = participants.get(id);
+  const targetThreshold = Math.max(room.minResponseThreshold || 1, roomParticipants ? roomParticipants.size : 1);
+  const minResponseThresholdMet = evaluatorsCount >= targetThreshold;
+  room.minResponseThreshold = targetThreshold;
 
   // Filter evaluations to only return the current caller's private evaluations if they want to view/edit them
   const myEvaluations = userId 
@@ -1337,11 +1340,11 @@ app.get('/api/rooms/:id', async (req, res) => {
   const completedParticipantsCount = uniqueSubmitters.size;
 
   // Determine starVoteStatus using unique submitters count (uniqueSubmitters.size)
-  const targetThreshold = uniqueSubmitters.size || 1;
+  const starVoteThreshold = uniqueSubmitters.size || 1;
   let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
   if (room.status === 'CLOSED') {
     starVoteStatus = 'finalized';
-  } else if (rStarVotes.size >= targetThreshold) {
+  } else if (rStarVotes.size >= starVoteThreshold) {
     const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
     const targetWinners = room.targetWinnerCount || 1;
     const sortedIdeas = [...activeIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
