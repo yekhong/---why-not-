@@ -1405,29 +1405,33 @@ app.get('/api/rooms/:id', async (req, res) => {
       };
     });
 
-    // Populate from all evaluations
-    const MAX_VOTERS = 6;
+    // Populate from all evaluations with criteria count weighting
     roomEvals.forEach(ev => {
       const scoreObj = aggregatedScores[ev.ideaId];
       if (scoreObj) {
+        const rawList = ev.excludedCriterionIds || (ev as any).excluded_criterion_ids || [];
+        const criteriaCount = Math.max(1, rawList.length);
+
         if (ev.decision === 'KEEP') {
           scoreObj.keepCount += 1;
+          scoreObj.score += 5 * criteriaCount;
         } else if (ev.decision === 'NEUTRAL') {
           scoreObj.neutralCount += 1;
         } else if (ev.decision === 'EXCLUDE') {
           scoreObj.excludeCount += 1;
+          scoreObj.score -= 5 * criteriaCount;
           if (ev.reasonType === 'OBJECTIVE_CONSTRAINT') {
             scoreObj.objectiveExcludeCount += 1;
+            scoreObj.score -= 25;
           }
         }
       }
     });
 
-    // Calculate score using agreeVotes / MAX_VOTERS * 100 rounded to integer (0~100)
     roomIdeas.forEach(idea => {
       const scoreObj = aggregatedScores[idea.id];
       if (scoreObj) {
-        scoreObj.score = Math.min(100, Math.max(0, Math.round((scoreObj.keepCount / MAX_VOTERS) * 100)));
+        scoreObj.score = Math.max(0, scoreObj.score);
       }
     });
 
@@ -2588,7 +2592,13 @@ app.post('/api/rooms/:id/elimination/next', async (req, res) => {
       const ideaEvals = evs.filter(e => e.ideaId === idea.id);
       const keepCount = ideaEvals.filter(e => e.decision === 'KEEP').length;
       const excludeCount = ideaEvals.filter(e => e.decision === 'EXCLUDE').length;
-      const netScore = keepCount - excludeCount;
+      const netScore = ideaEvals.reduce((acc, e) => {
+        const rawList = e.excludedCriterionIds || (e as any).excluded_criterion_ids || [];
+        const cnt = Math.max(1, rawList.length);
+        if (e.decision === 'KEEP') return acc + 5 * cnt;
+        if (e.decision === 'EXCLUDE') return acc - (5 * cnt) - (e.reasonType === 'OBJECTIVE_CONSTRAINT' ? 25 : 0);
+        return acc;
+      }, 0);
       return { idea, keepCount, excludeCount, netScore };
     });
 

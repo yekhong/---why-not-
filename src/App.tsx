@@ -400,6 +400,9 @@ export default function App() {
     reasonType: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   }>>({});
 
+  // 3단계 익명 평가 작성/수정 토글 상태
+  const [isEditingMyEvaluation, setIsEditingMyEvaluation] = useState<boolean>(false);
+
   // 4단계 2차 투표 별 스티커 투표 로컬 상태 (선택 중인 아이디어 ID 목록)
   const [mySelectedStarIdeaIds, setMySelectedStarIdeaIds] = useState<string[]>([]);
   const [isSubmittingStarVote, setIsSubmittingStarVote] = useState(false);
@@ -1220,6 +1223,45 @@ export default function App() {
       const evaluatorsCount = uniqueEvaluators.size;
       const minResponseThresholdMet = evaluatorsCount >= targetMinThreshold;
 
+      const scoreConfig = { keepWeight: 5, neutralWeight: 0, excludeWeight: -5, objectiveConstraintPenalty: 25 };
+      const aggregatedScores: Record<string, { score: number; keepCount: number; neutralCount: number; excludeCount: number; objectiveExcludeCount: number }> = {};
+
+      mappedIdeas.forEach(idea => {
+        const ideaEvals = (evaluationsData || []).filter(e => e.idea_id === idea.id);
+        let keepCount = 0;
+        let neutralCount = 0;
+        let excludeCount = 0;
+        let objectiveExcludeCount = 0;
+        let score = 0;
+
+        ideaEvals.forEach(e => {
+          const rawList = e.excluded_criterion_ids || e.excludedCriterionIds || [];
+          const criteriaCount = Math.max(1, rawList.length);
+          if (e.decision === 'KEEP') {
+            keepCount += 1;
+            score += scoreConfig.keepWeight * criteriaCount;
+          } else if (e.decision === 'NEUTRAL') {
+            neutralCount += 1;
+            score += scoreConfig.neutralWeight * criteriaCount;
+          } else if (e.decision === 'EXCLUDE') {
+            excludeCount += 1;
+            score += scoreConfig.excludeWeight * criteriaCount;
+            if (e.reason_type === 'OBJECTIVE_CONSTRAINT') {
+              objectiveExcludeCount += 1;
+              score -= scoreConfig.objectiveConstraintPenalty;
+            }
+          }
+        });
+
+        aggregatedScores[idea.id] = {
+          score,
+          keepCount,
+          neutralCount,
+          excludeCount,
+          objectiveExcludeCount
+        };
+      });
+
       const dataObj: RoomDetails = {
         room: roomObj,
         ideas: mappedIdeas,
@@ -1230,6 +1272,7 @@ export default function App() {
         participants: mappedParticipants,
         rounds: [],
         evaluatorsCount,
+        aggregatedScores,
         myEvaluations: (evaluationsData || []).filter(e => e.evaluator_id === userId).map(e => ({
           id: e.id,
           roomId: e.room_id,
@@ -1243,7 +1286,7 @@ export default function App() {
         })),
         hasEvaluated: (evaluationsData || []).some(e => e.evaluator_id === userId),
         minResponseThresholdMet,
-        scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
+        scoreConfig
       };
 
       setRoomDetails(dataObj);
@@ -2358,10 +2401,10 @@ export default function App() {
     const newAggregated: Record<string, any> = { ...existingAggregated };
 
     const scoreConfig = roomDetails?.scoreConfig || {
-      keepWeight: 2,
-      neutralWeight: 1,
-      excludeWeight: 0,
-      objectiveConstraintPenalty: 3
+      keepWeight: 5,
+      neutralWeight: 0,
+      excludeWeight: -5,
+      objectiveConstraintPenalty: 25
     };
 
     activeIdeas.forEach(idea => {
@@ -2381,15 +2424,18 @@ export default function App() {
       let objectiveExcludeCount = currentStats.objectiveExcludeCount || 0;
       let score = currentStats.score || 0;
 
+      const rawList = vote.excludedCriterionIds || (vote as any).excluded_criterion_ids || [];
+      const criteriaCount = Math.max(1, rawList.length);
+
       if (vote.decision === 'KEEP') {
         keepCount += 1;
-        score += scoreConfig.keepWeight;
+        score += scoreConfig.keepWeight * criteriaCount;
       } else if (vote.decision === 'NEUTRAL') {
         neutralCount += 1;
-        score += scoreConfig.neutralWeight;
+        score += scoreConfig.neutralWeight * criteriaCount;
       } else if (vote.decision === 'EXCLUDE') {
         excludeCount += 1;
-        score += scoreConfig.excludeWeight;
+        score += scoreConfig.excludeWeight * criteriaCount;
         if (vote.reasonType === 'OBJECTIVE_CONSTRAINT') {
           objectiveExcludeCount += 1;
           score -= scoreConfig.objectiveConstraintPenalty;
@@ -2422,6 +2468,7 @@ export default function App() {
     });
 
     triggerToast('익명 1차 투표 및 평가가 성공적으로 완료되었습니다!');
+    setIsEditingMyEvaluation(false);
 
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
@@ -4460,7 +4507,7 @@ export default function App() {
                       </div>
 
                       {/* Check if User already evaluated */}
-                      {roomDetails.hasEvaluated ? (
+                      {(roomDetails.hasEvaluated && !isEditingMyEvaluation) ? (
                         /* WAITING SCREEN AND GATE SHOWCASE */
                         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
                           <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
@@ -4511,16 +4558,32 @@ export default function App() {
                             );
                           })()}
 
-                          {/* Transition button for host */}
-                          {roomDetails.room.hostId === userId && roomDetails.minResponseThresholdMet && (
-                            <div className="flex items-center justify-center gap-2 pt-4 border-t border-slate-100">
+                          {/* Actions for host / participant */}
+                          <div className="flex items-center justify-center gap-2 pt-4 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (roomDetails.myEvaluations && roomDetails.myEvaluations.length > 0) {
+                                  const initialSubmissions: Record<string, any> = {};
+                                  roomDetails.myEvaluations.forEach(e => {
+                                    initialSubmissions[e.ideaId] = {
+                                      decision: e.decision,
+                                      excludedCriterionIds: e.excludedCriterionIds || [],
+                                      reasonText: e.reasonText || '',
+                                      reasonType: e.reasonType || 'PREFERENCE'
+                                    };
+                                  });
+                                  setEvalSubmissions(initialSubmissions);
+                                }
+                                setIsEditingMyEvaluation(true);
+                              }}
+                              className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition"
+                            >
+                              이전 단계(평가검토)로 되돌아가기
+                            </button>
+                            {roomDetails.room.hostId === userId && roomDetails.minResponseThresholdMet && (
                               <button
-                                onClick={() => handleForceChangeStatus('CRITERIA_REVIEW')}
-                                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition"
-                              >
-                                이전 단계(평가검토)로 되돌아가기
-                              </button>
-                              <button
+                                type="button"
                                 onClick={() => handleForceChangeStatus('ELIMINATION')}
                                 className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
                               >
@@ -4528,12 +4591,27 @@ export default function App() {
                                 피드백 보러가기 & 2차 투표 하러가기
                                 <ArrowRight className="w-4 h-4" />
                               </button>
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
                       ) : (
                         /* ACTIVE SCREENING VOTING CARDS */
                         <div className="space-y-6">
+                          {isEditingMyEvaluation && (
+                            <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 p-4 rounded-2xl shadow-xs">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm">✏️</span>
+                                <span className="text-xs font-extrabold text-indigo-950">내 익명 평가 작성 내용을 재검토 및 수정 중입니다.</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setIsEditingMyEvaluation(false)}
+                                className="text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 px-3 py-1.5 rounded-xl transition shadow-2xs"
+                              >
+                                대기 화면으로 돌아가기
+                              </button>
+                            </div>
+                          )}
                           <div className="border-b border-slate-200 pb-2">
                             <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
                           </div>
@@ -4800,11 +4878,6 @@ export default function App() {
                                         {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                       </button>
                                     </div>
-                                  </div>
-
-                                  <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
-                                    <span className="text-[10px] text-slate-400 font-bold block leading-none">종합점수</span>
-                                    <span className="text-lg font-black text-slate-900">{stats.score}점</span>
                                   </div>
                                 </div>
 
