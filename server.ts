@@ -1006,6 +1006,33 @@ app.post('/api/rooms', (req, res) => {
 });
 
 /**
+ * Update room settings (Host only)
+ */
+app.patch('/api/rooms/:id', (req, res) => {
+  const { id } = req.params;
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  const { title, description, category, maxParticipants, targetWinnerCount, minResponseThreshold, hostId } = req.body;
+
+  if (hostId && room.hostId !== hostId) {
+    return res.status(403).json({ error: '방장만 방 설정을 변경할 수 있습니다.' });
+  }
+
+  if (title !== undefined) room.title = title;
+  if (description !== undefined) room.description = description;
+  if (category !== undefined) room.category = category;
+  if (maxParticipants !== undefined) room.maxParticipants = Math.min(Math.max(Number(maxParticipants) || 4, 1), 6);
+  if (targetWinnerCount !== undefined) room.targetWinnerCount = Math.min(Math.max(Number(targetWinnerCount) || 1, 1), 3);
+  if (minResponseThreshold !== undefined) room.minResponseThreshold = Number(minResponseThreshold) || 3;
+
+  rooms.set(id, room);
+  res.json({ success: true, room });
+});
+
+/**
  * 3. Fetch detailed room info with strict anonymity gate filters
  */
 app.get('/api/rooms/:id', async (req, res) => {
