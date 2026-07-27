@@ -568,24 +568,27 @@ export default function App() {
 
     fetchRooms();
 
-    // 1. Detect /invite/:inviteToken or ?inviteToken=...
+    // 1. URL 쿼리 파라미터 및 로컬 저장소에서 활성 방 정보 복원
+    const params = new URLSearchParams(window.location.search);
+    const urlRoomId = params.get('room') || params.get('roomId');
+    const urlRole = params.get('role') || 'member';
+    const savedRoomId = localStorage.getItem('why_not_active_room_id');
+    const targetRoomId = urlRoomId || savedRoomId;
+
+    // 2. Detect /invite/:inviteToken or ?inviteToken=... (Only if not already active in a room)
     const pathname = window.location.pathname;
     const inviteMatch = pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
-    const params = new URLSearchParams(window.location.search);
     const tokenFromUrl = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
 
-    if (tokenFromUrl) {
+    if (tokenFromUrl && !targetRoomId) {
       setLandingInviteToken(tokenFromUrl);
       fetchInviteLandingDetails(tokenFromUrl);
       return;
     }
 
-    // 2. URL 쿼리 파라미터에서 room 및 role 분석하여 방에 자동 입장 처리 (① 참여자 링크 vs ② 투표자 링크)
-    const urlRoomId = params.get('room') || params.get('roomId');
-    const urlRole = params.get('role') || 'member';
-
-    const savedRoomId = localStorage.getItem('why_not_active_room_id');
-    const targetRoomId = urlRoomId || savedRoomId;
+    if (tokenFromUrl && targetRoomId) {
+      window.history.replaceState({}, '', '/');
+    }
 
     if (targetRoomId) {
       if (urlRole === 'voter') {
@@ -833,6 +836,7 @@ export default function App() {
         setActiveRoomId(targetRoomId);
         setLandingInviteToken(null);
         setLandingInviteData(null);
+        setInviteTokenExpiresAt(null);
         window.history.replaceState({}, '', '/');
         triggerToast(data.message || '회의실 참가가 완료되었습니다!');
         handleSelectRoom(targetRoomId, userId, nameToUse);
@@ -853,6 +857,7 @@ export default function App() {
       setActiveRoomId(targetRoomId);
       setLandingInviteToken(null);
       setLandingInviteData(null);
+      setInviteTokenExpiresAt(null);
       window.history.replaceState({}, '', '/');
       triggerToast('회의실 참가가 완료되었습니다!');
       handleSelectRoom(targetRoomId, userId, nameToUse);
@@ -3032,7 +3037,7 @@ export default function App() {
         {/* -----------------------------------------------------------
             INVITE LINK LANDING CARD (3-Minute Expiring Token Landing)
             ----------------------------------------------------------- */}
-        {landingInviteToken ? (
+        {(landingInviteToken && !activeRoomId) ? (
           <div className="py-12 max-w-lg mx-auto">
             {landingLoading ? (
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-xl text-center space-y-4">
