@@ -57,6 +57,8 @@ export interface CriterionProposal {
   proposerId?: string;
   clusterId?: string;
   isAiSuggested?: boolean;
+  sourceType?: 'ai' | 'user';
+  updatedAt?: string;
 }
 
 export interface Criterion {
@@ -142,4 +144,26 @@ export interface RoomDetails {
     objectiveComments: string[];
     preferenceComments: string[];
   }>;
+}
+
+export interface RoomInvite {
+  id?: string;
+  roomId: string;
+  inviteToken: string;
+  createdBy: string;
+  expiresAt: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export interface InviteDetailsResponse {
+  isValid: boolean;
+  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'ERROR';
+  errorMessage?: string;
+  room?: Room;
+  hostNickname?: string;
+  participantCount?: number;
+  maxParticipants?: number;
+  expiresAt?: string;
+  secondsRemaining?: number;
 }

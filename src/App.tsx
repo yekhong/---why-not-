@@ -27,7 +27,9 @@ import {
   Edit,
   Download,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Clock,
+  Share2
 } from 'lucide-react';
 import {
   Room,
@@ -38,7 +40,8 @@ import {
   Evaluation,
   EliminationRound,
   RoomDetails,
-  Participant
+  Participant,
+  InviteDetailsResponse
 } from './types';
 
 import { supabase } from './supabase';
@@ -333,6 +336,19 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
 
   // ----------------------------------------------------------------
+  // 3-Minute Expiring Invite Token & Landing Card States
+  // ----------------------------------------------------------------
+  const [activeInviteToken, setActiveInviteToken] = useState<string | null>(null);
+  const [inviteTokenExpiresAt, setInviteTokenExpiresAt] = useState<string | null>(null);
+  const [inviteSecondsLeft, setInviteSecondsLeft] = useState<number>(180);
+
+  const [landingInviteToken, setLandingInviteToken] = useState<string | null>(null);
+  const [landingInviteData, setLandingInviteData] = useState<InviteDetailsResponse | null>(null);
+  const [landingLoading, setLandingLoading] = useState<boolean>(false);
+  const [landingNicknameInput, setLandingNicknameInput] = useState<string>('');
+  const [joiningInvite, setJoiningInvite] = useState<boolean>(false);
+
+  // ----------------------------------------------------------------
   // Forms & Interactive UI states (ENTRY-02, IDEA-02, IDEA-03)
   // ----------------------------------------------------------------
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
@@ -551,8 +567,19 @@ export default function App() {
 
     fetchRooms();
 
-    // URL 쿼리 파라미터에서 room 및 role 분석하여 방에 자동 입장 처리 (① 참여자 링크 vs ② 투표자 링크)
+    // 1. Detect /invite/:inviteToken or ?inviteToken=...
+    const pathname = window.location.pathname;
+    const inviteMatch = pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
     const params = new URLSearchParams(window.location.search);
+    const tokenFromUrl = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
+
+    if (tokenFromUrl) {
+      setLandingInviteToken(tokenFromUrl);
+      fetchInviteLandingDetails(tokenFromUrl);
+      return;
+    }
+
+    // 2. URL 쿼리 파라미터에서 room 및 role 분석하여 방에 자동 입장 처리 (① 참여자 링크 vs ② 투표자 링크)
     const urlRoomId = params.get('room') || params.get('roomId');
     const urlRole = params.get('role') || 'member';
 
@@ -569,19 +596,223 @@ export default function App() {
     }
   }, []);
 
-  // Sync polling for details when inside a room
+  // 3-Minute Live Expiration Timer
+  useEffect(() => {
+    const targetTimeStr = landingInviteData?.expiresAt || inviteTokenExpiresAt;
+    if (!targetTimeStr) return;
+
+    const updateTimer = () => {
+      const now = new Date().getTime();
+      const exp = new Date(targetTimeStr).getTime();
+      const diff = Math.max(0, Math.floor((exp - now) / 1000));
+      setInviteSecondsLeft(diff);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [inviteTokenExpiresAt, landingInviteData?.expiresAt]);
+
+  // Realtime Subscription for Participant changes
   useEffect(() => {
     if (!activeRoomId) return;
 
     fetchRoomDetails(activeRoomId);
 
-    // 실시간 동기화를 위해 3초마다 방 정보 백그라운드 폴링 실행
+    // Supabase Realtime Subscription for instantaneous member list updates
+    const channel = supabase
+      .channel(`room-participants-${activeRoomId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${activeRoomId}` },
+        (payload) => {
+          console.log('[REALTIME] Participant changed:', payload);
+          fetchRoomDetails(activeRoomId, true);
+        }
+      )
+      .subscribe();
+
+    // 3-second background polling fallback
     const interval = setInterval(() => {
       fetchRoomDetails(activeRoomId, true);
     }, 3000);
 
-    return () => clearInterval(interval);
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
   }, [activeRoomId]);
+
+  // Generate or Refresh 3-Minute Invite Token
+  const handleGenerateNewInviteToken = async (roomId: string) => {
+    try {
+      // 1. Try Supabase RPC
+      const { data, error } = await supabase.rpc('create_room_invite', {
+        p_room_id: roomId,
+        p_user_id: userId || 'host'
+      });
+
+      if (!error && data && data.success) {
+        setActiveInviteToken(data.invite_token);
+        setInviteTokenExpiresAt(data.expires_at);
+        triggerToast('새로운 3분 초대 링크가 생성되었습니다. (기존 링크 비활성화 완료)');
+        return data.invite_token;
+      }
+
+      // 2. Express Backend API fallback
+      const res = await fetch(`/api/rooms/${roomId}/invites`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: userId || 'host' })
+      });
+      const apiData = await res.json();
+      if (apiData.success && apiData.invite) {
+        setActiveInviteToken(apiData.invite.inviteToken);
+        setInviteTokenExpiresAt(apiData.invite.expiresAt);
+        triggerToast('새로운 3분 초대 링크가 생성되었습니다. (기존 링크 비활성화 완료)');
+        return apiData.invite.inviteToken;
+      }
+    } catch (err: any) {
+      console.error('Failed to create invite token:', err);
+      triggerToast('초대 링크 생성 중 오류가 발생했습니다.', 'error');
+    }
+    return null;
+  };
+
+  // Deactivate active invite token for room
+  const handleDeactivateInviteToken = async (roomId: string) => {
+    try {
+      await supabase.rpc('deactivate_room_invite', {
+        p_room_id: roomId,
+        p_user_id: userId || 'host'
+      });
+      await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      setActiveInviteToken(null);
+      setInviteTokenExpiresAt(null);
+      triggerToast('초대 링크가 비활성화되었습니다.');
+    } catch (err: any) {
+      console.error('Failed to deactivate invite token:', err);
+    }
+  };
+
+  // Fetch Invite Landing Details
+  const fetchInviteLandingDetails = async (token: string) => {
+    setLandingLoading(true);
+    try {
+      // 1. Try Supabase RPC
+      const { data, error } = await supabase.rpc('get_invite_details', { p_token: token });
+
+      if (!error && data) {
+        if (!data.is_valid) {
+          setLandingInviteData({
+            isValid: false,
+            errorCode: data.error_code,
+            errorMessage: data.error_message
+          });
+        } else {
+          setLandingInviteData({
+            isValid: true,
+            room: {
+              id: data.room.id,
+              title: data.room.title,
+              description: data.room.description,
+              category: data.room.category,
+              isPublic: data.room.is_public,
+              maxParticipants: data.room.max_participants,
+              status: data.room.status,
+              hostId: data.room.host_id,
+              minResponseThreshold: 3,
+              eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+              deadlines: {},
+              createdAt: new Date().toISOString()
+            },
+            hostNickname: data.host_nickname,
+            participantCount: data.participant_count,
+            maxParticipants: data.max_participants,
+            expiresAt: data.expires_at,
+            secondsRemaining: data.seconds_remaining
+          });
+          if (data.seconds_remaining) {
+            setInviteSecondsLeft(data.seconds_remaining);
+          }
+        }
+        setLandingLoading(false);
+        return;
+      }
+
+      // 2. Express Backend API fallback
+      const res = await fetch(`/api/invites/${token}`);
+      const apiData: InviteDetailsResponse = await res.json();
+      setLandingInviteData(apiData);
+      if (apiData.secondsRemaining) {
+        setInviteSecondsLeft(apiData.secondsRemaining);
+      }
+    } catch (err: any) {
+      console.error('Failed to fetch invite details:', err);
+      setLandingInviteData({
+        isValid: false,
+        errorCode: 'ERROR',
+        errorMessage: '초대 링크 정보를 확인하는 중 오류가 발생했습니다.'
+      });
+    } finally {
+      setLandingLoading(false);
+    }
+  };
+
+  // Atomic Join Room via Invite Token
+  const handleJoinRoomViaInvite = async (token: string) => {
+    if (joiningInvite) return;
+    setJoiningInvite(true);
+
+    const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
+    localStorage.setItem('why_not_user_name', nameToUse);
+    setNickname(nameToUse);
+
+    try {
+      // 1. Try Supabase RPC Join (Atomic lock & 3-min expiration check in PostgreSQL)
+      const { data, error } = await supabase.rpc('join_room_via_invite', {
+        p_token: token,
+        p_user_id: userId,
+        p_nickname: nameToUse
+      });
+
+      if (!error && data && data.success) {
+        const targetRoomId = data.room_id;
+        localStorage.setItem('why_not_active_room_id', targetRoomId);
+        setActiveRoomId(targetRoomId);
+        setLandingInviteToken(null);
+        setLandingInviteData(null);
+        window.history.replaceState({}, '', '/');
+        triggerToast(data.message || '회의실 참가가 완료되었습니다!');
+        handleSelectRoom(targetRoomId, userId, nameToUse);
+        return;
+      }
+
+      // 2. Express Backend API fallback
+      const res = await fetch(`/api/invites/${token}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, nickname: nameToUse })
+      });
+      const apiData = await res.json();
+      if (!res.ok) throw new Error(apiData.error || '참가 처리에 실패했습니다.');
+
+      const targetRoomId = apiData.roomId;
+      localStorage.setItem('why_not_active_room_id', targetRoomId);
+      setActiveRoomId(targetRoomId);
+      setLandingInviteToken(null);
+      setLandingInviteData(null);
+      window.history.replaceState({}, '', '/');
+      triggerToast('회의실 참가가 완료되었습니다!');
+      handleSelectRoom(targetRoomId, userId, nameToUse);
+    } catch (err: any) {
+      console.error('Join room error:', err);
+      triggerToast(err.message || '참가에 실패했습니다.', 'error');
+      fetchInviteLandingDetails(token);
+    } finally {
+      setJoiningInvite(false);
+    }
+  };
 
   // Show Toast Auto-dismiss
   const triggerToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -1088,15 +1319,12 @@ export default function App() {
       setNewRoomVoteEndTime('');
       setNewRoomThreshold(3);
 
-      // Select the newly created room & open Dual Link Share Modal immediately
+      // Select the newly created room, generate 3-minute invite token & open Share Modal
       setActiveRoomId(createdRoomId);
       setShowShareModal(true);
+      handleGenerateNewInviteToken(createdRoomId);
       fetchRoomDetails(createdRoomId);
       fetchRooms();
-
-      // Select the newly created room & fetch details immediately
-      setActiveRoomId(createdRoomId);
-      fetchRoomDetails(createdRoomId);
       fetchRooms();
     } catch (err: any) {
       console.error('Room Creation Failed:', err);
@@ -1719,78 +1947,105 @@ export default function App() {
   // State for Editing Proposal
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [editingProposalText, setEditingProposalText] = useState<string>('');
+  const [deletingProposalId, setDeletingProposalId] = useState<string | null>(null);
 
   // Save edited proposal
   const handleSaveProposal = async (proposalId: string) => {
-    if (!editingProposalText.trim()) {
-      triggerToast('수정할 평가 기준 내용을 입력해 주세요.', 'error');
+    const updatedText = editingProposalText.trim();
+    if (!updatedText) {
+      triggerToast('평가 기준 내용을 입력해 주세요.', 'error');
       return;
     }
 
-    const updatedText = editingProposalText.trim();
-
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const updatedProposals = (prev.proposals || []).map(p =>
-        p.id === proposalId ? { ...p, rawText: updatedText } : p
-      );
-      return {
-        ...prev,
-        proposals: updatedProposals
-      };
-    });
-
     setEditingProposalId(null);
     setEditingProposalText('');
-    triggerToast('제안된 평가 기준이 수정되었습니다.');
 
     try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      // 1. Supabase RPC Update (Security Definable validation)
+      const { data, error } = await supabase.rpc('update_criterion_proposal', {
+        p_proposal_id: proposalId,
+        p_new_text: updatedText,
+        p_user_id: userId
+      });
+
+      if (error) {
+        console.warn('Supabase RPC update error:', error);
+        if (error.message?.includes('권한') || error.code === '42501') {
+          triggerToast('이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
+          if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+          return;
+        }
+      } else if (data && data.success) {
+        triggerToast('제안된 평가 기준이 수정되었습니다.');
+        if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+        return;
+      }
+
+      // 2. Express Backend API fallback
+      const res = await fetch(`/api/rooms/${activeRoomId}/proposals/${proposalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: updatedText })
-      }).catch(() => { });
+        body: JSON.stringify({ rawText: updatedText, userId })
+      });
 
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('criterion_proposals')
-          .update({ raw_text: updatedText })
-          .eq('id', proposalId);
+      if (!res.ok) {
+        const apiErr = await res.json().catch(() => ({}));
+        throw new Error(apiErr.error || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.');
       }
-    } catch (err) {
+
+      triggerToast('제안된 평가 기준이 수정되었습니다.');
+      if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+    } catch (err: any) {
       console.error('Update proposal error:', err);
+      triggerToast(err.message || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
+      if (activeRoomId) fetchRoomDetails(activeRoomId, true);
     }
   };
 
-  // Delete proposal
-  const handleDeleteProposal = async (proposalId: string) => {
-    if (!window.confirm('이 제안된 평가 기준을 삭제하시겠습니까?')) return;
-
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const updatedProposals = (prev.proposals || []).filter(p => p.id !== proposalId);
-      return {
-        ...prev,
-        proposals: updatedProposals,
-        proposalsCount: updatedProposals.length
-      };
-    });
-
-    triggerToast('제안된 평가 기준이 삭제되었습니다.');
+  // Confirm and Delete proposal
+  const handleConfirmDeleteProposal = async () => {
+    if (!deletingProposalId || !activeRoomId) return;
+    const targetId = deletingProposalId;
+    setDeletingProposalId(null);
 
     try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
-        method: 'DELETE'
-      }).catch(() => { });
+      // 1. Supabase RPC Delete (Security Definable validation)
+      const { data, error } = await supabase.rpc('delete_criterion_proposal', {
+        p_proposal_id: targetId,
+        p_user_id: userId
+      });
 
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('criterion_proposals')
-          .delete()
-          .eq('id', proposalId);
+      if (error) {
+        console.warn('Supabase RPC delete error:', error);
+        if (error.message?.includes('권한') || error.code === '42501') {
+          triggerToast('이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
+          fetchRoomDetails(activeRoomId, true);
+          return;
+        }
+      } else if (data && data.success) {
+        triggerToast('제안된 평가 기준이 삭제되었습니다.');
+        fetchRoomDetails(activeRoomId, true);
+        return;
       }
-    } catch (err) {
+
+      // 2. Express Backend API fallback
+      const res = await fetch(`/api/rooms/${activeRoomId}/proposals/${targetId}?userId=${userId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
+      });
+
+      if (!res.ok) {
+        const apiErr = await res.json().catch(() => ({}));
+        throw new Error(apiErr.error || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.');
+      }
+
+      triggerToast('제안된 평가 기준이 삭제되었습니다.');
+      fetchRoomDetails(activeRoomId, true);
+    } catch (err: any) {
       console.error('Delete proposal error:', err);
+      triggerToast(err.message || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
+      fetchRoomDetails(activeRoomId, true);
     }
   };
 
@@ -2727,9 +2982,148 @@ export default function App() {
         </AnimatePresence>
 
         {/* -----------------------------------------------------------
-            STANDALONE LANDING PAGE (IA 0.1: 비로그인 시 노출되는 전용 랜딩페이지)
+            INVITE LINK LANDING CARD (3-Minute Expiring Token Landing)
             ----------------------------------------------------------- */}
-        {!isLoggedIn ? (
+        {landingInviteToken ? (
+          <div className="py-12 max-w-lg mx-auto">
+            {landingLoading ? (
+              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-xl text-center space-y-4">
+                <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                <p className="text-sm font-bold text-slate-600">초대 링크 유효성을 검증하고 있습니다...</p>
+              </div>
+            ) : !landingInviteData?.isValid ? (
+              <div className="bg-white p-8 rounded-3xl border border-rose-200 shadow-xl text-center space-y-5">
+                <div className="w-14 h-14 bg-rose-50 border border-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto shadow-sm">
+                  <AlertCircle className="w-7 h-7 text-rose-500" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-xl font-extrabold text-slate-900">
+                    {landingInviteData?.errorCode === 'EXPIRED' ? '생성된 지 3분이 지나 만료된 초대 링크입니다' :
+                     landingInviteData?.errorCode === 'DEACTIVATED' ? '방장에 의해 비활성화된 초대 링크입니다' :
+                     landingInviteData?.errorCode === 'CAPACITY_FULL' ? '최대 참가 가능 인원이 초과된 회의실입니다' :
+                     landingInviteData?.errorCode === 'ROOM_CLOSED' ? '이미 종료된 회의실입니다' :
+                     landingInviteData?.errorCode === 'ROOM_DELETED' ? '삭제된 회의실입니다' :
+                     '유효하지 않은 초대 링크입니다'}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                    {landingInviteData?.errorMessage || '유효하지 않거나 만료된 초대 링크입니다. 방장에게 새로운 3분 초대 링크를 요청해 주세요.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLandingInviteToken(null);
+                    setLandingInviteData(null);
+                    window.history.replaceState({}, '', '/');
+                  }}
+                  className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+                >
+                  메인 로비로 이동하기
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white p-8 rounded-3xl border border-indigo-100 shadow-2xl space-y-6 text-left relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-600 via-amber-400 to-indigo-600" />
+
+                <div className="flex items-center justify-between">
+                  <span className={`text-xs font-extrabold px-3 py-1 rounded-full ${
+                    landingInviteData.room?.isPublic ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                  }`}>
+                    {landingInviteData.room?.isPublic ? '🌐 공개 회의실' : '🔒 비공개 회의실'}
+                  </span>
+
+                  {/* 3-Minute Live Countdown Badge */}
+                  <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border ${
+                    inviteSecondsLeft <= 30
+                      ? 'bg-rose-50 text-rose-600 border-rose-200 animate-pulse'
+                      : 'bg-amber-50 text-amber-900 border-amber-200'
+                  }`}>
+                    <Clock className="w-3.5 h-3.5 text-amber-600" />
+                    <span>
+                      {inviteSecondsLeft > 0
+                        ? `⏱️ 만료까지 ${Math.floor(inviteSecondsLeft / 60)}분 ${inviteSecondsLeft % 60}초`
+                        : '⏱️ 만료됨 (3분 초과)'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-1 border-b border-slate-100 pb-5">
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest block">회의실 전용 초대장</span>
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tight leading-snug">
+                    {landingInviteData.room?.title}
+                  </h2>
+                  <p className="text-xs text-slate-500 leading-relaxed font-medium">
+                    {landingInviteData.room?.description || '작성된 설명이 없습니다.'}
+                  </p>
+                </div>
+
+                {/* Meta details grid */}
+                <div className="grid grid-cols-2 gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs">
+                  <div className="space-y-1">
+                    <span className="text-slate-400 font-bold block">👑 방장 닉네임</span>
+                    <span className="font-extrabold text-slate-900">{landingInviteData.hostNickname}</span>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-slate-400 font-bold block">👥 현재 참가 인원</span>
+                    <span className="font-extrabold text-indigo-600">
+                      {landingInviteData.participantCount} / {landingInviteData.maxParticipants}명 (최대 6명)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Nickname Input for joining */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700">입장 시 사용할 닉네임 설정 <span className="text-rose-500">*</span></label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={landingNicknameInput}
+                    onChange={e => setLandingNicknameInput(e.target.value.slice(0, 6))}
+                    placeholder={nickname || '닉네임 입력 (최대 6자)'}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-900"
+                  />
+                </div>
+
+                <div className="pt-2 space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleJoinRoomViaInvite(landingInviteToken)}
+                    disabled={joiningInvite || inviteSecondsLeft <= 0 || (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6)}
+                    className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-black transition shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {joiningInvite ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>회의실에 참가하는 중...</span>
+                      </>
+                    ) : inviteSecondsLeft <= 0 ? (
+                      <span>⚠️ 생성 후 3분이 지나 만료되었습니다</span>
+                    ) : (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6) ? (
+                      <span>⚠️ 정원이 가득 찬 회의실입니다</span>
+                    ) : (
+                      <>
+                        <Users className="w-4 h-4" />
+                        <span>회의실 참가하기</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLandingInviteToken(null);
+                      setLandingInviteData(null);
+                      window.history.replaceState({}, '', '/');
+                    }}
+                    className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center"
+                  >
+                    취소하고 메인 로비로 이동
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : !isLoggedIn ? (
           <div className="py-8 md:py-16 max-w-4xl mx-auto space-y-12">
             <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-slate-900 text-white rounded-3xl p-8 md:p-14 shadow-2xl relative overflow-hidden text-center space-y-8">
               <div className="absolute top-0 right-0 -mt-12 -mr-12 w-96 h-96 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none" />
@@ -3802,8 +4196,10 @@ export default function App() {
                               </div>
                             ) : (
                               (roomDetails.proposals || []).map((p: any, idx: number) => {
-                                const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai');
-                                const isMyProposal = p.proposerId === userId || roomDetails.room.hostId === userId;
+                                const isHost = roomDetails.room.hostId === userId;
+                                const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai' || p.sourceType === 'ai');
+                                const isAuthor = p.proposerId === userId && !isAi;
+                                const canEditOrDelete = isHost || isAuthor;
                                 const isEditing = editingProposalId === p.id;
 
                                 return (
@@ -3817,22 +4213,24 @@ export default function App() {
                                           {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
                                         </span>
 
-                                        {/* Edit / Delete Buttons */}
-                                        {isMyProposal && !isEditing && (
+                                        {/* Edit / Delete Buttons (Host or Author only) */}
+                                        {canEditOrDelete && !isEditing && (
                                           <div className="flex items-center gap-1">
                                             <button
+                                              type="button"
                                               onClick={() => {
                                                 setEditingProposalId(p.id);
                                                 setEditingProposalText(p.rawText);
                                               }}
-                                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition"
+                                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition cursor-pointer"
                                               title="수정"
                                             >
                                               <Edit2 className="w-3 h-3" />
                                             </button>
                                             <button
-                                              onClick={() => handleDeleteProposal(p.id)}
-                                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
+                                              type="button"
+                                              onClick={() => setDeletingProposalId(p.id)}
+                                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
                                               title="삭제"
                                             >
                                               <Trash2 className="w-3 h-3" />
@@ -5110,17 +5508,18 @@ export default function App() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-6 text-left"
             >
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center font-bold">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-2xl flex items-center justify-center font-bold shrink-0">
                     🔗
                   </div>
                   <div>
-                    <h3 className="text-base font-bold text-slate-900">회의실 전용 링크 공유 및 관리</h3>
+                    <h3 className="text-lg font-bold text-slate-900 leading-snug">회의실 전용 링크 공유 및 관리</h3>
                     <p className="text-xs text-slate-400">참여자용 링크 및 2차 투표자 전용 공개 링크를 구분 발급합니다.</p>
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowShareModal(false)}
                   className="text-slate-400 hover:text-slate-600 transition"
                 >
@@ -5128,73 +5527,90 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Link Option 1: ① 참여자 전용 링크 */}
-              <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-600 text-white">
-                      ① 참여자 전용 링크
-                    </span>
-                    <span className="text-[11px] font-semibold text-indigo-900">최대 6명 (의견 및 아이디어 제출 가능)</span>
-                  </div>
+              {/* Card 1: ① 참여자 전용 링크 */}
+              <div className="p-5 bg-indigo-50/50 rounded-3xl border border-indigo-100/80 space-y-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-indigo-600 text-white">
+                    ① 참여자 전용 링크
+                  </span>
+                  <span className="text-xs font-bold text-indigo-900">최대 6명 (의견 및 아이디어 제출 가능)</span>
                 </div>
-                <p className="text-xs text-slate-600 leading-relaxed">
+
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
                   회의에 직접 동참하여 아이디어를 발제하고 익명 평가 기준을 제출하는 핵심 참여자 링크입니다. (입장 시 닉네임 최대 6자 설정)
                 </p>
 
                 {/* Email invitation form */}
-                <form onSubmit={handleSendEmailInvite} className="flex gap-2 pt-1">
+                <form onSubmit={handleSendEmailInvite} className="flex gap-2.5">
                   <input
                     type="email"
                     value={inviteEmailInput}
                     onChange={e => setInviteEmailInput(e.target.value)}
                     placeholder="참여자 이메일 입력 (예: member@company.com)"
-                    className="flex-1 px-3 py-2 border border-indigo-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
+                    className="flex-1 px-4 py-3 border border-indigo-200/80 rounded-2xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
                   />
                   <button
                     type="submit"
-                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs shrink-0"
+                    className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-xs shrink-0"
                   >
                     이메일 초대
                   </button>
                 </form>
 
+                {/* Copy Link Button */}
                 <button
-                  onClick={copyParticipantLink}
-                  className="w-full py-2.5 bg-white hover:bg-indigo-100/50 border border-indigo-200 text-indigo-900 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                  type="button"
+                  onClick={async () => {
+                    let tokenToUse = activeInviteToken;
+                    if (!tokenToUse || inviteSecondsLeft <= 0) {
+                      if (activeRoomId) {
+                        tokenToUse = await handleGenerateNewInviteToken(activeRoomId);
+                      }
+                    }
+                    if (tokenToUse) {
+                      const inviteUrl = `${window.location.origin}/invite/${tokenToUse}`;
+                      navigator.clipboard.writeText(inviteUrl);
+                      triggerToast('참여자 전용 초대 링크가 클립보드에 복사되었습니다!');
+                    } else {
+                      copyParticipantLink();
+                    }
+                  }}
+                  className="w-full py-3.5 bg-white hover:bg-indigo-50/50 border border-indigo-200 text-indigo-900 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
                 >
-                  <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                  <Copy className="w-4 h-4 text-indigo-600" />
                   <span>참여자 전용 복사 링크</span>
                 </button>
               </div>
 
-              {/* Link Option 2: ② 투표자 공개 링크 */}
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-900 text-white">
-                      ② 투표자 공개 링크
-                    </span>
-                    <span className="text-[11px] font-semibold text-slate-700">MVP 기본 30명 (2차 익명 투표 전용)</span>
-                  </div>
+              {/* Card 2: ② 투표자 공개 링크 */}
+              <div className="p-5 bg-slate-50 rounded-3xl border border-slate-200/80 space-y-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-900 text-white">
+                    ② 투표자 공개 링크
+                  </span>
+                  <span className="text-xs font-bold text-slate-700">MVP 기본 30명 (2차 익명 투표 전용)</span>
                 </div>
-                <p className="text-xs text-slate-600 leading-relaxed">
+
+                <p className="text-xs text-slate-600 leading-relaxed font-medium">
                   인원 제한이 완화되어 제출된 아이디어에 대해 소신 투표만 익명으로 진행하는 외부/동료 전용 공개 링크입니다.
                 </p>
 
                 <button
+                  type="button"
                   onClick={copyVoterLink}
-                  className="w-full py-2.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
+                  className="w-full py-3.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
                 >
-                  <Copy className="w-3.5 h-3.5 text-slate-600" />
+                  <Copy className="w-4 h-4 text-slate-600" />
                   <span>투표자 전용 복사 링크</span>
                 </button>
               </div>
 
-              <div className="pt-2 text-right">
+              {/* Footer close button */}
+              <div className="pt-1 text-right">
                 <button
+                  type="button"
                   onClick={() => setShowShareModal(false)}
-                  className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition"
+                  className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-2xl transition"
                 >
                   닫기
                 </button>
@@ -5308,6 +5724,46 @@ export default function App() {
                 >
                   <Sparkles className="w-4 h-4 text-amber-300" />
                   <span>최종 결과 확인하기</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Proposal Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deletingProposalId && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white p-6 rounded-3xl max-w-sm w-full shadow-2xl space-y-5 text-center border border-slate-100"
+            >
+              <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto shadow-xs">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-bold text-slate-900">평가 기준 삭제</h3>
+                <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                  이 평가 기준을 삭제하시겠습니까? 삭제한 내용은 복구할 수 없습니다.
+                </p>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setDeletingProposalId(null)}
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteProposal}
+                  className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition shadow-xs"
+                >
+                  삭제하기
                 </button>
               </div>
             </motion.div>

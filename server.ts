@@ -90,6 +90,7 @@ const criteria = new Map<string, Criterion[]>();
 const evaluations = new Map<string, Evaluation[]>();
 const eliminationRounds = new Map<string, EliminationRound[]>();
 const participants = new Map<string, Map<string, string>>(); // room_id -> Map<user_id, nickname>
+const roomInvites = new Map<string, { id: string; roomId: string; inviteToken: string; createdBy: string; expiresAt: string; isActive: boolean; createdAt: string }>();
 
 // Cache for AI summarized comments to avoid repeating calls on every request
 const aiCommentsCache = new Map<string, Record<string, { objectiveComments: string[]; preferenceComments: string[] }>>();
@@ -805,6 +806,187 @@ app.post('/api/rooms/:id/pin', (req, res) => {
 });
 
 /**
+ * Create / Refresh 3-Minute Room Invite Token
+ */
+app.post('/api/rooms/:id/invites', (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.body;
+
+  const room = rooms.get(id);
+  if (!room && id !== 'room-gominhajo') {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  // Deactivate existing active invites for this room
+  for (const [token, inv] of roomInvites.entries()) {
+    if (inv.roomId === id && inv.isActive) {
+      inv.isActive = false;
+    }
+  }
+
+  // Generate new 3-minute invite token
+  const inviteToken = `inv_${Math.random().toString(36).substring(2, 11)}${Date.now().toString(36)}`;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString(); // EXACTLY 3 MINUTES
+
+  const inviteRecord = {
+    id: `invite-${Math.random().toString(36).substring(2, 9)}`,
+    roomId: id,
+    inviteToken,
+    createdBy: userId || room?.hostId || 'host',
+    expiresAt,
+    isActive: true,
+    createdAt: now.toISOString()
+  };
+
+  roomInvites.set(inviteToken, inviteRecord);
+  res.json({ success: true, invite: inviteRecord });
+});
+
+/**
+ * Deactivate Room Invite Token
+ */
+app.delete('/api/rooms/:id/invites', (req, res) => {
+  const { id } = req.params;
+  for (const [token, inv] of roomInvites.entries()) {
+    if (inv.roomId === id && inv.isActive) {
+      inv.isActive = false;
+    }
+  }
+  res.json({ success: true, message: '초대 링크가 비활성화되었습니다.' });
+});
+
+/**
+ * Validate Invite Token & Fetch Room Landing Details (Strict 3-minute server clock check)
+ */
+app.get('/api/invites/:token', (req, res) => {
+  const { token } = req.params;
+  const inv = roomInvites.get(token);
+
+  if (!inv) {
+    return res.json({ isValid: false, errorCode: 'NOT_FOUND', errorMessage: '존재하지 않는 초대 링크입니다.' });
+  }
+
+  if (!inv.isActive) {
+    return res.json({ isValid: false, errorCode: 'DEACTIVATED', errorMessage: '방장에 의해 비활성화된 초대 링크입니다.' });
+  }
+
+  // Strict Server-time 3-minute check
+  const nowTime = new Date().getTime();
+  const expireTime = new Date(inv.expiresAt).getTime();
+  const secondsRemaining = Math.max(0, Math.floor((expireTime - nowTime) / 1000));
+
+  if (expireTime <= nowTime) {
+    return res.json({ isValid: false, errorCode: 'EXPIRED', errorMessage: '생성된 지 3분이 지나 만료된 초대 링크입니다.', secondsRemaining: 0 });
+  }
+
+  const room = rooms.get(inv.roomId) || (inv.roomId === 'room-gominhajo' ? {
+    id: 'room-gominhajo',
+    title: '고민하조 팀 프로젝트',
+    description: '새싹 3번째 프로젝트, Antigravity 툴 활용',
+    category: '기획',
+    isPublic: true,
+    maxParticipants: 4,
+    targetWinnerCount: 1,
+    isPinned: true,
+    hostId: 'user_gominhajo_test',
+    status: 'IDEA_SUBMISSION',
+    minResponseThreshold: 4,
+    eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+    deadlines: { ideaSubmissionAt: '2026-08-01T18:00:00Z' },
+    createdAt: new Date().toISOString(),
+  } as Room : null);
+
+  if (!room) {
+    return res.json({ isValid: false, errorCode: 'ROOM_DELETED', errorMessage: '삭제된 회의실입니다.' });
+  }
+
+  if (room.status === 'CLOSED') {
+    return res.json({ isValid: false, errorCode: 'ROOM_CLOSED', errorMessage: '이미 종료된 회의실입니다.' });
+  }
+
+  const pMap = participants.get(inv.roomId) || new Map<string, string>();
+  const participantCount = Math.max(1, pMap.size);
+  const maxParticipants = room.maxParticipants || 6;
+  const hostNickname = pMap.get(room.hostId) || '방장';
+
+  res.json({
+    isValid: true,
+    room,
+    hostNickname,
+    participantCount,
+    maxParticipants,
+    expiresAt: inv.expiresAt,
+    secondsRemaining
+  });
+});
+
+/**
+ * Atomic Join via Invite Token (Re-verifies 3-min expiration & Capacity limit at CLICK TIME)
+ */
+app.post('/api/invites/:token/join', (req, res) => {
+  const { token } = req.params;
+  const { userId, nickname } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: '사용자 ID가 필요합니다.' });
+  }
+
+  const inv = roomInvites.get(token);
+  if (!inv) {
+    return res.status(404).json({ error: '존재하지 않는 초대 링크입니다.' });
+  }
+
+  if (!inv.isActive) {
+    return res.status(400).json({ error: '비활성화된 초대 링크입니다.' });
+  }
+
+  // Re-verify strict 3-minute expiration AT THE EXACT MOMENT OF JOINING
+  const nowTime = new Date().getTime();
+  const expireTime = new Date(inv.expiresAt).getTime();
+
+  if (expireTime <= nowTime) {
+    return res.status(400).json({ error: '생성된 지 3분이 지나 만료된 초대 링크입니다.' });
+  }
+
+  const room = rooms.get(inv.roomId) || (inv.roomId === 'room-gominhajo' ? {
+    id: 'room-gominhajo',
+    maxParticipants: 4,
+    status: 'IDEA_SUBMISSION'
+  } : null);
+
+  if (!room) {
+    return res.status(404).json({ error: '삭제된 회의실입니다.' });
+  }
+
+  if (room.status === 'CLOSED') {
+    return res.status(400).json({ error: '이미 종료된 회의실입니다.' });
+  }
+
+  let pMap = participants.get(inv.roomId);
+  if (!pMap) {
+    pMap = new Map<string, string>();
+    participants.set(inv.roomId, pMap);
+  }
+
+  const maxCap = room.maxParticipants || 6;
+  const isAlreadyMember = pMap.has(userId);
+
+  if (!isAlreadyMember && pMap.size >= maxCap) {
+    return res.status(400).json({ error: `최대 참가 가능 인원(${maxCap}명)이 차서 참가할 수 없습니다.` });
+  }
+
+  pMap.set(userId, nickname || '참여자');
+
+  res.json({
+    success: true,
+    alreadyMember: isAlreadyMember,
+    roomId: inv.roomId,
+    message: '회의실에 참가가 완료되었습니다.'
+  });
+});
+
+/**
  * Update Room Status (Milestone Transition)
  */
 app.post('/api/rooms/:id/status', (req, res) => {
@@ -922,6 +1104,69 @@ app.delete('/api/rooms/:id/ideas/:ideaId', (req, res) => {
   roomIdeas.splice(existingIdeaIndex, 1);
   ideas.set(id, roomIdeas);
   res.json({ success: true, deletedId: ideaId });
+});
+
+/**
+ * Update a Criterion Proposal (Host or Author only)
+ */
+app.put('/api/rooms/:id/proposals/:proposalId', (req, res) => {
+  const { id, proposalId } = req.params;
+  const { rawText, userId } = req.body;
+
+  if (!rawText || !rawText.trim()) {
+    return res.status(400).json({ error: '평가 기준 내용을 입력해 주세요.' });
+  }
+
+  const room = rooms.get(id);
+  const isHost = room ? room.hostId === userId : false;
+
+  const roomProposals = criterionProposals.get(id) || [];
+  const existingIdx = roomProposals.findIndex(p => p.id === proposalId);
+
+  if (existingIdx !== -1) {
+    const existing = roomProposals[existingIdx];
+    const isAuthor = existing.proposerId === userId && !existing.isAiSuggested;
+
+    if (!isHost && !isAuthor) {
+      return res.status(403).json({ error: '이 평가 기준을 수정할 권한이 없습니다.' });
+    }
+
+    existing.rawText = rawText.trim();
+    roomProposals[existingIdx] = existing;
+    criterionProposals.set(id, roomProposals);
+    return res.json({ success: true, proposal: existing });
+  }
+
+  res.json({ success: true, message: '평가 기준 수정 완료' });
+});
+
+/**
+ * Delete a Criterion Proposal (Host or Author only)
+ */
+app.delete('/api/rooms/:id/proposals/:proposalId', (req, res) => {
+  const { id, proposalId } = req.params;
+  const userId = (req.query.userId as string) || req.body?.userId;
+
+  const room = rooms.get(id);
+  const isHost = room ? room.hostId === userId : false;
+
+  const roomProposals = criterionProposals.get(id) || [];
+  const existingIdx = roomProposals.findIndex(p => p.id === proposalId);
+
+  if (existingIdx !== -1) {
+    const existing = roomProposals[existingIdx];
+    const isAuthor = existing.proposerId === userId && !existing.isAiSuggested;
+
+    if (!isHost && !isAuthor) {
+      return res.status(403).json({ error: '이 평가 기준을 삭제할 권한이 없습니다.' });
+    }
+
+    roomProposals.splice(existingIdx, 1);
+    criterionProposals.set(id, roomProposals);
+    return res.json({ success: true, deletedId: proposalId });
+  }
+
+  res.json({ success: true, message: '평가 기준 삭제 완료' });
 });
 
 
