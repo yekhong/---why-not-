@@ -1075,17 +1075,30 @@ export default function App() {
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
 
         setRoomDetails(prev => {
+          // Preserve existing proposals if incoming proposals is empty (e.g. server restart)
+          const incomingProposals = data.proposals || [];
+          const existingProposals = (prev && prev.room.id === data.room.id) ? (prev.proposals || []) : [];
+          const finalProposals = incomingProposals.length > 0
+            ? incomingProposals
+            : (existingProposals.length > 0 ? existingProposals : incomingProposals);
+
           // If previous roomDetails exists and incoming status is invalid/missing, preserve previous valid status
           if (prev && prev.room.id === data.room.id && (!data.room || !data.room.status)) {
             return {
               ...data,
+              proposals: finalProposals,
+              proposalsCount: finalProposals.length,
               room: {
                 ...data.room,
                 status: prev.room.status
               }
             };
           }
-          return data;
+          return {
+            ...data,
+            proposals: finalProposals,
+            proposalsCount: finalProposals.length
+          };
         });
 
         if (data?.room?.status === 'CRITERIA_REVIEW') {
@@ -1981,7 +1994,7 @@ export default function App() {
     }
 
     try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+      if (activeRoomId) {
         await supabase
           .from('criterion_proposals')
           .insert({

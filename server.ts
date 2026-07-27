@@ -176,6 +176,12 @@ function seedData() {
     }
   ]);
 
+  criterionProposals.set(r0Id, [
+    { id: 'prop-gh-1', roomId: r0Id, rawText: '1달 내 MVP 스케줄 구현 가능성: 주어진 스케줄 및 개발 역량 내에서 완성이 가능한가?', proposerId: 'user_gominhajo_test', isAiSuggested: false },
+    { id: 'prop-gh-2', roomId: r0Id, rawText: '타겟 유저 페인포인트 해소력: 아이디어가 타겟 사용자층의 명확한 가려운 곳을 효과적으로 해결해 주는가?', proposerId: 'user_member_1', isAiSuggested: false },
+    { id: 'prop-gh-3', roomId: r0Id, rawText: '유사 서비스 대비 독자적 차별성: 국내외 경쟁 플랫폼 대비 독보적인 우위나 정체성을 갖추었는가?', proposerId: 'gemini-ai', isAiSuggested: true },
+  ]);
+
   // --- ROOM 1: 스타트업 하반기 SNS 마케팅 기획 (Status: EVALUATION) ---
   const r1Id = 'room-marketing';
   rooms.set(r1Id, {
