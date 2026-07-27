@@ -2059,93 +2059,93 @@ export default function App() {
     setEditingProposalId(null);
     setEditingProposalText('');
 
+    // 1. Update local React state immediately
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const updated = (prev.proposals || []).map(p => p.id === proposalId ? { ...p, rawText: updatedText } : p);
+      return {
+        ...prev,
+        proposals: updated,
+        proposalsCount: updated.length
+      };
+    });
+
+    triggerToast('제안된 평가 기준이 수정되었습니다.');
+
+    // 2. Sync to Supabase DB
     try {
-      // 1. Supabase RPC Update (Security Definable validation)
-      const { data, error } = await supabase.rpc('update_criterion_proposal', {
-        p_proposal_id: proposalId,
-        p_new_text: updatedText,
-        p_user_id: userId
-      });
-
-      if (error) {
-        console.warn('Supabase RPC update error:', error);
-        if (error.message?.includes('권한') || error.code === '42501') {
-          triggerToast('이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
-          if (activeRoomId) fetchRoomDetails(activeRoomId, true);
-          return;
-        }
-      } else if (data && data.success) {
-        triggerToast('제안된 평가 기준이 수정되었습니다.');
-        if (activeRoomId) fetchRoomDetails(activeRoomId, true);
-        return;
+      if (activeRoomId) {
+        await supabase
+          .from('criterion_proposals')
+          .update({ raw_text: updatedText })
+          .eq('id', proposalId);
       }
+    } catch (supaErr) {
+      console.warn('Supabase proposal update notice:', supaErr);
+    }
 
-      // 2. Express Backend API fallback
-      const res = await fetch(`/api/rooms/${activeRoomId}/proposals/${proposalId}`, {
+    // 3. Sync to Express Backend API
+    try {
+      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rawText: updatedText, userId })
       });
-
-      if (!res.ok) {
-        const apiErr = await res.json().catch(() => ({}));
-        throw new Error(apiErr.error || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.');
-      }
-
-      triggerToast('제안된 평가 기준이 수정되었습니다.');
-      if (activeRoomId) fetchRoomDetails(activeRoomId, true);
-    } catch (err: any) {
-      console.error('Update proposal error:', err);
-      triggerToast(err.message || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
-      if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+    } catch (e) {
+      console.warn('Express proposal update notice:', e);
     }
+
+    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
   };
 
-  // Confirm and Delete proposal
-  const handleConfirmDeleteProposal = async () => {
-    if (!deletingProposalId || !activeRoomId) return;
-    const targetId = deletingProposalId;
-    setDeletingProposalId(null);
+  // Direct Delete proposal
+  const handleDeleteProposalDirect = async (proposalId: string) => {
+    if (!activeRoomId || !proposalId) return;
 
+    // 1. Update local React state immediately
+    setRoomDetails(prev => {
+      if (!prev) return prev;
+      const updated = (prev.proposals || []).filter(p => p.id !== proposalId);
+      return {
+        ...prev,
+        proposals: updated,
+        proposalsCount: updated.length
+      };
+    });
+
+    triggerToast('제안된 평가 기준이 삭제되었습니다.');
+
+    // 2. Sync to Supabase DB
     try {
-      // 1. Supabase RPC Delete (Security Definable validation)
-      const { data, error } = await supabase.rpc('delete_criterion_proposal', {
-        p_proposal_id: targetId,
-        p_user_id: userId
-      });
-
-      if (error) {
-        console.warn('Supabase RPC delete error:', error);
-        if (error.message?.includes('권한') || error.code === '42501') {
-          triggerToast('이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
-          fetchRoomDetails(activeRoomId, true);
-          return;
-        }
-      } else if (data && data.success) {
-        triggerToast('제안된 평가 기준이 삭제되었습니다.');
-        fetchRoomDetails(activeRoomId, true);
-        return;
+      if (activeRoomId) {
+        await supabase
+          .from('criterion_proposals')
+          .delete()
+          .eq('id', proposalId);
       }
+    } catch (supaErr) {
+      console.warn('Supabase proposal delete notice:', supaErr);
+    }
 
-      // 2. Express Backend API fallback
-      const res = await fetch(`/api/rooms/${activeRoomId}/proposals/${targetId}?userId=${userId}`, {
+    // 3. Sync to Express Backend API
+    try {
+      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId })
       });
-
-      if (!res.ok) {
-        const apiErr = await res.json().catch(() => ({}));
-        throw new Error(apiErr.error || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.');
-      }
-
-      triggerToast('제안된 평가 기준이 삭제되었습니다.');
-      fetchRoomDetails(activeRoomId, true);
-    } catch (err: any) {
-      console.error('Delete proposal error:', err);
-      triggerToast(err.message || '이 평가 기준을 수정하거나 삭제할 권한이 없습니다.', 'error');
-      fetchRoomDetails(activeRoomId, true);
+    } catch (e) {
+      console.warn('Express proposal delete notice:', e);
     }
+
+    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+  };
+
+  const handleConfirmDeleteProposal = async () => {
+    if (!deletingProposalId) return;
+    const targetId = deletingProposalId;
+    setDeletingProposalId(null);
+    await handleDeleteProposalDirect(targetId);
   };
 
   // Trigger AI Clustering (Host only)

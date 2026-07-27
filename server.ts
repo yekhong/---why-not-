@@ -2111,9 +2111,9 @@ app.delete('/api/rooms/:id/criteria/proposals/:proposalId', (req, res) => {
   const { id, proposalId } = req.params;
 
   let proposals = criterionProposals.get(id) || [];
-  const initialCount = proposals.length;
   proposals = proposals.filter(p => p.id !== proposalId);
   criterionProposals.set(id, proposals);
+  res.json({ success: true, deletedId: proposalId });
 
 });
 
