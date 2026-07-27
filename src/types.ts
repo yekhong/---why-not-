@@ -133,17 +133,21 @@ export interface RoomDetails {
   starVoteCount?: number;
   starVoteStatus?: 'voting' | 'tie_pending' | 'finalized';
   // If threshold is met, we might send aggregated scores or AI-rephrased comments:
-  aggregatedScores?: Record<string, {
-    score: number;
-    keepCount: number;
-    neutralCount: number;
-    excludeCount: number;
-    objectiveExcludeCount: number;
-  }>;
+  aggregatedScores?: Record<string, AggregatedScore>;
   aiSummarizedComments?: Record<string, {
     objectiveComments: string[];
     preferenceComments: string[];
   }>;
+}
+
+export interface AggregatedScore {
+  score: number;
+  keepCount: number;
+  neutralCount: number;
+  excludeCount: number;
+  objectiveExcludeCount: number;
+  avgCriteriaComplianceRatio?: number; // Average criteria compliance percentage (0~100)
+  criteriaMatchCounts?: Record<string, number>; // Per-criterion match/approval count
 }
 
 export interface RoomInvite {

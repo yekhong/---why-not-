@@ -1385,14 +1385,18 @@ app.get('/api/rooms/:id', async (req, res) => {
   const isEvaluationClosed = room.status === 'ELIMINATION' || room.status === 'CLOSED';
   
   if (minResponseThresholdMet || isEvaluationClosed) {
-    // 1. Calculate aggregated scores for each idea
+    // 1. Calculate aggregated scores for each idea with criteria compliance weighting
     const aggregatedScores: Record<string, {
       score: number;
       keepCount: number;
       neutralCount: number;
       excludeCount: number;
       objectiveExcludeCount: number;
+      avgCriteriaComplianceRatio: number;
+      criteriaMatchCounts: Record<string, number>;
     }> = {};
+
+    const totalCriteriaCount = Math.max(1, roomCriteria.length || roomProposals.length || 1);
 
     // Initialize map
     roomIdeas.forEach(idea => {
@@ -1402,7 +1406,18 @@ app.get('/api/rooms/:id', async (req, res) => {
         neutralCount: 0,
         excludeCount: 0,
         objectiveExcludeCount: 0,
+        avgCriteriaComplianceRatio: 0,
+        criteriaMatchCounts: {},
       };
+    });
+
+    // Per-idea tracking for weighted calculation
+    const weightedPointsMap: Record<string, number> = {};
+    const complianceRatiosMap: Record<string, number[]> = {};
+
+    roomIdeas.forEach(idea => {
+      weightedPointsMap[idea.id] = 0;
+      complianceRatiosMap[idea.id] = [];
     });
 
     // Populate from all evaluations
@@ -1410,10 +1425,24 @@ app.get('/api/rooms/:id', async (req, res) => {
     roomEvals.forEach(ev => {
       const scoreObj = aggregatedScores[ev.ideaId];
       if (scoreObj) {
+        const checkedList = ev.excludedCriterionIds || [];
+        const matchedCount = checkedList.length;
+        const voterRatio = Math.min(1, Math.max(0, matchedCount / totalCriteriaCount));
+
+        complianceRatiosMap[ev.ideaId]?.push(voterRatio);
+
+        // Record per-criterion match/approval count
+        checkedList.forEach(critId => {
+          scoreObj.criteriaMatchCounts[critId] = (scoreObj.criteriaMatchCounts[critId] || 0) + 1;
+        });
+
         if (ev.decision === 'KEEP') {
           scoreObj.keepCount += 1;
+          // Weighted voter score: full 100 points scaled by criteria compliance ratio
+          weightedPointsMap[ev.ideaId] += voterRatio * 100;
         } else if (ev.decision === 'NEUTRAL') {
           scoreObj.neutralCount += 1;
+          weightedPointsMap[ev.ideaId] += voterRatio * 50; // Partial score for neutral with compliance
         } else if (ev.decision === 'EXCLUDE') {
           scoreObj.excludeCount += 1;
           if (ev.reasonType === 'OBJECTIVE_CONSTRAINT') {
@@ -1423,11 +1452,21 @@ app.get('/api/rooms/:id', async (req, res) => {
       }
     });
 
-    // Calculate score using agreeVotes / MAX_VOTERS * 100 rounded to integer (0~100)
+    // Calculate final weighted score (0~100) and average criteria compliance ratio (%)
     roomIdeas.forEach(idea => {
       const scoreObj = aggregatedScores[idea.id];
       if (scoreObj) {
-        scoreObj.score = Math.min(100, Math.max(0, Math.round((scoreObj.keepCount / MAX_VOTERS) * 100)));
+        // Final score: total weighted points divided by MAX_VOTERS (clamped 0~100)
+        scoreObj.score = Math.min(100, Math.max(0, Math.round(weightedPointsMap[idea.id] / MAX_VOTERS)));
+
+        // Average criteria compliance ratio
+        const ratios = complianceRatiosMap[idea.id] || [];
+        if (ratios.length > 0) {
+          const sumRatio = ratios.reduce((acc, r) => acc + r, 0);
+          scoreObj.avgCriteriaComplianceRatio = Math.round((sumRatio / ratios.length) * 100);
+        } else {
+          scoreObj.avgCriteriaComplianceRatio = 0;
+        }
       }
     });
 

@@ -2353,16 +2353,12 @@ export default function App() {
       reasonType: evalSubmissions[i.id].reasonType,
     }));
 
-    // Calculate aggregated scores locally for instant reflection
+    // Calculate aggregated scores locally for instant reflection with weighted criteria compliance
     const existingAggregated = roomDetails.aggregatedScores || {};
     const newAggregated: Record<string, any> = { ...existingAggregated };
 
-    const scoreConfig = roomDetails?.scoreConfig || {
-      keepWeight: 2,
-      neutralWeight: 1,
-      excludeWeight: 0,
-      objectiveConstraintPenalty: 3
-    };
+    const totalCriteriaCount = Math.max(1, (roomDetails.criteria?.length || roomDetails.proposals?.length || 1));
+    const MAX_VOTERS = 6;
 
     activeIdeas.forEach(idea => {
       const vote = evalSubmissions[idea.id];
@@ -2373,35 +2369,44 @@ export default function App() {
         neutralCount: 0,
         excludeCount: 0,
         objectiveExcludeCount: 0,
+        avgCriteriaComplianceRatio: 0,
+        criteriaMatchCounts: {},
       };
 
       let keepCount = currentStats.keepCount || 0;
       let neutralCount = currentStats.neutralCount || 0;
       let excludeCount = currentStats.excludeCount || 0;
       let objectiveExcludeCount = currentStats.objectiveExcludeCount || 0;
-      let score = currentStats.score || 0;
+      const checkedList = vote.excludedCriterionIds || [];
+      const matchedCount = checkedList.length;
+      const voterRatio = Math.min(1, Math.max(0, matchedCount / totalCriteriaCount));
+
+      const criteriaMatchCounts = { ...(currentStats.criteriaMatchCounts || {}) };
+      checkedList.forEach(critId => {
+        criteriaMatchCounts[critId] = (criteriaMatchCounts[critId] || 0) + 1;
+      });
 
       if (vote.decision === 'KEEP') {
         keepCount += 1;
-        score += scoreConfig.keepWeight;
       } else if (vote.decision === 'NEUTRAL') {
         neutralCount += 1;
-        score += scoreConfig.neutralWeight;
       } else if (vote.decision === 'EXCLUDE') {
         excludeCount += 1;
-        score += scoreConfig.excludeWeight;
         if (vote.reasonType === 'OBJECTIVE_CONSTRAINT') {
           objectiveExcludeCount += 1;
-          score -= scoreConfig.objectiveConstraintPenalty;
         }
       }
 
+      const weightedScore = Math.min(100, Math.max(0, Math.round((keepCount * voterRatio / MAX_VOTERS) * 100)));
+
       newAggregated[idea.id] = {
-        score,
+        score: weightedScore,
         keepCount,
         neutralCount,
         excludeCount,
         objectiveExcludeCount,
+        avgCriteriaComplianceRatio: Math.round(voterRatio * 100),
+        criteriaMatchCounts,
       };
     });
 
