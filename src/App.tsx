@@ -1516,7 +1516,7 @@ export default function App() {
           body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
         });
         if (res.ok) apiSuccess = true;
-      } catch (e) {}
+      } catch (e) { }
 
       // Supabase Direct DB Fallback
       if (!apiSuccess && activeRoomId && activeRoomId !== 'room-gominhajo') {
@@ -1749,7 +1749,7 @@ export default function App() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rawText: updatedText })
-      }).catch(() => {});
+      }).catch(() => { });
 
       if (activeRoomId && activeRoomId !== 'room-gominhajo') {
         await supabase
@@ -1781,7 +1781,7 @@ export default function App() {
     try {
       await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE'
-      }).catch(() => {});
+      }).catch(() => { });
 
       if (activeRoomId && activeRoomId !== 'room-gominhajo') {
         await supabase
@@ -1803,40 +1803,40 @@ export default function App() {
     // Default clustered criteria dynamically mapping ALL submitted proposals
     const defaultClusteredCriteria: Criterion[] = proposals.length > 0
       ? proposals.map((p, i) => {
-          const parts = (p.rawText || '').split(':');
-          const namePart = parts[0]?.trim() || `제안 기준 #${i + 1}`;
-          const descPart = parts[1]?.trim() || p.rawText || '제안 의견을 반영한 평가 기준';
-          return {
-            id: `crit-clustered-${i + 1}-${Math.random().toString(36).substr(2, 5)}`,
-            roomId: activeRoomId!,
-            name: namePart.slice(0, 15),
-            description: `제안된 '${descPart.slice(0, 35)}...' 반영 평가 기준`,
-            confirmed: true
-          };
-        })
+        const parts = (p.rawText || '').split(':');
+        const namePart = parts[0]?.trim() || `제안 기준 #${i + 1}`;
+        const descPart = parts[1]?.trim() || p.rawText || '제안 의견을 반영한 평가 기준';
+        return {
+          id: `crit-clustered-${i + 1}-${Math.random().toString(36).substr(2, 5)}`,
+          roomId: activeRoomId!,
+          name: namePart.slice(0, 15),
+          description: `제안된 '${descPart.slice(0, 35)}...' 반영 평가 기준`,
+          confirmed: true
+        };
+      })
       : [
-          {
-            id: `crit-clustered-1`,
-            roomId: activeRoomId!,
-            name: '기술적 구현 가능성 및 난이도',
-            description: '가용한 팀 리소스 및 스케줄 내에서 1달 이내 MVP 구축이 가능한가',
-            confirmed: true
-          },
-          {
-            id: `crit-clustered-2`,
-            roomId: activeRoomId!,
-            name: '타겟 사용자 체감 가치 및 차별성',
-            description: '기존 서비스 대비 뚜렷한 해결 효용을 제공하고 핵심 문제를 해소하는가',
-            confirmed: true
-          },
-          {
-            id: `crit-clustered-3`,
-            roomId: activeRoomId!,
-            name: '비용 및 운영 리스크 적정성',
-            description: '초기 예산 범위 내 유지보수가 가능하며 법적/보안 리스크가 제어 가능한가',
-            confirmed: true
-          }
-        ];
+        {
+          id: `crit-clustered-1`,
+          roomId: activeRoomId!,
+          name: '기술적 구현 가능성 및 난이도',
+          description: '가용한 팀 리소스 및 스케줄 내에서 1달 이내 MVP 구축이 가능한가',
+          confirmed: true
+        },
+        {
+          id: `crit-clustered-2`,
+          roomId: activeRoomId!,
+          name: '타겟 사용자 체감 가치 및 차별성',
+          description: '기존 서비스 대비 뚜렷한 해결 효용을 제공하고 핵심 문제를 해소하는가',
+          confirmed: true
+        },
+        {
+          id: `crit-clustered-3`,
+          roomId: activeRoomId!,
+          name: '비용 및 운영 리스크 적정성',
+          description: '초기 예산 범위 내 유지보수가 가능하며 법적/보안 리스크가 제어 가능한가',
+          confirmed: true
+        }
+      ];
 
     let finalCriteria = defaultClusteredCriteria;
 
@@ -1887,7 +1887,7 @@ export default function App() {
 
         try {
           await supabase.from('criteria').insert(supaCriteria);
-        } catch (e) {}
+        } catch (e) { }
       }
     } catch (supaErr) {
       console.error('Supabase DB criteria clustering sync error:', supaErr);
@@ -2433,7 +2433,7 @@ export default function App() {
 
     const starVoteCounts = roomDetails.starVotes || {};
     const activeOrWinnerIdeas = roomDetails.ideas.filter(i => i && (i.status === 'ACTIVE' || i.status === 'WINNER'));
-    
+
     // Sort by star votes desc
     const sorted = [...activeOrWinnerIdeas].sort((a, b) => (starVoteCounts[b.id] || 0) - (starVoteCounts[a.id] || 0));
 
@@ -2580,8 +2580,8 @@ export default function App() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg flex items-center gap-2 border text-sm max-w-sm ${toast.type === 'success'
-                ? 'bg-indigo-900 text-white border-indigo-800'
-                : 'bg-rose-50 text-rose-800 border-rose-200'
+              ? 'bg-indigo-900 text-white border-indigo-800'
+              : 'bg-rose-50 text-rose-800 border-rose-200'
               }`}
           >
             {toast.type === 'success' ? <Check className="w-4 h-4 text-emerald-400" /> : <AlertCircle className="w-4 h-4 text-rose-500" />}
@@ -2742,13 +2742,14 @@ export default function App() {
               <div className="space-y-4 max-w-2xl mx-auto">
                 <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight leading-tight text-white">
                   눈치 보지 않고,<br />
-                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-indigo-200">
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-indigo-200 whitespace-nowrap">
                     객관적인 데이터로 결론을 내립니다.
                   </span>
                 </h1>
 
                 <p className="text-slate-300 text-sm md:text-base leading-relaxed">
-                  어색하거나 눈치를 보는 팀원들을 위해 근거 기반 AI와 익명 피드백을 활용하여 최적의 아이디어 후보를 도출합니다.
+                  어색하거나 눈치가 보여 망설이는 팀원들을 위해, <br />
+                  각자 평가 기준을 제시하고 익명 피드백으로 근거 있는 최적의 아이디어를 찾아드립니다.
                 </p>
               </div>
 
@@ -2790,10 +2791,10 @@ export default function App() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-                  솔직한 의견 소거로 결정하는 집단지성
+                  눈치가 아닌 근거로, 팀 모두가 납득하는 결정을 만들어 보세요.
                 </h1>
                 <p className="text-slate-500 text-sm md:text-base mt-1">
-                  직급이나 관계 때문에 주저했던 반대 의견을 익명으로 제출하고, 단계적으로 아이디어를 소거하십시오.
+                  직급이나 관계 때문에 주저했던 의견을 익명으로 제출하고, 기준을 제시해 단계적으로 아이디어를 소거해보세요.
                 </p>
               </div>
 
@@ -3038,8 +3039,8 @@ export default function App() {
                           whileHover={{ y: -2 }}
                           onClick={() => handleSelectRoom(room.id)}
                           className={`p-5 rounded-2xl border transition flex flex-col justify-between cursor-pointer group relative ${room.isPinned
-                              ? 'bg-amber-50/40 border-amber-300/80 shadow-md ring-1 ring-amber-200/60'
-                              : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
+                            ? 'bg-amber-50/40 border-amber-300/80 shadow-md ring-1 ring-amber-200/60'
+                            : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
                             }`}
                         >
                           <div className="space-y-2">
@@ -3058,14 +3059,14 @@ export default function App() {
                                 onClick={(e) => handleTogglePin(e, room.id)}
                                 title={room.isPinned ? '상단 고정 해제 (OFF)' : '상단 고정 (ON)'}
                                 className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
-                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
-                                    : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
+                                  : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
                                   }`}
                               >
                                 <Star
                                   className={`w-4 h-4 ${room.isPinned
-                                      ? 'fill-amber-400 text-amber-500'
-                                      : 'text-slate-400 fill-slate-200'
+                                    ? 'fill-amber-400 text-amber-500'
+                                    : 'text-slate-400 fill-slate-200'
                                     }`}
                                 />
                                 {room.isPinned && <span className="pr-1 text-[11px]">고정</span>}
@@ -3157,10 +3158,10 @@ export default function App() {
                         return (
                           <div key={step.key} className="flex items-center gap-3">
                             <div className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs shrink-0 transition ${isCompleted
-                                ? 'bg-indigo-600 border-indigo-600 text-white'
-                                : isActive
-                                  ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-bold'
-                                  : 'border-slate-100 text-slate-300 bg-slate-50'
+                              ? 'bg-indigo-600 border-indigo-600 text-white'
+                              : isActive
+                                ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-bold'
+                                : 'border-slate-100 text-slate-300 bg-slate-50'
                               }`}>
                               {isCompleted ? <Check className="w-3.5 h-3.5" /> : idx + 1}
                             </div>
@@ -3203,8 +3204,8 @@ export default function App() {
                             key={st}
                             onClick={() => handleForceChangeStatus(st as RoomStatus)}
                             className={`text-[10px] font-semibold py-1 px-2.5 rounded-lg border text-left transition ${roomDetails.room.status === st
-                                ? 'bg-indigo-600 text-white border-indigo-600'
-                                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                               }`}
                           >
                             {st === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
@@ -3274,8 +3275,8 @@ export default function App() {
                         <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
                           <span>📊 등록 완료 현황판:</span>
                           <span className="text-indigo-600 font-extrabold">
-                            {roomDetails.completedParticipantsCount !== undefined 
-                              ? roomDetails.completedParticipantsCount 
+                            {roomDetails.completedParticipantsCount !== undefined
+                              ? roomDetails.completedParticipantsCount
                               : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room.maxParticipants || 6}명 완료
                           </span>
                         </div>
@@ -3412,17 +3413,15 @@ export default function App() {
                               return (
                                 <motion.div
                                   key={idea.id}
-                                  className={`bg-white p-5 rounded-xl border transition shadow-sm space-y-3 ${
-                                    isMyIdea ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200'
-                                  }`}
+                                  className={`bg-white p-5 rounded-xl border transition shadow-sm space-y-3 ${isMyIdea ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200'
+                                    }`}
                                 >
                                   <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-2">
                                     <div className="flex items-center gap-2 flex-wrap min-w-0">
-                                      <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${
-                                        isMyIdea 
-                                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' 
-                                          : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                      }`}>
+                                      <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
+                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                        }`}>
                                         <User className="w-3 h-3 text-indigo-400" />
                                         {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (idx % 26))}`}
                                       </span>
@@ -3642,244 +3641,244 @@ export default function App() {
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-                        {/* Left: Input Proposal Form & AI Suggested Criteria */}
-                        <div className="lg:col-span-7 space-y-6">
+                      {/* Left: Input Proposal Form & AI Suggested Criteria */}
+                      <div className="lg:col-span-7 space-y-6">
 
-                          {/* AI Criteria Generator Card (Potens AI) */}
-                          <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
-                            <div className="flex items-center justify-between">
-                              <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
-                                <Sparkles className="w-4 h-4 text-amber-400" />
-                                AI 기반 평가 기준 3가지 제안
-                              </h3>
-                              <button
-                                type="button"
-                                onClick={handleFetchAiSuggestions}
-                                disabled={isGeneratingAiSuggestions}
-                                className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
-                              >
-                                {isGeneratingAiSuggestions ? (
-                                  <>
-                                    <RefreshCw className="w-3 h-3 animate-spin" />
-                                    생성 중...
-                                  </>
-                                ) : (
-                                  <>
-                                    <Sparkles className="w-3 h-3" />
-                                    AI 기준 생성
-                                  </>
-                                )}
-                              </button>
-                            </div>
-                            <p className="text-xs text-slate-300 leading-relaxed">
-                              등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 마음에 드는 기준을 선택하여 제안 목록에 추가할 수 있습니다.
-                            </p>
+                        {/* AI Criteria Generator Card (Potens AI) */}
+                        <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
+                              <Sparkles className="w-4 h-4 text-amber-400" />
+                              AI 기반 평가 기준 3가지 제안
+                            </h3>
+                            <button
+                              type="button"
+                              onClick={handleFetchAiSuggestions}
+                              disabled={isGeneratingAiSuggestions}
+                              className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
+                            >
+                              {isGeneratingAiSuggestions ? (
+                                <>
+                                  <RefreshCw className="w-3 h-3 animate-spin" />
+                                  생성 중...
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles className="w-3 h-3" />
+                                  AI 기준 생성
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                            등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 마음에 드는 기준을 선택하여 제안 목록에 추가할 수 있습니다.
+                          </p>
 
-                            {aiSuggestedCriteria.length > 0 && (
-                              <div className="space-y-2 pt-1">
-                                {aiSuggestedCriteria.map((item, idx) => {
-                                  const text = `${item.name}${item.description ? `: ${item.description}` : ''}`;
-                                  const existingProposals = roomDetails?.proposals || [];
-                                  const isAlreadyAdded = existingProposals.some(p => p.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === item.name.trim()));
-                                  const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6;
+                          {aiSuggestedCriteria.length > 0 && (
+                            <div className="space-y-2 pt-1">
+                              {aiSuggestedCriteria.map((item, idx) => {
+                                const text = `${item.name}${item.description ? `: ${item.description}` : ''}`;
+                                const existingProposals = roomDetails?.proposals || [];
+                                const isAlreadyAdded = existingProposals.some(p => p.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === item.name.trim()));
+                                const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6;
 
-                                  return (
-                                    <div
-                                      key={idx}
-                                      className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left flex items-center justify-between gap-3"
-                                    >
-                                      <div className="space-y-0.5 min-w-0 flex-1">
-                                        <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
-                                          <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-                                          {item.name}
-                                        </h4>
-                                        <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
-                                          {item.description}
-                                        </p>
-                                      </div>
-
-                                      <button
-                                        type="button"
-                                        disabled={isAlreadyAdded || isAiMaxLimitReached}
-                                        onClick={() => handleProposeCriterion(undefined, text)}
-                                        className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
-                                      >
-                                        {isAlreadyAdded ? (
-                                          <>
-                                            <Check className="w-3 h-3" />
-                                            제안 완료
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Plus className="w-3 h-3" />
-                                            제안하기
-                                          </>
-                                        )}
-                                      </button>
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left flex items-center justify-between gap-3"
+                                  >
+                                    <div className="space-y-0.5 min-w-0 flex-1">
+                                      <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
+                                        <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                        {item.name}
+                                      </h4>
+                                      <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
+                                        {item.description}
+                                      </p>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
 
-                          {/* Direct Criterion Proposal Form */}
-                          <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                            <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
-                              <div>
-                                <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
-                                <p className="text-xs text-slate-500 mt-0.5">
-                                  "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
-                                </p>
-                              </div>
-                              <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                                직접 제안 ({myDirectProposalsCount}/3개) · 전체 ({myProposalsCount}/6개)
-                              </span>
+                                    <button
+                                      type="button"
+                                      disabled={isAlreadyAdded || isAiMaxLimitReached}
+                                      onClick={() => handleProposeCriterion(undefined, text)}
+                                      className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
+                                    >
+                                      {isAlreadyAdded ? (
+                                        <>
+                                          <Check className="w-3 h-3" />
+                                          제안 완료
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Plus className="w-3 h-3" />
+                                          제안하기
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                );
+                              })}
                             </div>
-
-                            {myProposalsCount >= 6 ? (
-                              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
-                                <span>⚠️</span>
-                                전체 제안된 평가 기준이 최대 등록 제한인 6개(AI 3개 + 직접 작성 3개)에 도달하였습니다.
-                              </div>
-                            ) : myDirectProposalsCount >= 3 && (
-                              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
-                                <span>⚠️</span>
-                                직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 추가 등록 가능)
-                              </div>
-                            )}
-
-                            <form onSubmit={handleProposeCriterion} className="space-y-4">
-                              <div className="space-y-1">
-                                <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
-                                <textarea
-                                  required={myProposalsCount === 0}
-                                  disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
-                                  value={proposalText}
-                                  onChange={e => setProposalText(e.target.value)}
-                                  placeholder={
-                                    myProposalsCount >= 6
-                                      ? "전체 최대 6개 제안이 완료되었습니다."
-                                      : myDirectProposalsCount >= 3
-                                      ? "직접 작성 최대 3개 제안이 완료되었습니다. (AI 추천 제안 가능)"
-                                      : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
-                                  }
-                                  rows={3}
-                                  className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
-                                />
-                              </div>
-
-                              <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
-                                🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
-                              </div>
-
-                              <button
-                                type="submit"
-                                disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
-                                className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
-                              >
-                                익명 기준 제안 등록하기
-                              </button>
-                            </form>
-                          </div>
+                          )}
                         </div>
 
-                        {/* Right: Progress Tracker & Submitted Proposals List */}
-                        <div className="lg:col-span-5 space-y-6">
-                          <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                              <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
-                              <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                                {totalProposalsCount} / 6개 제출됨
-                              </span>
+                        {/* Direct Criterion Proposal Form */}
+                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                          <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+                            <div>
+                              <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
+                              </p>
+                            </div>
+                            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
+                              직접 제안 ({myDirectProposalsCount}/3개) · 전체 ({myProposalsCount}/6개)
+                            </span>
+                          </div>
+
+                          {myProposalsCount >= 6 ? (
+                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                              <span>⚠️</span>
+                              전체 제안된 평가 기준이 최대 등록 제한인 6개(AI 3개 + 직접 작성 3개)에 도달하였습니다.
+                            </div>
+                          ) : myDirectProposalsCount >= 3 && (
+                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                              <span>⚠️</span>
+                              직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 추가 등록 가능)
+                            </div>
+                          )}
+
+                          <form onSubmit={handleProposeCriterion} className="space-y-4">
+                            <div className="space-y-1">
+                              <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
+                              <textarea
+                                required={myProposalsCount === 0}
+                                disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
+                                value={proposalText}
+                                onChange={e => setProposalText(e.target.value)}
+                                placeholder={
+                                  myProposalsCount >= 6
+                                    ? "전체 최대 6개 제안이 완료되었습니다."
+                                    : myDirectProposalsCount >= 3
+                                      ? "직접 작성 최대 3개 제안이 완료되었습니다. (AI 추천 제안 가능)"
+                                      : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
+                                }
+                                rows={3}
+                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
+                              />
                             </div>
 
-                            {/* Submitted Proposals List */}
-                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                              {(roomDetails.proposals || []).length === 0 ? (
-                                <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
-                                  <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
-                                  <p className="text-[11px] text-slate-400">상단 'AI 기준 생성' 버튼을 누르거나 직접 입력해 주세요. (최소 1개 필수)</p>
-                                </div>
-                              ) : (
-                                (roomDetails.proposals || []).map((p: any, idx: number) => {
-                                  const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai');
-                                  const isMyProposal = p.proposerId === userId || roomDetails.room.hostId === userId;
-                                  const isEditing = editingProposalId === p.id;
+                            <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
+                              🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
+                            </div>
 
-                                  return (
-                                    <div key={p.id || idx} className={`p-3 rounded-xl space-y-2 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
-                                      <div className="flex items-center justify-between">
-                                        <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
-                                          기준 #{idx + 1}
+                            <button
+                              type="submit"
+                              disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
+                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+                            >
+                              익명 기준 제안 등록하기
+                            </button>
+                          </form>
+                        </div>
+                      </div>
+
+                      {/* Right: Progress Tracker & Submitted Proposals List */}
+                      <div className="lg:col-span-5 space-y-6">
+                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                            <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
+                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
+                              {totalProposalsCount} / 6개 제출됨
+                            </span>
+                          </div>
+
+                          {/* Submitted Proposals List */}
+                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                            {(roomDetails.proposals || []).length === 0 ? (
+                              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
+                                <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
+                                <p className="text-[11px] text-slate-400">상단 'AI 기준 생성' 버튼을 누르거나 직접 입력해 주세요. (최소 1개 필수)</p>
+                              </div>
+                            ) : (
+                              (roomDetails.proposals || []).map((p: any, idx: number) => {
+                                const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai');
+                                const isMyProposal = p.proposerId === userId || roomDetails.room.hostId === userId;
+                                const isEditing = editingProposalId === p.id;
+
+                                return (
+                                  <div key={p.id || idx} className={`p-3 rounded-xl space-y-2 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
+                                    <div className="flex items-center justify-between">
+                                      <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
+                                        기준 #{idx + 1}
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
+                                          {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
                                         </span>
-                                        <div className="flex items-center gap-2">
-                                          <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
-                                            {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
-                                          </span>
 
-                                          {/* Edit / Delete Buttons */}
-                                          {isMyProposal && !isEditing && (
-                                            <div className="flex items-center gap-1">
-                                              <button
-                                                onClick={() => {
-                                                  setEditingProposalId(p.id);
-                                                  setEditingProposalText(p.rawText);
-                                                }}
-                                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition"
-                                                title="수정"
-                                              >
-                                                <Edit2 className="w-3 h-3" />
-                                              </button>
-                                              <button
-                                                onClick={() => handleDeleteProposal(p.id)}
-                                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
-                                                title="삭제"
-                                              >
-                                                <Trash2 className="w-3 h-3" />
-                                              </button>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {isEditing ? (
-                                        <div className="space-y-2 pt-1">
-                                          <textarea
-                                            value={editingProposalText}
-                                            onChange={(e) => setEditingProposalText(e.target.value)}
-                                            className="w-full text-xs p-2.5 bg-white border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                                            rows={2}
-                                          />
-                                          <div className="flex items-center justify-end gap-1.5">
+                                        {/* Edit / Delete Buttons */}
+                                        {isMyProposal && !isEditing && (
+                                          <div className="flex items-center gap-1">
                                             <button
                                               onClick={() => {
-                                                setEditingProposalId(null);
-                                                setEditingProposalText('');
+                                                setEditingProposalId(p.id);
+                                                setEditingProposalText(p.rawText);
                                               }}
-                                              className="px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 rounded-md transition"
+                                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition"
+                                              title="수정"
                                             >
-                                              취소
+                                              <Edit2 className="w-3 h-3" />
                                             </button>
                                             <button
-                                              onClick={() => handleSaveProposal(p.id)}
-                                              className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition"
+                                              onClick={() => handleDeleteProposal(p.id)}
+                                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition"
+                                              title="삭제"
                                             >
-                                              저장
+                                              <Trash2 className="w-3 h-3" />
                                             </button>
                                           </div>
-                                        </div>
-                                      ) : (
-                                        <p className="text-xs text-slate-800 font-medium leading-relaxed">
-                                          {p.rawText}
-                                        </p>
-                                      )}
+                                        )}
+                                      </div>
                                     </div>
-                                  );
-                                })
-                              )}
-                            </div>
+
+                                    {isEditing ? (
+                                      <div className="space-y-2 pt-1">
+                                        <textarea
+                                          value={editingProposalText}
+                                          onChange={(e) => setEditingProposalText(e.target.value)}
+                                          className="w-full text-xs p-2.5 bg-white border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                                          rows={2}
+                                        />
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <button
+                                            onClick={() => {
+                                              setEditingProposalId(null);
+                                              setEditingProposalText('');
+                                            }}
+                                            className="px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 rounded-md transition"
+                                          >
+                                            취소
+                                          </button>
+                                          <button
+                                            onClick={() => handleSaveProposal(p.id)}
+                                            className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition"
+                                          >
+                                            저장
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                        {p.rawText}
+                                      </p>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
                           </div>
+                        </div>
 
                         {/* Host Control: Triggers Clustering (CRIT-02 AI 자동 정리) */}
                         {roomDetails.room.hostId === userId && (
@@ -4096,7 +4095,7 @@ export default function App() {
                                   <div className="space-y-1 flex-1 min-w-0">
                                     <span className="text-[10px] font-black text-slate-400">후보 #{ideaIdx + 1}</span>
                                     <h4 className="text-base font-bold text-slate-900">{idea.title}</h4>
-                                    
+
                                     {/* Idea description accordion toggle for stage 3 */}
                                     {(() => {
                                       const isDescExpanded = !!expandedIdeaIds[`stage3_${idea.id}`];
@@ -4126,11 +4125,10 @@ export default function App() {
                                   {(() => {
                                     const isMyIdea = idea.submitterId === userId;
                                     return (
-                                      <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${
-                                        isMyIdea 
-                                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' 
-                                          : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                      }`}>
+                                      <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${isMyIdea
+                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                        }`}>
                                         <User className="w-3 h-3 text-indigo-400" />
                                         {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (ideaIdx % 26))}`}
                                       </span>
@@ -4153,8 +4151,8 @@ export default function App() {
                                           type="button"
                                           onClick={() => handleVoteChange(idea.id, opt.key as any)}
                                           className={`p-3.5 rounded-xl border text-center transition flex flex-col items-center justify-center gap-1 ${isSelected
-                                              ? opt.activeClass
-                                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                            ? opt.activeClass
+                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                                             }`}
                                         >
                                           <span className="text-sm font-bold">{opt.label}</span>
@@ -4182,13 +4180,13 @@ export default function App() {
                                           const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
                                             ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
                                             : (roomDetails.proposals || []).map((p, idx) => {
-                                                const parts = p.rawText.split(': ');
-                                                return {
-                                                  id: p.id || `prop-${idx}`,
-                                                  name: parts[0] || `기준 #${idx + 1}`,
-                                                  description: parts.length > 1 ? parts.slice(1).join(': ') : p.rawText
-                                                };
-                                              });
+                                              const parts = p.rawText.split(': ');
+                                              return {
+                                                id: p.id || `prop-${idx}`,
+                                                name: parts[0] || `기준 #${idx + 1}`,
+                                                description: parts.length > 1 ? parts.slice(1).join(': ') : p.rawText
+                                              };
+                                            });
 
                                           if (availableCriteria.length === 0) {
                                             return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
@@ -4261,11 +4259,10 @@ export default function App() {
                                   type="button"
                                   onClick={handleSubmitAllEvaluations}
                                   disabled={!isAllEvaluated}
-                                  className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${
-                                    isAllEvaluated
-                                      ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
-                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
-                                  }`}
+                                  className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${isAllEvaluated
+                                    ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
+                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
+                                    }`}
                                 >
                                   <Sparkles className="w-4 h-4" />
                                   {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
@@ -4309,11 +4306,10 @@ export default function App() {
                                       {(() => {
                                         const isMyIdea = idea.submitterId === userId;
                                         return (
-                                          <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${
-                                            isMyIdea 
-                                              ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' 
-                                              : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                          }`}>
+                                          <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
+                                            ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                            : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                            }`}>
                                             <User className="w-3 h-3 text-indigo-400" />
                                             {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (roomDetails.ideas.findIndex(i => i.id === idea.id) % 26))}`}
                                           </span>
@@ -4321,7 +4317,7 @@ export default function App() {
                                       })()}
                                       <h3 className="text-base font-bold text-slate-900">{idea.title}</h3>
                                     </div>
-                                    
+
                                     {/* Idea description accordion toggle */}
                                     <div className="pt-0.5">
                                       {isDescExpanded ? (
@@ -4433,11 +4429,10 @@ export default function App() {
                                   type="button"
                                   onClick={handleSeedMockStarVotes}
                                   disabled={neededCount === 0 || loading}
-                                  className={`w-full py-2.5 rounded-xl text-xs font-black transition flex items-center justify-center gap-2 ${
-                                    neededCount > 0 && !loading
-                                      ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 shadow-sm cursor-pointer active:scale-95'
-                                      : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
-                                  }`}
+                                  className={`w-full py-2.5 rounded-xl text-xs font-black transition flex items-center justify-center gap-2 ${neededCount > 0 && !loading
+                                    ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 shadow-sm cursor-pointer active:scale-95'
+                                    : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                                    }`}
                                 >
                                   {loading ? (
                                     <>
@@ -4961,7 +4956,7 @@ export default function App() {
               className="bg-white p-6 md:p-8 rounded-3xl max-w-md w-full shadow-2xl space-y-5 text-center border border-indigo-100 relative overflow-hidden"
             >
               <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-amber-500" />
-              
+
               <button
                 type="button"
                 onClick={() => setShowRouletteModal(false)}
@@ -5023,7 +5018,7 @@ export default function App() {
                         const y2 = 50 + 50 * Math.sin(endRad);
 
                         const largeArcFlag = sliceAngle > 180 ? 1 : 0;
-                        const pathData = total === 1 
+                        const pathData = total === 1
                           ? 'M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0'
                           : `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
 
@@ -5220,7 +5215,7 @@ export default function App() {
               className="bg-white p-6 md:p-8 rounded-3xl max-w-xl w-full shadow-2xl space-y-6 text-center border border-indigo-100 relative overflow-hidden"
             >
               <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-emerald-500" />
-              
+
               <button
                 type="button"
                 onClick={() => setShowWinnerModal(false)}
@@ -5333,7 +5328,7 @@ export default function App() {
             >
               {/* Top Accent Line */}
               <div className="h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-indigo-700 shrink-0" />
-              
+
               {/* Fixed Header */}
               <div className="p-5 md:px-6 md:pt-5 md:pb-4 border-b border-slate-100 shrink-0 space-y-3 bg-white">
                 <div className="flex items-center justify-between">
@@ -5404,11 +5399,10 @@ export default function App() {
                       <div
                         key={idea.id}
                         onClick={() => handleToggleStarIdea(idea.id)}
-                        className={`p-4 md:p-4.5 rounded-2xl border transition cursor-pointer flex flex-col space-y-2.5 ${
-                          isSelectedByMe
-                            ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30 shadow-xs'
-                            : 'bg-white border-slate-200 hover:bg-slate-50/80 hover:border-slate-300'
-                        }`}
+                        className={`p-4 md:p-4.5 rounded-2xl border transition cursor-pointer flex flex-col space-y-2.5 ${isSelectedByMe
+                          ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30 shadow-xs'
+                          : 'bg-white border-slate-200 hover:bg-slate-50/80 hover:border-slate-300'
+                          }`}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1 flex-1 min-w-0">
@@ -5438,11 +5432,10 @@ export default function App() {
                                 handleToggleStarIdea(idea.id);
                               }}
                               disabled={isSubmitted}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${
-                                isSelectedByMe
-                                  ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
-                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
-                              } disabled:opacity-80 disabled:cursor-not-allowed`}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${isSelectedByMe
+                                ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
+                                } disabled:opacity-80 disabled:cursor-not-allowed`}
                             >
                               <span className="text-sm">{isSelectedByMe ? '★' : '☆'}</span>
                               <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
@@ -5504,11 +5497,10 @@ export default function App() {
                           type="button"
                           onClick={handleSubmitStarVote}
                           disabled={remainingStars > 0 || isSubmittingStarVote}
-                          className={`px-5 py-2.5 rounded-xl text-xs font-extrabold transition flex-1 sm:flex-none flex items-center justify-center gap-1.5 shadow-md ${
-                            remainingStars === 0 && !isSubmittingStarVote
-                              ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 cursor-pointer active:scale-95'
-                              : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
-                          }`}
+                          className={`px-5 py-2.5 rounded-xl text-xs font-extrabold transition flex-1 sm:flex-none flex items-center justify-center gap-1.5 shadow-md ${remainingStars === 0 && !isSubmittingStarVote
+                            ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 cursor-pointer active:scale-95'
+                            : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                            }`}
                         >
                           {isSubmittingStarVote ? (
                             <>
