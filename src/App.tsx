@@ -1078,12 +1078,19 @@ export default function App() {
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
 
         setRoomDetails(prev => {
-          // Preserve existing proposals if incoming proposals is empty or partial
           const incomingProposals = data.proposals || [];
           const existingProposals = (prev && prev.room.id === data.room.id) ? (prev.proposals || []) : [];
           
+          // Preserve only very recent local optimistic creations (< 3 seconds old) that haven't hit server yet
+          const now = Date.now();
+          const pendingUnsynced = existingProposals.filter(ep => {
+            if (!ep.createdAt) return false;
+            const age = now - new Date(ep.createdAt).getTime();
+            return age < 3000 && ep.proposerId === userId;
+          });
+
           const combined = [...incomingProposals];
-          existingProposals.forEach(ep => {
+          pendingUnsynced.forEach(ep => {
             if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
               combined.push(ep);
             }
@@ -1270,8 +1277,16 @@ export default function App() {
         const incomingProps = dataObj.proposals || [];
         const existingProps = (prev && prev.room.id === dataObj.room.id) ? (prev.proposals || []) : [];
 
+        // Preserve only very recent local optimistic creations (< 3 seconds old) that haven't hit server yet
+        const now = Date.now();
+        const pendingUnsynced = existingProps.filter(ep => {
+          if (!ep.createdAt) return false;
+          const age = now - new Date(ep.createdAt).getTime();
+          return age < 3000 && ep.proposerId === userId;
+        });
+
         const combined = [...incomingProps];
-        existingProps.forEach(ep => {
+        pendingUnsynced.forEach(ep => {
           if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
             combined.push(ep);
           }
