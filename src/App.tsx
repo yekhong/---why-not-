@@ -647,6 +647,9 @@ export default function App() {
   useEffect(() => {
     if (!activeRoomId) return;
 
+    // Reset AI suggested criteria cards to [] on room switch/mount
+    setAiSuggestedCriteria([]);
+
     fetchRoomDetails(activeRoomId);
 
     // Supabase Realtime Channel for active room (instantaneous 0.1s UI synchronization)
