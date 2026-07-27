@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { createClient } from '@supabase/supabase-js';
 import { 
   Room, 
   RoomStatus, 
@@ -16,6 +17,10 @@ import {
 } from './src/types';
 
 dotenv.config();
+
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://xbsuhqrhzksvhicvhkyc.supabase.co';
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const __filename = typeof import.meta !== 'undefined' && import.meta.url 
   ? fileURLToPath(import.meta.url) 
@@ -1294,6 +1299,33 @@ app.get('/api/rooms/:id', async (req, res) => {
   const room = rooms.get(id);
   if (!room) {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  // Synchronize criterionProposals with Supabase DB criterion_proposals table
+  try {
+    const { data: dbProps } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
+    if (dbProps && Array.isArray(dbProps)) {
+      const mappedDbProps: CriterionProposal[] = dbProps.map(p => ({
+        id: p.id,
+        roomId: p.room_id,
+        rawText: p.raw_text || (p as any).rawText || '',
+        proposerId: p.proposer_id || (p as any).proposerId || 'anon',
+        clusterId: p.cluster_id || (p as any).clusterId,
+        isAiSuggested: p.is_ai_suggested !== undefined ? p.is_ai_suggested : Boolean(p.proposer_id === 'gemini-ai' || p.id?.startsWith('prop-ai-'))
+      }));
+
+      // Merge DB proposals into server memory
+      const memoryProps = criterionProposals.get(id) || [];
+      const combined = [...mappedDbProps];
+      memoryProps.forEach(mp => {
+        if (!combined.some(cp => cp.id === mp.id || (cp.rawText && mp.rawText && cp.rawText.trim() === mp.rawText.trim()))) {
+          combined.push(mp);
+        }
+      });
+      criterionProposals.set(id, combined);
+    }
+  } catch (err) {
+    console.warn('Supabase DB proposals sync notice in GET /api/rooms/:id:', err);
   }
 
   const roomIdeas = ideas.get(id) || [];
