@@ -1075,19 +1075,23 @@ export default function App() {
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
 
         setRoomDetails(prev => {
-          // Preserve existing proposals if incoming proposals is empty (e.g. server restart)
+          // Preserve existing proposals if incoming proposals is empty or partial
           const incomingProposals = data.proposals || [];
           const existingProposals = (prev && prev.room.id === data.room.id) ? (prev.proposals || []) : [];
-          const finalProposals = incomingProposals.length > 0
-            ? incomingProposals
-            : (existingProposals.length > 0 ? existingProposals : incomingProposals);
+          
+          const combined = [...incomingProposals];
+          existingProposals.forEach(ep => {
+            if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
+              combined.push(ep);
+            }
+          });
 
           // If previous roomDetails exists and incoming status is invalid/missing, preserve previous valid status
           if (prev && prev.room.id === data.room.id && (!data.room || !data.room.status)) {
             return {
               ...data,
-              proposals: finalProposals,
-              proposalsCount: finalProposals.length,
+              proposals: combined,
+              proposalsCount: combined.length,
               room: {
                 ...data.room,
                 status: prev.room.status
@@ -1096,8 +1100,8 @@ export default function App() {
           }
           return {
             ...data,
-            proposals: finalProposals,
-            proposalsCount: finalProposals.length
+            proposals: combined,
+            proposalsCount: combined.length
           };
         });
 
@@ -1259,7 +1263,23 @@ export default function App() {
         scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
       };
 
-      setRoomDetails(dataObj);
+      setRoomDetails(prev => {
+        const incomingProps = dataObj.proposals || [];
+        const existingProps = (prev && prev.room.id === dataObj.room.id) ? (prev.proposals || []) : [];
+
+        const combined = [...incomingProps];
+        existingProps.forEach(ep => {
+          if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
+            combined.push(ep);
+          }
+        });
+
+        return {
+          ...dataObj,
+          proposals: combined,
+          proposalsCount: combined.length
+        };
+      });
       if (roomObj.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
         setEditableCriteria(mappedCriteria);
       }
