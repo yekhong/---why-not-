@@ -1919,14 +1919,14 @@ export default function App() {
       return;
     }
 
-    const myProps = existingProposals.filter(p => p.proposerId === userId);
+    const myProps = existingProposals.filter(p => p && p.proposerId === userId);
     if (myProps.length >= 6) {
       triggerToast('⚠️ 총 평가 기준 목록은 최대 6개까지만 등록이 가능합니다.', 'error');
       return;
     }
 
-    const myAiCount = myProps.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
-    const myDirectCount = myProps.length - myAiCount;
+    const myAiCount = myProps.filter(p => p && (p.isAiSuggested || (typeof p.id === 'string' && p.id.startsWith('prop-ai-')))).length;
+    const myDirectCount = Math.max(0, myProps.length - myAiCount);
 
     if (isAi && myAiCount >= 3) {
       triggerToast('⚠️ AI 기반 평가 기준은 최대 3개까지만 등록할 수 있습니다.', 'error');
@@ -2811,9 +2811,9 @@ export default function App() {
   };
 
 
-  const myProposals = (roomDetails?.proposals || []).filter(p => p.proposerId === userId);
-  const myAiProposalsCount = myProposals.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
-  const myDirectProposalsCount = myProposals.length - myAiProposalsCount;
+  const myProposals = (roomDetails?.proposals || []).filter(p => p && p.proposerId === userId);
+  const myAiProposalsCount = myProposals.filter(p => p && (p.isAiSuggested || (typeof p.id === 'string' && p.id.startsWith('prop-ai-')))).length;
+  const myDirectProposalsCount = Math.max(0, myProposals.length - myAiProposalsCount);
   const myProposalsCount = myProposals.length;
   const totalProposalsCount = roomDetails?.proposalsCount || (roomDetails?.proposals || []).length;
 
@@ -4070,7 +4070,7 @@ export default function App() {
                             </p>
                             <button
                               onClick={() => handleForceChangeStatus('CRITERIA_PROPOSAL')}
-                              disabled={roomDetails.ideas.length < 2}
+                              disabled={(roomDetails.ideas || []).length < 2}
                               className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-50 transition rounded-xl text-xs font-bold flex items-center justify-center gap-1"
                             >
                               2단계: 평가 기준 제안 단계로 전환
@@ -4125,10 +4125,13 @@ export default function App() {
                           {aiSuggestedCriteria.length > 0 && (
                             <div className="space-y-2 pt-1">
                               {aiSuggestedCriteria.map((item, idx) => {
-                                const text = `${item.name}${item.description ? `: ${item.description}` : ''}`;
+                                if (!item || !item.name) return null;
+                                const itemName = item.name || '';
+                                const itemDesc = item.description || '';
+                                const text = `${itemName}${itemDesc ? `: ${itemDesc}` : ''}`;
                                 const existingProposals = roomDetails?.proposals || [];
-                                const isAlreadyAdded = existingProposals.some(p => p.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === item.name.trim()));
-                                const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6;
+                                const isAlreadyAdded = existingProposals.some(p => p?.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === itemName.trim()));
+                                const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6 || totalProposalsCount >= 21;
 
                                 return (
                                   <div
@@ -4510,10 +4513,16 @@ export default function App() {
 
                           {/* Transition button for host */}
                           {roomDetails.room.hostId === userId && roomDetails.minResponseThresholdMet && (
-                            <div className="border-t border-slate-100 pt-4">
+                            <div className="flex items-center justify-center gap-2 pt-4 border-t border-slate-100">
+                              <button
+                                onClick={() => handleForceChangeStatus('CRITERIA_REVIEW')}
+                                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition"
+                              >
+                                이전 단계(평가검토)로 되돌아가기
+                              </button>
                               <button
                                 onClick={() => handleForceChangeStatus('ELIMINATION')}
-                                className="w-full py-3 bg-amber-400 text-slate-950 hover:bg-amber-300 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-sm"
+                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
                               >
                                 <Sparkles className="w-4 h-4 text-slate-950" />
                                 피드백 보러가기 & 2차 투표 하러가기
@@ -4529,7 +4538,7 @@ export default function App() {
                             <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
                           </div>
 
-                          {roomDetails.ideas.filter(i => i.status === 'ACTIVE').map((idea, ideaIdx) => {
+                          {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
                             const userVote = evalSubmissions[idea.id] || {
                               decision: undefined,
                               excludedCriterionIds: [],
@@ -4632,11 +4641,12 @@ export default function App() {
                                           const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
                                             ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
                                             : (roomDetails.proposals || []).map((p, idx) => {
-                                              const parts = p.rawText.split(': ');
+                                              const rawText = p?.rawText || '';
+                                              const parts = rawText.split(': ');
                                               return {
-                                                id: p.id || `prop-${idx}`,
+                                                id: p?.id || `prop-${idx}`,
                                                 name: parts[0] || `기준 #${idx + 1}`,
-                                                description: parts.length > 1 ? parts.slice(1).join(': ') : p.rawText
+                                                description: parts.length > 1 ? parts.slice(1).join(': ') : rawText
                                               };
                                             });
 
@@ -4745,7 +4755,7 @@ export default function App() {
                             <span className="text-xs text-slate-400 font-semibold">투표 결과: 유지 찬성 / 제외 희망</span>
                           </div>
 
-                          {roomDetails.ideas.filter(i => i.status === 'ACTIVE').map(idea => {
+                          {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map(idea => {
                             const stats = roomDetails.aggregatedScores?.[idea.id] || { score: 0, keepCount: 0, neutralCount: 0, excludeCount: 0, objectiveExcludeCount: 0 };
                             const commentSummaries = roomDetails.aiSummarizedComments?.[idea.id] || { objectiveComments: [], preferenceComments: [] };
                             const isDescExpanded = !!expandedIdeaIds[`stage4_${idea.id}`];
