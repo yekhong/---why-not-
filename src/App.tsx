@@ -2620,7 +2620,7 @@ export default function App() {
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && '2단계: 기준 익명제안 중'}
                   {roomDetails.room.status === 'CRITERIA_REVIEW' && '3단계: 기준 확정 진행 중'}
                   {roomDetails.room.status === 'EVALUATION' && '4단계: 익명 스크리닝 평가 중'}
-                  {roomDetails.room.status === 'ELIMINATION' && `${roomDetails.rounds.length + 1}라운드 소거 진행 중`}
+                  {roomDetails.room.status === 'ELIMINATION' && `${(roomDetails.rounds?.length || 0) + 1}라운드 소거 진행 중`}
                   {roomDetails.room.status === 'CLOSED' && '종료 (최종 선정 완료)'}
                 </span>
               </div>
@@ -4311,7 +4311,7 @@ export default function App() {
                                             : 'bg-slate-100 text-slate-700 border border-slate-200'
                                             }`}>
                                             <User className="w-3 h-3 text-indigo-400" />
-                                            {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (roomDetails.ideas.findIndex(i => i.id === idea.id) % 26))}`}
+                                            {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + ((roomDetails.ideas || []).findIndex(i => i.id === idea.id) % 26))}`}
                                           </span>
                                         );
                                       })()}
@@ -4505,7 +4505,7 @@ export default function App() {
                                     className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 transition rounded-xl text-xs font-black flex items-center justify-center gap-1"
                                   >
                                     {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
-                                    {roomDetails.rounds.length + 1}라운드 하위 후보 소거 진행
+                                    {(roomDetails.rounds?.length || 0) + 1}라운드 하위 후보 소거 진행
                                   </button>
 
                                   <button
@@ -4542,16 +4542,16 @@ export default function App() {
                         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                           <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">소거 타임라인</h3>
 
-                          {roomDetails.rounds.length === 0 ? (
+                          {(!roomDetails.rounds || roomDetails.rounds.length === 0) ? (
                             <p className="text-xs font-semibold text-slate-400">진행된 소거 라운드가 없습니다.</p>
                           ) : (
                             <div className="space-y-4 border-l-2 border-slate-100 pl-3.5">
-                              {roomDetails.rounds.map(round => (
+                              {(roomDetails.rounds || []).map(round => (
                                 <div key={round.id} className="space-y-1 relative">
                                   <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-slate-900" />
                                   <span className="text-[10px] font-black text-slate-400">{round.roundNumber}라운드 소거 완료</span>
                                   <h4 className="text-xs font-bold text-slate-900">
-                                    {round.eliminatedIdeaIds.map(id => roomDetails.ideas.find(i => i.id === id)?.title).join(', ')} 소거
+                                    {round.eliminatedIdeaIds.map(id => (roomDetails.ideas || []).find(i => i.id === id)?.title).join(', ')} 소거
                                   </h4>
                                   <p className="text-[10px] text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
                                     {round.aiSummaryText}
