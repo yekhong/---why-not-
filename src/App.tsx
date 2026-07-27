@@ -4175,19 +4175,19 @@ export default function App() {
                               </p>
                             </div>
                             <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                              직접 제안 ({myDirectProposalsCount}/3개) · 전체 ({myProposalsCount}/6개)
+                              직접 제안 ({myDirectProposalsCount}/3개) · 회의실 전체 ({totalProposalsCount}/21개)
                             </span>
                           </div>
 
-                          {myProposalsCount >= 6 ? (
-                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                          {totalProposalsCount >= 21 ? (
+                            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs font-bold flex items-center gap-2">
                               <span>⚠️</span>
-                              전체 제안된 평가 기준이 최대 등록 제한인 6개(AI 3개 + 직접 작성 3개)에 도달하였습니다.
+                              평가 기준은 최대 21개까지 등록할 수 있습니다.
                             </div>
                           ) : myDirectProposalsCount >= 3 && (
                             <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
                               <span>⚠️</span>
-                              직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 추가 등록 가능)
+                              직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 등록 가능)
                             </div>
                           )}
 
@@ -4196,14 +4196,14 @@ export default function App() {
                               <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
                               <textarea
                                 required={myProposalsCount === 0}
-                                disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
+                                disabled={totalProposalsCount >= 21}
                                 value={proposalText}
                                 onChange={e => setProposalText(e.target.value)}
                                 placeholder={
-                                  myProposalsCount >= 6
-                                    ? "전체 최대 6개 제안이 완료되었습니다."
+                                  totalProposalsCount >= 21
+                                    ? "평가 기준은 최대 21개까지 등록할 수 있습니다."
                                     : myDirectProposalsCount >= 3
-                                      ? "직접 작성 최대 3개 제안이 완료되었습니다. (AI 추천 제안 가능)"
+                                      ? "직접 작성 3개 제안이 작성 완료되었습니다."
                                       : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
                                 }
                                 rows={3}
@@ -4217,7 +4217,7 @@ export default function App() {
 
                             <button
                               type="submit"
-                              disabled={myDirectProposalsCount >= 3 || myProposalsCount >= 6}
+                              disabled={totalProposalsCount >= 21}
                               className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
                             >
                               익명 기준 제안 등록하기
@@ -4232,7 +4232,7 @@ export default function App() {
                           <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                             <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
                             <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                              {totalProposalsCount} / 6개 제출됨
+                              {totalProposalsCount} / 21개 제출됨
                             </span>
                           </div>
 

@@ -1406,23 +1406,28 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
 
     // Populate from all evaluations
+    const MAX_VOTERS = 6;
     roomEvals.forEach(ev => {
       const scoreObj = aggregatedScores[ev.ideaId];
       if (scoreObj) {
         if (ev.decision === 'KEEP') {
           scoreObj.keepCount += 1;
-          scoreObj.score += SCORE_CONFIG.keepWeight;
         } else if (ev.decision === 'NEUTRAL') {
           scoreObj.neutralCount += 1;
-          scoreObj.score += SCORE_CONFIG.neutralWeight;
         } else if (ev.decision === 'EXCLUDE') {
           scoreObj.excludeCount += 1;
-          scoreObj.score += SCORE_CONFIG.excludeWeight;
           if (ev.reasonType === 'OBJECTIVE_CONSTRAINT') {
             scoreObj.objectiveExcludeCount += 1;
-            scoreObj.score -= SCORE_CONFIG.objectiveConstraintPenalty;
           }
         }
+      }
+    });
+
+    // Calculate score using agreeVotes / MAX_VOTERS * 100 rounded to integer (0~100)
+    roomIdeas.forEach(idea => {
+      const scoreObj = aggregatedScores[idea.id];
+      if (scoreObj) {
+        scoreObj.score = Math.min(100, Math.max(0, Math.round((scoreObj.keepCount / MAX_VOTERS) * 100)));
       }
     });
 
@@ -1992,11 +1997,12 @@ app.post('/api/rooms/:id/criteria/propose', (req, res) => {
     return res.status(400).json({ error: '동일한 내용의 기준이 등록되어 있습니다.' });
   }
 
+  if (proposals.length >= 21) {
+    return res.status(400).json({ error: '평가 기준은 최대 21개까지 등록할 수 있습니다.' });
+  }
+
   if (proposerId) {
     const userProps = proposals.filter(p => p.proposerId === proposerId);
-    if (userProps.length >= 6) {
-      return res.status(400).json({ error: '총 평가 기준은 최대 6개까지만 등록할 수 있습니다.' });
-    }
     const userAiCount = userProps.filter(p => p.isAiSuggested || p.id.startsWith('prop-ai-')).length;
     const userDirectCount = userProps.length - userAiCount;
 

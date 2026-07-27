@@ -158,3 +158,50 @@ BEGIN
     );
 END;
 $$;
+
+-- C. Propose Criterion with Max 21 Limit Function (Atomic Concurrency Lock)
+CREATE OR REPLACE FUNCTION public.propose_criterion_with_limit(
+    p_room_id TEXT,
+    p_raw_text TEXT,
+    p_user_id TEXT,
+    p_source_type TEXT DEFAULT 'user'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_count INTEGER;
+    v_trimmed_text TEXT;
+    v_new_id TEXT;
+BEGIN
+    v_trimmed_text := TRIM(p_raw_text);
+    IF v_trimmed_text = '' THEN
+        RAISE EXCEPTION '제안할 기준 내용을 입력해 주세요.';
+    END IF;
+
+    -- Lock room rows for transaction concurrency validation
+    PERFORM 1 FROM public.rooms WHERE id = p_room_id FOR UPDATE;
+
+    -- Count active proposals for this room
+    SELECT COUNT(*) INTO v_current_count
+    FROM public.criterion_proposals
+    WHERE room_id = p_room_id;
+
+    IF v_current_count >= 21 THEN
+        RAISE EXCEPTION '평가 기준은 최대 21개까지 등록할 수 있습니다.';
+    END IF;
+
+    v_new_id := 'prop-' || SUBSTRING(MD5(RANDOM()::TEXT) FROM 1 FOR 9);
+
+    INSERT INTO public.criterion_proposals (id, room_id, raw_text, proposer_id, source_type, created_at)
+    VALUES (v_new_id, p_room_id, v_trimmed_text, p_user_id, COALESCE(p_source_type, 'user'), NOW());
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'message', '평가 기준이 성공적으로 제안되었습니다.',
+        'proposal_id', v_new_id,
+        'count', v_current_count + 1
+    );
+END;
+$$;
