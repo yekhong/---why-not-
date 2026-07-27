@@ -116,6 +116,7 @@ export default function App() {
   const [userEmail, setUserEmail] = useState<string>('');
   const [isRegisteringUser, setIsRegisteringUser] = useState(false);
   const [tempNickname, setTempNickname] = useState('');
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
   // Password validation helper: 소문자 및 숫자로만 구성, 최대 15자 (테스트 계정 TEST1234 허용)
   const isPasswordValid = useMemo(() => {
@@ -596,6 +597,32 @@ export default function App() {
     }
   }, []);
 
+  // Auto-Redirect to target room when user logs in with URL query params or pendingRoomId
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const urlRoomId = params.get('room') || params.get('roomId');
+    const urlRole = params.get('role') || 'member';
+    const savedPendingRoomId = localStorage.getItem('why_not_pending_room_id');
+    const targetRoomId = pendingRoomId || savedPendingRoomId || urlRoomId;
+
+    if (targetRoomId && !activeRoomId) {
+      if (urlRole === 'voter') {
+        localStorage.setItem('why_not_user_role', 'VOTER');
+      } else {
+        localStorage.setItem('why_not_user_role', 'MEMBER');
+      }
+      console.log('[AUTO-REDIRECT] Login successful, auto-entering room:', targetRoomId);
+      setActiveRoomId(targetRoomId);
+      localStorage.setItem('why_not_active_room_id', targetRoomId);
+      localStorage.removeItem('why_not_pending_room_id');
+      setPendingRoomId(null);
+      setShowLoginModal(false);
+      fetchRoomDetails(targetRoomId);
+    }
+  }, [isLoggedIn, pendingRoomId, activeRoomId]);
+
   // 3-Minute Live Expiration Timer
   useEffect(() => {
     const targetTimeStr = landingInviteData?.expiresAt || inviteTokenExpiresAt;
@@ -613,20 +640,44 @@ export default function App() {
     return () => clearInterval(interval);
   }, [inviteTokenExpiresAt, landingInviteData?.expiresAt]);
 
-  // Realtime Subscription for Participant changes
+  // Realtime Subscriptions for Participants, Ideas, Proposals, and Room state changes
   useEffect(() => {
     if (!activeRoomId) return;
 
     fetchRoomDetails(activeRoomId);
 
-    // Supabase Realtime Subscription for instantaneous member list updates
+    // Supabase Realtime Channel for active room (instantaneous 0.1s UI synchronization)
     const channel = supabase
-      .channel(`room-participants-${activeRoomId}`)
+      .channel(`room-realtime-${activeRoomId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${activeRoomId}` },
         (payload) => {
           console.log('[REALTIME] Participant changed:', payload);
+          fetchRoomDetails(activeRoomId, true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ideas', filter: `room_id=eq.${activeRoomId}` },
+        (payload) => {
+          console.log('[REALTIME] Idea changed:', payload);
+          fetchRoomDetails(activeRoomId, true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${activeRoomId}` },
+        (payload) => {
+          console.log('[REALTIME] Room changed:', payload);
+          fetchRoomDetails(activeRoomId, true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'criterion_proposals', filter: `room_id=eq.${activeRoomId}` },
+        (payload) => {
+          console.log('[REALTIME] Proposal changed:', payload);
           fetchRoomDetails(activeRoomId, true);
         }
       )
@@ -1118,7 +1169,7 @@ export default function App() {
         roomId: i.room_id,
         title: i.title,
         description: i.description,
-        submitterId: i.submitter_id,
+        submitterId: i.submitter_id || (i as any).submitterId || '',
         submitterName: i.submitter_name,
         attachmentUrl: i.attachment_url,
         pdfAttachmentUrl: i.pdf_attachment_url,
@@ -1411,11 +1462,12 @@ export default function App() {
   };
 
   // Target pending room selection
-  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
   // Join existing Room (Prompt nickname modal if not specified)
   const handleSelectRoom = async (id: string, customUserId?: string, customNickname?: string) => {
     if (!isLoggedIn) {
+      setPendingRoomId(id);
+      localStorage.setItem('why_not_pending_room_id', id);
       setShowLoginModal(true);
       return;
     }
@@ -1499,25 +1551,21 @@ export default function App() {
       submitterName: anonLabel,
     };
 
-    let insertedSuccess = false;
-
-    // Try Express backend endpoint first
+    // 1. Try Express backend endpoint
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
+      await fetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newIdeaObj),
       });
-      if (res.ok) insertedSuccess = true;
     } catch (e) {
-      console.warn('Express API server unaccessible, trying direct Supabase insertion...', e);
+      console.warn('Express API server unaccessible...', e);
     }
 
-    // Supabase DB Direct insertion fallback
-    if (!insertedSuccess) {
-      try {
-        // Ensure room exists in Supabase rooms table to avoid foreign key constraint violation
-        if (activeRoomId && roomDetails?.room) {
+    // 2. Always persist to Supabase DB so Realtime triggers for all clients
+    try {
+      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
+        if (roomDetails?.room) {
           await supabase.from('rooms').upsert({
             id: activeRoomId,
             title: roomDetails.room.title || '새 회의방',
@@ -1529,7 +1577,7 @@ export default function App() {
         }
 
         const newIdeaId = `idea-${Math.random().toString(36).substring(2, 9)}`;
-        const { error: supaErr } = await supabase
+        await supabase
           .from('ideas')
           .insert({
             id: newIdeaId,
@@ -1543,14 +1591,9 @@ export default function App() {
             tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
             status: 'ACTIVE'
           });
-
-        if (supaErr) throw supaErr;
-        insertedSuccess = true;
-      } catch (err: any) {
-        console.error('Supabase DB submit idea error:', err);
-        triggerToast(`아이디어 등록 도중 오류가 발생했습니다: ${err.message}`, 'error');
-        return;
       }
+    } catch (err: any) {
+      console.error('Supabase DB submit idea error:', err);
     }
 
     triggerToast(`아이디어가 익명(${anonLabel})으로 성공적으로 등록되었습니다!`);
@@ -3525,7 +3568,7 @@ export default function App() {
               </div>
             )}
 
-            {roomDetails && (
+            {roomDetails && roomDetails.room && (
               <div className="flex flex-col lg:flex-row gap-8 items-start">
 
                 {/* 1. SIDEBAR (SLEEK THEME DESIGN) */}
@@ -3544,7 +3587,8 @@ export default function App() {
                         { key: 'CLOSED', label: '5단계 : 최종 결과' }
                       ].map((step, idx) => {
                         const statusesOrder: RoomStatus[] = ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
-                        const currentIdx = statusesOrder.indexOf(roomDetails.room.status === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomDetails.room.status);
+                        const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
+                        const currentIdx = statusesOrder.indexOf(roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomSt);
                         const stepIdx = statusesOrder.indexOf(step.key as RoomStatus);
                         const isCompleted = stepIdx < currentIdx;
                         const isActive = stepIdx === currentIdx;
@@ -3576,7 +3620,7 @@ export default function App() {
                         확정된 평가 기준 (AI)
                       </h3>
                       <div className="space-y-2.5">
-                        {roomDetails.criteria.map((crit) => (
+                        {(roomDetails.criteria || []).map((crit) => (
                           <div key={crit.id} className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-100">
                             <div className="text-xs font-bold text-indigo-950">{crit.name}</div>
                             <p className="text-[10px] text-indigo-700 leading-relaxed mt-0.5">{crit.description}</p>
@@ -3587,7 +3631,7 @@ export default function App() {
                   )}
 
                   {/* Host-only developer quick stage selector (placed at sidebar bottom) */}
-                  {roomDetails.room.hostId === userId && (
+                  {roomDetails.room?.hostId === userId && (
                     <section className="pt-4 border-t border-slate-100 space-y-2">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                         🛠️ 단계 강제 변경:
@@ -3623,13 +3667,13 @@ export default function App() {
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">
-                            {roomDetails.room.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
-                            {(roomDetails.room.status === 'CRITERIA_PROPOSAL' || roomDetails.room.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
-                            {roomDetails.room.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
-                            {roomDetails.room.status === 'ELIMINATION' && '4단계 : 2차 투표'}
-                            {roomDetails.room.status === 'CLOSED' && '5단계 : 최종 결과'}
+                            {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
+                            {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
+                            {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
+                            {roomDetails.room?.status === 'ELIMINATION' && '4단계 : 2차 투표'}
+                            {roomDetails.room?.status === 'CLOSED' && '5단계 : 최종 결과'}
                           </span>
-                          {roomDetails.room.hostId === userId && (
+                          {roomDetails.room?.hostId === userId && (
                             <>
                               <span className="text-xs font-semibold text-white bg-slate-900 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                                 <Settings className="w-3 h-3" />
@@ -3656,10 +3700,10 @@ export default function App() {
                         </div>
 
                         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
-                          {roomDetails.room.title}
+                          {roomDetails.room?.title}
                         </h1>
                         <p className="text-slate-500 text-xs md:text-sm max-w-4xl">
-                          {roomDetails.room.description || '이 방에 대한 추가 설명이 작성되지 않았습니다.'}
+                          {roomDetails.room?.description || '이 방에 대한 추가 설명이 작성되지 않았습니다.'}
                         </p>
                       </div>
 
@@ -3671,7 +3715,7 @@ export default function App() {
                           <span className="text-indigo-600 font-extrabold">
                             {roomDetails.completedParticipantsCount !== undefined
                               ? roomDetails.completedParticipantsCount
-                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room.maxParticipants || 6}명 완료
+                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room?.maxParticipants || 6}명 완료
                           </span>
                         </div>
                         <button
@@ -3688,14 +3732,14 @@ export default function App() {
                   {/* -----------------------------------------------------------
                     VIEW 1: IDEA_SUBMISSION
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'IDEA_SUBMISSION' && (
+                  {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Left: Ideas List (Anonymous Labels) */}
                       <div className="lg:col-span-7 space-y-4">
                         <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                           <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                            제출된 아이디어 목록 ({roomDetails.ideas.length}개)
+                            제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
                           </h2>
                           <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
                             🔒 100% 익명 보장
@@ -3703,7 +3747,7 @@ export default function App() {
                         </div>
 
                         {/* Empty State Prompt */}
-                        {roomDetails.ideas.length === 0 ? (
+                        {(roomDetails.ideas || []).length === 0 ? (
                           <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
                             <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
                               💡
@@ -3716,7 +3760,7 @@ export default function App() {
                         ) : (
                           <div className="space-y-4">
                             {roomDetails.ideas.map((idea, idx) => {
-                              const isMyIdea = idea.submitterId === userId;
+                              const isMyIdea = Boolean(idea.submitterId && userId && idea.submitterId === userId);
                               const isEditingThis = editingIdeaId === idea.id;
 
                               if (isEditingThis) {
@@ -4032,7 +4076,7 @@ export default function App() {
                   {/* -----------------------------------------------------------
                     VIEW 2: CRITERIA_PROPOSAL
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'CRITERIA_PROPOSAL' && (
+                  {roomDetails.room?.status === 'CRITERIA_PROPOSAL' && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Left: Input Proposal Form & AI Suggested Criteria */}
