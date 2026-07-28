@@ -781,7 +781,7 @@ async function aiGenerateFinalSummary(
 
   try {
     const prompt = `
-당신은 '와이낫(Why Not)' 서비스의 AI 분석가입니다.
+당신은 '와이낫(Why Not)' 서비스의 전문 AI 분석가입니다.
 최종 선정된 아이디어와 평가 기준, 투표 결과, 참여자 피드백을 종합하여 임원진이 검토해도 납득할 수 있는 최종 결과 요약 리포트를 마크다운으로 생성해 주십시오.
 
 [회의 정보]
@@ -799,17 +799,22 @@ ${allEliminatedIdeasWithRounds.map(i => `- [${i.round}라운드 소거] "${i.tit
 
 * **최종 선정 강점**:
 
-# 작성 지침 및 논리 구조:
-1. **최종 선정 강점**: 
-   - 확정된 평가 기준과 참여자 피드백에 근거하여 핵심 강점 3개를 작성 (강점, 근거가 된 평가 기준, 관련 피드백, 최종 선정에 미친 영향 포함)
-2. **탈락 후보 및 팀 내 합의 요약**:
-   - 각 라운드별 탈락 아이디어와 팀원들의 집단지성이 탈락의 근거로 제기했던 구체적 합의 우려사항(예산, 인력, 리스크 등)을 정중하게 요약
-3. **가장 뜨거웠던 쟁점작**:
-   - 의견이 가장 갈렸던 아이디어에 대해 투표인들의 가치관 충돌 양상을 분석하고 보완 방향 및 예상 위험 기술
-4. **최종 실행 권고안**:
-   - 부족한 논리와 보완 방향, 예상 위험과 대응 방안 및 다음 단계 실행 권고안 제시
+# 객관적 리포트 작성 원칙:
+1. 최종 선정 결과를 사후 정당화하기 위해 유리한 정보만 편향되게 선택하지 마십시오.
+2. 긍정 피드백과 부정 피드백을 균형 있게 모두 반영하십시오.
+3. 다수 의견뿐 아니라 실행에 중요한 소수 의견도 함께 다루십시오.
+4. 시장 규모, 매출, 성공 가능성, 비용 등의 수치를 임의로 팩트처럼 생성하지 마십시오.
+5. 최종 아이디어의 강점뿐 아니라 약점, 실행 위험, 검증이 필요한 가정도 투명하게 제시하십시오.
+6. 탈락 아이디어가 특정 평가 기준에서 더 우수했다면 해당 사실을 객관적으로 명시하십시오.
+7. 근거가 부족하거나 확정하기 어려운 가정이 있다면 "현재 수집된 데이터만으로는 확정하기 어려우며, 추가 검증이 필요합니다."라고 명시하십시오.
 
-마크다운 양식을 정교하게 활용하여 명확하고 신뢰성 있는 비즈니스 보고서 형태로 작성해 주십시오.
+# 작성 구조 가이드:
+1. **최종 선정 강점**: 확정된 평가 기준과 참여자 피드백에 근거하여 핵심 강점 3개 요약 (강점, 근거 평가 기준, 관련 피드백, 영향)
+2. **약점 및 실행 위험**: 예상되는 한계, 위험 요소, 검증 필요 가정 기술
+3. **가장 뜨거웠던 쟁점작 분석**: 의견 대립 양상 및 보완 방향
+4. **최종 실행 권고안**: 다음 단계 실행 조건 및 가이드라인 제시
+
+마크다운 양식을 정교하게 활용하여 명확하고 신뢰성 있는 비즈니스 의사결정 문서로 작성해 주십시오.
 `;
 
     const response = await ai.models.generateContent({
@@ -1422,6 +1427,11 @@ app.get('/api/rooms/:id', async (req, res) => {
     }
   }
 
+  let finalSummary = aiFinalSummaries.get(id);
+  if (room.status === 'CLOSED' && (!finalSummary || finalSummary.includes('에 대한 단계별 익명 스크리닝이 완료되어'))) {
+    finalSummary = await generateFinalRoomReport(id, room, roomIdeas, roomRounds);
+  }
+
   const result: RoomDetails = {
     room,
     ideas: roomIdeas,
@@ -1435,7 +1445,7 @@ app.get('/api/rooms/:id', async (req, res) => {
     hasEvaluated,
     minResponseThresholdMet,
     scoreConfig: SCORE_CONFIG,
-    aiFinalSummary: aiFinalSummaries.get(id),
+    aiFinalSummary: finalSummary,
     starVotes: starVoteCounts,
     myStarVotes,
     isStarVoteSubmitted,
