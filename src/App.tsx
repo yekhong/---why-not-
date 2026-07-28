@@ -4513,65 +4513,70 @@ export default function App() {
                   {/* -----------------------------------------------------------
                     VIEW 4: EVALUATION
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'EVALUATION' && (
-                    <div className="space-y-6">
+                  {roomDetails.room.status === 'EVALUATION' && (() => {
+                    const currentEvaluatorsCount = Math.max(0, (roomDetails.evaluatorsCount || 0) - (isReEditingEvaluation ? 1 : 0));
+                    const minThreshold = roomDetails.room.minResponseThreshold || 1;
+                    const isMinMet = currentEvaluatorsCount >= minThreshold;
 
-                      {/* Progress Indicator Card */}
-                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                        <div>
-                          <h2 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
-                            {roomDetails.hasEvaluated ? (
-                              <span className="text-emerald-600 flex items-center gap-1">
-                                <Check className="w-4 h-4" />
-                                내 익명 평가 완료됨
-                              </span>
-                            ) : (
-                              <span className="text-slate-900 flex items-center gap-1">
-                                <Lock className="w-4 h-4 text-slate-400" />
-                                익명 스크리닝 평가 대기 중
-                              </span>
-                            )}
-                          </h2>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.
-                          </p>
-                        </div>
+                    return (
+                      <div className="space-y-6">
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-xs font-semibold text-slate-600 bg-slate-50 py-2 px-3.5 border border-slate-100 rounded-xl">
-                            현재 평가인원 : {roomDetails.evaluatorsCount}명 / 최소 {roomDetails.room.minResponseThreshold}명
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Check if User already evaluated */}
-                      {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
-                        /* WAITING SCREEN AND GATE SHOWCASE */
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
-                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
-                            {roomDetails.minResponseThresholdMet ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
-                          </div>
-
-                          <div className="space-y-2">
-                            <h3 className="text-lg font-bold text-slate-900">
-                              {roomDetails.minResponseThresholdMet
-                                ? '팀 내 최소 응답 수 충족 완료!'
-                                : '다른 구성원들의 평가를 기다리는 중'}
-                            </h3>
-                            <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
-                              {roomDetails.minResponseThresholdMet
-                                ? '최소 응답 정족수가 달성되어, 안전하게 익명 처리된 집계 결과가 활성화되었습니다. 방장 권한으로 소거를 시작할 수 있습니다.'
-                                : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + roomDetails.room.minResponseThreshold + '명)가 찬 이후에만 집계 결과를 서버로부터 전송합니다.'}
+                        {/* Progress Indicator Card */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                          <div>
+                            <h2 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
+                              {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
+                                <span className="text-emerald-600 flex items-center gap-1">
+                                  <Check className="w-4 h-4" />
+                                  내 익명 평가 완료됨
+                                </span>
+                              ) : (
+                                <span className="text-slate-900 flex items-center gap-1">
+                                  <Lock className="w-4 h-4 text-slate-400" />
+                                  익명 스크리닝 평가 진행 중
+                                </span>
+                              )}
+                            </h2>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.
                             </p>
                           </div>
 
-                          {/* Gate details */}
-                          <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
-                            <span className="text-slate-500">현재 수집 상태 :</span>
-                            <span className={roomDetails.minResponseThresholdMet ? 'text-emerald-600' : 'text-amber-600'}>
-                              {roomDetails.evaluatorsCount} / {roomDetails.room.minResponseThreshold} 명 완료
-                            </span>
+                          <div className="flex items-center gap-3">
+                            <div className="text-xs font-semibold text-slate-600 bg-slate-50 py-2 px-3.5 border border-slate-100 rounded-xl">
+                              현재 평가인원 : {currentEvaluatorsCount}명 / 최소 {minThreshold}명
+                            </div>
                           </div>
+                        </div>
+
+                        {/* Check if User already evaluated */}
+                        {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
+                          /* WAITING SCREEN AND GATE SHOWCASE */
+                          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
+                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                              {isMinMet ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                            </div>
+
+                            <div className="space-y-2">
+                              <h3 className="text-lg font-bold text-slate-900">
+                                {isMinMet
+                                  ? '팀 내 최소 응답 수 충족 완료!'
+                                  : '다른 구성원들의 평가를 기다리는 중'}
+                              </h3>
+                              <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+                                {isMinMet
+                                  ? '최소 응답 정족수가 달성되어, 안전하게 익명 처리된 집계 결과가 활성화되었습니다. 방장 권한으로 소거를 시작할 수 있습니다.'
+                                  : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + minThreshold + '명)가 찬 이후에만 집계 결과를 서버로부터 전송합니다.'}
+                              </p>
+                            </div>
+
+                            {/* Gate details */}
+                            <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
+                              <span className="text-slate-500">현재 수집 상태 :</span>
+                              <span className={isMinMet ? 'text-emerald-600' : 'text-amber-600'}>
+                                {currentEvaluatorsCount} / {minThreshold} 명 완료
+                              </span>
+                            </div>
 
                           {/* Controls for evaluation re-editing and host transition matching Image 1 */}
                           <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
@@ -4821,9 +4826,9 @@ export default function App() {
                           })()}
                         </div>
                       )}
-
                     </div>
-                  )}
+                  );
+                })()}
 
                   {/* -----------------------------------------------------------
                     VIEW 5: ELIMINATION (SCREENING DASHBOARD)
