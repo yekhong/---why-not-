@@ -5169,15 +5169,7 @@ export default function App() {
                                   </button>
 
                                   <button
-                                    onClick={() => {
-                                      const allIdeas = roomDetails.ideas || [];
-                                      const activeIdeas = allIdeas.filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
-                                      if (activeIdeas.length > 0 && !selectedFinalIdeaId) {
-                                        setSelectedFinalIdeaId(activeIdeas[0].id);
-                                      }
-                                      setShowWinnerModal(false);
-                                      setShowFinalVoteModal(true);
-                                    }}
+                                    onClick={handleStartFinalVote}
                                     className="w-full py-2 border border-dashed border-slate-600 text-slate-300 hover:text-white hover:bg-slate-800 transition rounded-xl text-xs font-bold cursor-pointer"
                                   >
                                     소거 중단하고 현시점 최상위 생존 후보 확정
