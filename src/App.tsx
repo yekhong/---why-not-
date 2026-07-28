@@ -2736,12 +2736,20 @@ export default function App() {
   // 4단계 별 스티커 클릭 토글 함수
   const handleToggleStarIdea = (ideaId: string) => {
     if (!roomDetails) return;
-    if (roomDetails.isStarVoteSubmitted) {
+
+    const targetWinners = roomDetails.room.targetWinnerCount || 1;
+    const activeIdeaIds = (roomDetails.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+    const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+    const isSubmittedByMe = Boolean(
+      (roomDetails.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
+      validMyStarVotes.length >= targetWinners
+    );
+
+    if (isSubmittedByMe) {
       triggerToast('이미 4단계 2차 투표를 제출하셨습니다.', 'error');
       return;
     }
 
-    const targetWinners = roomDetails.room.targetWinnerCount || 1;
     setMySelectedStarIdeaIds(prev => {
       if (prev.includes(ideaId)) {
         return prev.filter(id => id !== ideaId);
@@ -6103,15 +6111,20 @@ export default function App() {
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
                   const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
-                  const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
+                  const activeIdeaIds = activeIdeas.map(i => i.id);
+                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+                  const isSubmittedByMe = Boolean(
+                    (roomDetails?.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
+                    validMyStarVotes.length >= targetWinners
+                  );
 
                   if (activeIdeas.length === 0) {
                     return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
                   }
 
                   return activeIdeas.map(idea => {
-                    const isSelectedByMe = isSubmitted
-                      ? (roomDetails?.myStarVotes || []).includes(idea.id)
+                    const isSelectedByMe = isSubmittedByMe
+                      ? validMyStarVotes.includes(idea.id)
                       : mySelectedStarIdeaIds.includes(idea.id);
                     const stats = roomDetails?.aggregatedScores?.[idea.id];
                     const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
@@ -6152,7 +6165,7 @@ export default function App() {
                                 e.stopPropagation();
                                 handleToggleStarIdea(idea.id);
                               }}
-                              disabled={isSubmitted}
+                              disabled={isSubmittedByMe}
                               className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${isSelectedByMe
                                 ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
                                 : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
