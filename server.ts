@@ -1646,6 +1646,12 @@ app.post('/api/rooms/:id/re-edit-status', (req, res) => {
 
   if (isReEditing) {
     set.add(String(userId));
+    // Clear user's submitted evaluations from Express memory so evaluators list and count are 100% synchronized
+    let rEvals = evaluations.get(id);
+    if (rEvals) {
+      const filtered = rEvals.filter(e => String(e.evaluatorId) !== String(userId));
+      evaluations.set(id, filtered);
+    }
   } else {
     set.delete(String(userId));
   }
