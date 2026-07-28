@@ -4554,41 +4554,18 @@ export default function App() {
                             </span>
                           </div>
 
-                          {/* Tester assist box */}
-                          {!roomDetails.minResponseThresholdMet && (() => {
-                            const neededCount = Math.max(1, (roomDetails.room.minResponseThreshold || 4) - (roomDetails.evaluatorsCount || 0));
-                            return (
-                              <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-left space-y-3">
-                                <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                                  미리보기 테스트 팁 (시뮬레이션 가상 참여자)
-                                </h4>
-                                <p className="text-[11px] text-slate-400 leading-normal">
-                                  혼자서 테스트 중이시라면 아래 버튼을 클릭하십시오! 서버가 즉시 <strong>가상 팀원 {neededCount}명의 익명 평가 정보</strong>를 임의 생성하여 정족수를 만족시켜 주고, 결과 통계 페이지를 보여줍니다.
-                                </p>
-                                <button
-                                  onClick={handleSeedMockEvaluations}
-                                  className="w-full py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 transition shadow-sm flex items-center justify-center gap-1"
-                                >
-                                  <PlusCircle className="w-3.5 h-3.5" />
-                                  시뮬레이션 가상 평가 {neededCount}명 데이터 추가 (정족수 달성)
-                                </button>
-                              </div>
-                            );
-                          })()}
-
                           {/* Transition button for host */}
-                          {roomDetails.room.hostId === userId && roomDetails.minResponseThresholdMet && (
+                          {roomDetails.room.hostId === userId && (
                             <div className="flex items-center justify-center gap-2 pt-4 border-t border-slate-100">
                               <button
                                 onClick={() => handleForceChangeStatus('CRITERIA_REVIEW')}
-                                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition"
+                                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
                               >
                                 이전 단계(평가검토)로 되돌아가기
                               </button>
                               <button
                                 onClick={() => handleForceChangeStatus('ELIMINATION')}
-                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
+                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
                               >
                                 <Sparkles className="w-4 h-4 text-slate-950" />
                                 피드백 보러가기 & 2차 투표 하러가기
@@ -4931,53 +4908,7 @@ export default function App() {
                             );
                           })}
 
-                          {/* 🧪 Test Assist Box for 4단계 Star Voting Simulation */}
-                          {(() => {
-                            const rParticipantsCount = roomDetails.completedParticipantsCount !== undefined
-                              ? roomDetails.completedParticipantsCount
-                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size || 1;
-                            const currentStarCount = roomDetails.starVoteCount || 0;
-                            const neededCount = Math.max(0, rParticipantsCount - currentStarCount);
-
-                            return (
-                              <div className="bg-amber-50/70 p-4.5 rounded-2xl border border-amber-200 space-y-2.5 text-left shadow-xs">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-xs font-black text-amber-900 flex items-center gap-1.5">
-                                    <Sparkles className="w-4 h-4 text-amber-600" />
-                                    🧪 미리보기 테스트 기능 (4단계 2차 투표 정족수 달성)
-                                  </span>
-                                  <span className="text-[11px] font-extrabold text-amber-800 bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300">
-                                    투표 상태: {currentStarCount} / {rParticipantsCount}명 완료
-                                  </span>
-                                </div>
-                                <p className="text-xs text-amber-900/80 leading-relaxed font-medium">
-                                  실제 참여자가 부족한 경우 가상 참여자의 별 투표 데이터를 생성하여 전체 투표 완료 및 5단계(최종 결과) 자동 전환을 테스트합니다.
-                                </p>
-                                <button
-                                  type="button"
-                                  onClick={handleSeedMockStarVotes}
-                                  disabled={neededCount === 0 || loading}
-                                  className={`w-full py-2.5 rounded-xl text-xs font-black transition flex items-center justify-center gap-2 ${neededCount > 0 && !loading
-                                    ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 shadow-sm cursor-pointer active:scale-95'
-                                    : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
-                                    }`}
-                                >
-                                  {loading ? (
-                                    <>
-                                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                      가상 투표 생성 중...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Sparkles className="w-3.5 h-3.5" />
-                                      <span>{neededCount > 0 ? `시뮬레이션 가상 투표 ${neededCount}명 데이터 추가` : '투표 정족수가 이미 완료되었습니다'}</span>
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                            );
-                          })()}
-                        </div>
+                         </div>
                       </div>
 
                       {/* Right: Step Control & Timeline of Elimination Rounds */}
