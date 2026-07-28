@@ -5123,8 +5123,8 @@ export default function App() {
                       {/* Right: Step Control & Timeline of Elimination Rounds */}
                       <div className="lg:col-span-4 space-y-6">
 
-                        {/* Host Execution Box */}
-                        {roomDetails.room.hostId === userId && (
+                        {/* Step Control Box for Host & Invited Participants */}
+                        {roomDetails.room.hostId === userId ? (
                           <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4 shadow-md">
                             <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
                               <Settings className="w-4 h-4" />
@@ -5142,16 +5142,7 @@ export default function App() {
                                     </p>
                                     <button
                                       type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setShowWinnerModal(false);
-                                        const allIdeas = roomDetails.ideas || [];
-                                        const activeIdeas = allIdeas.filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
-                                        if (activeIdeas.length > 0) {
-                                          setSelectedFinalIdeaId(activeIdeas[0].id);
-                                        }
-                                        setShowFinalVoteModal(true);
-                                      }}
+                                      onClick={handleStartFinalVote}
                                       className="w-full py-3 bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95"
                                     >
                                       <Sparkles className="w-4 h-4 text-slate-950" />
@@ -5185,6 +5176,25 @@ export default function App() {
                                 </>
                               );
                             })()}
+                          </div>
+                        ) : (
+                          /* Participant (Invited User) Voting Action Box */
+                          <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-amber-600 text-slate-950 p-5 rounded-2xl space-y-3 shadow-md border border-amber-300">
+                            <h3 className="text-sm font-extrabold text-slate-950 flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-slate-950" />
+                              4단계 2차 별 스티커 투표
+                            </h3>
+                            <p className="text-xs font-bold text-slate-950 leading-relaxed">
+                              생존 후보 중 최종 우승작으로 채택할 아이디어에 별 스티커를 붙여주세요.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setShowFinalVoteModal(true)}
+                              className="w-full py-3 bg-slate-950 text-amber-300 hover:bg-slate-900 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-400 active:scale-95"
+                            >
+                              <Sparkles className="w-4 h-4 text-amber-400" />
+                              <span>⭐ 4단계 2차 별 스티커 투표하기</span>
+                            </button>
                           </div>
                         )}
 
