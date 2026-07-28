@@ -717,13 +717,7 @@ async function aiSummarizeRound(
   eliminatedIdeaTitles: string[],
   reasons: string[]
 ): Promise<string> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    return `${roundNumber}라운드에서 다음 아이디어들이 소거되었습니다: [${eliminatedIdeaTitles.join(', ')}]. 주요 요인은 주어진 평가 기준(예산 한계 또는 실행 준비 복잡성)을 만족시키기 어렵다는 의견과 기술적 현실성 부족이 주를 이루었기 때문입니다.`;
-  }
-
-  try {
-    const prompt = `
+  const prompt = `
 아이디어 소거 프로세스의 퍼실리테이터로서, ${roundNumber}라운드 소거 결과를 분석하고 투표 사유를 바탕으로 탈락 사유를 익명으로 투명하고 기분 상하지 않게 마크다운 형식으로 2~3줄 요약해 주십시오.
 
 소거된 대상 아이디어: ${eliminatedIdeaTitles.join(', ')}
@@ -733,20 +727,33 @@ ${reasons.map(r => `- ${r}`).join('\n')}
 개인 신원 유추가 안 되도록 건조하고 존중을 담은 객관적인 논조로 요약해 주십시오.
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
-    return response.text?.trim() || '기준 충족도가 다소 부족해 1단계 소거되었습니다.';
-  } catch (err) {
-    console.error('Gemini AI round summary failed:', err);
-    return `${roundNumber}라운드에서 종합 평점 하위로 인해 해당 후보군이 제외되었습니다.`;
+  // 1. Try Potens AI first
+  try {
+    const text = await callPotensAI(prompt, 'gemini-2.5-flash');
+    if (text && text.trim()) return text.trim();
+  } catch (potensErr) {
+    console.warn('Potens AI round summary failed, fallback to Gemini SDK:', potensErr);
   }
+
+  // 2. Fallback to Gemini SDK
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+      if (response.text?.trim()) return response.text.trim();
+    } catch (err) {
+      console.error('Gemini AI round summary failed:', err);
+    }
+  }
+
+  return `${roundNumber}라운드에서 다음 아이디어들이 소거되었습니다: [${eliminatedIdeaTitles.join(', ')}]. 주요 요인은 주어진 평가 기준(예산 한계 또는 실행 준비 복잡성)을 만족시키기 어렵다는 의견과 기술적 현실성 부족이 주를 이루었기 때문입니다.`;
 }
 
 /**
- * 4. Generate final CLOSED summary report
+ * 4. Generate final CLOSED summary report (Potens AI / Gemini AI)
  */
 async function aiGenerateFinalSummary(
   roomTitle: string,
@@ -754,33 +761,7 @@ async function aiGenerateFinalSummary(
   allEliminatedIdeasWithRounds: { title: string; round: number; reason: string }[],
   controversialIdeas: string[]
 ): Promise<string> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    return `
-### 🎉 최종 결과 요약 리포트
-
-**"${winnerIdeas.join(', ')}"** 아이디어가 최후의 선택으로 남았습니다!
-
-* **최종 선정 강점**:
-
-1. **높은 실행 가능성**
-   - 현재 팀의 기술과 일정 안에서 구현할 수 있다는 의견이 반복적으로 확인되었습니다.
-
-2. **문제 해결 방향의 명확성**
-   - 다른 아이디어보다 대상 사용자의 문제와 해결 방식이 구체적으로 연결되어 있습니다.
-
-3. **팀 내 높은 수용성**
-   - 찬성 의견과 최종 투표 결과에서 상대적으로 높은 합의 수준이 확인되었습니다.
-
-* **탈락 이력 타임라인**:
-  ${allEliminatedIdeasWithRounds.map(i => `  - **[${i.round}라운드 탈락] "${i.title}"**: ${i.reason}`).join('\n')}
-* **가장 뜨거웠던 쟁점작**:
-  - **"${controversialIdeas.join(', ') || '없음'}"**은 찬성과 반대가 팽팽히 충돌하며 활발한 토론 사유가 축적되었으나, 현실적 리스크 장벽에 부딪쳐 아깝게 막판 소거되었습니다.
-`;
-  }
-
-  try {
-    const prompt = `
+  const prompt = `
 당신은 '와이낫(Why Not)' 서비스의 전문 AI 분석가입니다.
 최종 선정된 아이디어와 평가 기준, 투표 결과, 참여자 피드백을 종합하여 임원진이 검토해도 납득할 수 있는 최종 결과 요약 리포트를 마크다운으로 생성해 주십시오.
 
@@ -817,16 +798,50 @@ ${allEliminatedIdeasWithRounds.map(i => `- [${i.round}라운드 소거] "${i.tit
 마크다운 양식을 정교하게 활용하여 명확하고 신뢰성 있는 비즈니스 의사결정 문서로 작성해 주십시오.
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
-    return response.text || `### 🎉 최종 결과 요약 리포트\n\n**"${winnerIdeas.join(', ')}"** 아이디어가 최후의 선택으로 남았습니다!`;
-  } catch (err) {
-    console.error('Gemini AI final summary failed:', err);
-    return `### 🎉 최종 결과 요약 리포트\n\n**"${winnerIdeas.join(', ')}"** 아이디어가 최후의 선택으로 남았습니다!`;
+  // 1. Try Potens AI first
+  try {
+    const text = await callPotensAI(prompt, 'gemini-2.5-flash');
+    if (text && text.trim()) return text.trim();
+  } catch (potensErr) {
+    console.warn('Potens AI final summary failed, fallback to Gemini SDK:', potensErr);
   }
+
+  // 2. Fallback to Gemini SDK
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      });
+      if (response.text?.trim()) return response.text.trim();
+    } catch (err) {
+      console.error('Gemini AI final summary failed:', err);
+    }
+  }
+
+  // 3. Fallback simulation output
+  return `
+### 🎉 최종 결과 요약 리포트
+
+**"${winnerIdeas.join(', ')}"** 아이디어가 최후의 선택으로 남았습니다!
+
+* **최종 선정 강점**:
+
+1. **높은 실행 가능성**
+   - 현재 팀의 기술과 일정 안에서 구현할 수 있다는 의견이 반복적으로 확인되었습니다.
+
+2. **문제 해결 방향의 명확성**
+   - 다른 아이디어보다 대상 사용자의 문제와 해결 방식이 구체적으로 연결되어 있습니다.
+
+3. **팀 내 높은 수용성**
+   - 찬성 의견과 최종 투표 결과에서 상대적으로 높은 합의 수준이 확인되었습니다.
+
+* **탈락 이력 타임라인**:
+  ${allEliminatedIdeasWithRounds.map(i => `  - **[${i.round}라운드 탈락] "${i.title}"**: ${i.reason}`).join('\n')}
+* **가장 뜨거웠던 쟁점작**:
+  - **"${controversialIdeas.join(', ') || '없음'}"**은 찬성과 반대가 팽팽히 충돌하며 활발한 토론 사유가 축적되었으나, 현실적 리스크 장벽에 부딪쳐 아깝게 막판 소거되었습니다.
+`;
 }
 
 
