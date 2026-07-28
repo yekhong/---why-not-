@@ -103,6 +103,8 @@ const aiCommentsCache = new Map<string, Record<string, { objectiveComments: stri
 const aiFinalSummaries = new Map<string, string>();
 // Map for 4단계 Star Votes: room_id -> Map<user_id, string[]> (userId to array of selected ideaIds)
 const starVotesMap = new Map<string, Map<string, string[]>>();
+// Map for 3단계 Active Re-editing Evaluators: room_id -> Set<user_id>
+const reEditingEvaluatorsMap = new Map<string, Set<string>>();
 
 // ----------------------------------------------------------------
 // Seed Mock Data Creator
@@ -1345,9 +1347,11 @@ app.get('/api/rooms/:id', async (req, res) => {
   const roomEvals = evaluations.get(id) || [];
   const roomRounds = eliminationRounds.get(id) || [];
 
-  // Compute unique evaluators and dynamic target threshold
-  const evaluators = Array.from(new Set(roomEvals.map(e => e.evaluatorId).filter(Boolean)));
-  const evaluatorsCount = evaluators.length;
+  // Compute unique evaluators and dynamic target threshold (excluding evaluators currently re-editing)
+  const allEvaluators = Array.from(new Set(roomEvals.map(e => String(e.evaluatorId)).filter(Boolean)));
+  const roomReEditSet = reEditingEvaluatorsMap.get(id) || new Set<string>();
+  const activeCompletedEvaluators = allEvaluators.filter(eId => !roomReEditSet.has(eId));
+  const evaluatorsCount = activeCompletedEvaluators.length;
   const roomParticipants = participants.get(id);
   const targetThreshold = Math.max(room.minResponseThreshold || 1, roomParticipants ? roomParticipants.size : 1);
   const minResponseThresholdMet = evaluatorsCount >= targetThreshold;
@@ -1358,7 +1362,7 @@ app.get('/api/rooms/:id', async (req, res) => {
     ? roomEvals.filter(e => e.evaluatorId === String(userId)).map(({ evaluatorId, ...rest }) => rest as Evaluation)
     : [];
 
-  const hasEvaluated = userId ? evaluators.includes(String(userId)) : false;
+  const hasEvaluated = userId ? allEvaluators.includes(String(userId)) : false;
 
   const rStarVotes = starVotesMap.get(id) || new Map<string, string[]>();
   const myStarVotes = userId && rStarVotes.has(String(userId)) ? rStarVotes.get(String(userId))! : [];
@@ -1624,6 +1628,32 @@ app.post('/api/rooms/:id/ideas', (req, res) => {
 });
 
 /**
+ * 5-0. Update Evaluation Re-edit status (Realtime re-editing synchronization)
+ */
+app.post('/api/rooms/:id/re-edit-status', (req, res) => {
+  const { id } = req.params;
+  const { userId, isReEditing } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId는 필수입니다.' });
+  }
+
+  let set = reEditingEvaluatorsMap.get(id);
+  if (!set) {
+    set = new Set<string>();
+    reEditingEvaluatorsMap.set(id, set);
+  }
+
+  if (isReEditing) {
+    set.add(String(userId));
+  } else {
+    set.delete(String(userId));
+  }
+
+  res.json({ success: true, isReEditing: set.has(String(userId)), totalReEditingCount: set.size });
+});
+
+/**
  * 5-1. Submit Evaluations for 1차 투표 및 익명 평가
  */
 app.post('/api/rooms/:id/evaluations', (req, res) => {
@@ -1637,6 +1667,12 @@ app.post('/api/rooms/:id/evaluations', (req, res) => {
 
   if (!evaluatorId || !Array.isArray(submissions)) {
     return res.status(400).json({ error: 'evaluatorId와 submissions 배열이 필수입니다.' });
+  }
+
+  // Clear re-editing status when submitting evaluations
+  const reEditSet = reEditingEvaluatorsMap.get(id);
+  if (reEditSet) {
+    reEditSet.delete(String(evaluatorId));
   }
 
   // Record evaluation records

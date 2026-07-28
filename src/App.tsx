@@ -401,7 +401,7 @@ export default function App() {
   }>>({});
   const [isReEditingEvaluation, setIsReEditingEvaluation] = useState(false);
 
-  const handleStartReEditingEvaluation = () => {
+  const handleStartReEditingEvaluation = async () => {
     if (roomDetails?.myEvaluations && roomDetails.myEvaluations.length > 0) {
       const prefilled: Record<string, any> = {};
       roomDetails.myEvaluations.forEach(ev => {
@@ -415,6 +415,35 @@ export default function App() {
       setEvalSubmissions(prefilled);
     }
     setIsReEditingEvaluation(true);
+
+    if (activeRoomId && userId) {
+      try {
+        await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, isReEditing: true })
+        });
+        fetchRoomDetails(activeRoomId, true);
+      } catch (err) {
+        console.warn('Re-edit status update error:', err);
+      }
+    }
+  };
+
+  const handleCancelReEditingEvaluation = async () => {
+    setIsReEditingEvaluation(false);
+    if (activeRoomId && userId) {
+      try {
+        await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, isReEditing: false })
+        });
+        fetchRoomDetails(activeRoomId, true);
+      } catch (err) {
+        console.warn('Cancel re-edit status update error:', err);
+      }
+    }
   };
 
   // 4단계 2차 투표 별 스티커 투표 로컬 상태 (선택 중인 아이디어 ID 목록)
@@ -4617,7 +4646,7 @@ export default function App() {
                               </div>
                               <button
                                 type="button"
-                                onClick={() => setIsReEditingEvaluation(false)}
+                                onClick={handleCancelReEditingEvaluation}
                                 className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
                               >
                                 수정 취소
