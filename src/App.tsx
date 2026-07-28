@@ -423,10 +423,23 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId, isReEditing: true })
         });
-        fetchRoomDetails(activeRoomId, true);
       } catch (err) {
         console.warn('Re-edit status update error:', err);
       }
+
+      if (activeRoomId !== 'room-gominhajo') {
+        try {
+          await supabase
+            .from('evaluations')
+            .delete()
+            .eq('room_id', activeRoomId)
+            .eq('evaluator_id', userId);
+        } catch (supaErr) {
+          console.error('Supabase DB evaluations delete error on re-edit:', supaErr);
+        }
+      }
+
+      fetchRoomDetails(activeRoomId, true);
     }
   };
 
@@ -730,6 +743,14 @@ export default function App() {
         { event: '*', schema: 'public', table: 'criterion_proposals', filter: `room_id=eq.${activeRoomId}` },
         (payload) => {
           console.log('[REALTIME] Proposal changed:', payload);
+          fetchRoomDetails(activeRoomId, true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'evaluations', filter: `room_id=eq.${activeRoomId}` },
+        (payload) => {
+          console.log('[REALTIME] Evaluation changed:', payload);
           fetchRoomDetails(activeRoomId, true);
         }
       )
