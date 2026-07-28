@@ -507,6 +507,48 @@ export default function App() {
   const [mySelectedStarIdeaIds, setMySelectedStarIdeaIds] = useState<string[]>([]);
   const [isSubmittingStarVote, setIsSubmittingStarVote] = useState(false);
 
+  const handleStartFinalVote = async () => {
+    const allIdeas = roomDetails?.ideas || [];
+    const activeIdeas = allIdeas.filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
+    if (activeIdeas.length > 0 && !selectedFinalIdeaId) {
+      setSelectedFinalIdeaId(activeIdeas[0].id);
+    }
+    setShowWinnerModal(false);
+    setShowFinalVoteModal(true);
+
+    if (activeRoomId) {
+      try {
+        await fetch(`/api/rooms/${activeRoomId}/status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'FINAL_VOTE' })
+        });
+      } catch (err) {
+        console.warn('Status update API error:', err);
+      }
+
+      if (activeRoomId !== 'room-gominhajo') {
+        try {
+          await supabase
+            .from('rooms')
+            .update({ status: 'FINAL_VOTE' })
+            .eq('id', activeRoomId);
+        } catch (supaErr) {
+          console.error('Supabase room status update error:', supaErr);
+        }
+      }
+
+      fetchRoomDetails(activeRoomId, true);
+    }
+  };
+
+  // Automatically open 4단계 2차 별 스티커 투표 modal for all participants when room.status === 'FINAL_VOTE'
+  useEffect(() => {
+    if (roomDetails?.room?.status === 'FINAL_VOTE' && !roomDetails.isStarVoteSubmitted) {
+      setShowFinalVoteModal(true);
+    }
+  }, [roomDetails?.room?.status, roomDetails?.isStarVoteSubmitted]);
+
   // 4단계 수동 소거 확인 팝업 modal state
   const [pendingEliminationIdea, setPendingEliminationIdea] = useState<Idea | null>(null);
   const [isEliminatingIdea, setIsEliminatingIdea] = useState(false);
@@ -4927,8 +4969,25 @@ export default function App() {
                   {/* -----------------------------------------------------------
                     VIEW 5: ELIMINATION (SCREENING DASHBOARD)
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'ELIMINATION' && (
+                  {(roomDetails.room.status === 'ELIMINATION' || roomDetails.room.status === 'FINAL_VOTE') && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                      {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
+                      {roomDetails.room.status === 'FINAL_VOTE' && (
+                        <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
+                          <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
+                            <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
+                            <span>방장이 2차 별 스티커 투표를 개시하였습니다! 생존 후보 중 최종 결과로 채택할 아이디어에 별 스티커를 붙여주세요.</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowFinalVoteModal(true)}
+                            className="px-4.5 py-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-xl text-xs font-black transition shrink-0 cursor-pointer shadow-sm flex items-center gap-1.5"
+                          >
+                            <span>⭐ 4단계 2차 별 스티커 투표하기</span>
+                          </button>
+                        </div>
+                      )}
 
                       {/* Left: Active Candidates & Scoring statistics */}
                       <div className="lg:col-span-8 space-y-6">

@@ -1719,6 +1719,25 @@ app.post('/api/rooms/:id/evaluations', (req, res) => {
 });
 
 /**
+ * 5-2. Update Room Status
+ */
+app.post('/api/rooms/:id/status', (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  const room = rooms.get(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (status) {
+    room.status = status;
+  }
+
+  res.json({ success: true, status: room.status });
+});
+
+/**
  * AI Idea Development Helper Endpoint (IA 2.2: AI 아이디어 디벨롭 보조 기능)
  */
 app.post('/api/rooms/:id/ideas/develop', async (req, res) => {
