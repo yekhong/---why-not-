@@ -399,6 +399,23 @@ export default function App() {
     reasonText: string;
     reasonType: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   }>>({});
+  const [isReEditingEvaluation, setIsReEditingEvaluation] = useState(false);
+
+  const handleStartReEditingEvaluation = () => {
+    if (roomDetails?.myEvaluations && roomDetails.myEvaluations.length > 0) {
+      const prefilled: Record<string, any> = {};
+      roomDetails.myEvaluations.forEach(ev => {
+        prefilled[ev.ideaId] = {
+          decision: ev.decision,
+          excludedCriterionIds: ev.excludedCriterionIds || [],
+          reasonText: ev.reasonText || '',
+          reasonType: ev.reasonType || 'PREFERENCE'
+        };
+      });
+      setEvalSubmissions(prefilled);
+    }
+    setIsReEditingEvaluation(true);
+  };
 
   // 4단계 2차 투표 별 스티커 투표 로컬 상태 (선택 중인 아이디어 ID 목록)
   const [mySelectedStarIdeaIds, setMySelectedStarIdeaIds] = useState<string[]>([]);
@@ -2471,6 +2488,8 @@ export default function App() {
       };
     });
 
+    setIsReEditingEvaluation(false);
+
     // Update local state immediately & transition status to 4단계 ELIMINATION (2차 투표)
     setRoomDetails(prev => {
       if (!prev) return prev;
@@ -4526,7 +4545,7 @@ export default function App() {
                       </div>
 
                       {/* Check if User already evaluated */}
-                      {roomDetails.hasEvaluated ? (
+                      {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
                         /* WAITING SCREEN AND GATE SHOWCASE */
                         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
                           <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
@@ -4554,29 +4573,63 @@ export default function App() {
                             </span>
                           </div>
 
-                          {/* Transition button for host */}
-                          {roomDetails.room.hostId === userId && (
-                            <div className="flex items-center justify-center gap-2 pt-4 border-t border-slate-100">
-                              <button
-                                onClick={() => handleForceChangeStatus('CRITERIA_REVIEW')}
-                                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
-                              >
-                                이전 단계(평가검토)로 되돌아가기
-                              </button>
-                              <button
-                                onClick={() => handleForceChangeStatus('ELIMINATION')}
-                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Sparkles className="w-4 h-4 text-slate-950" />
-                                피드백 보러가기 & 2차 투표 하러가기
-                                <ArrowRight className="w-4 h-4" />
-                              </button>
-                            </div>
-                          )}
+                          {/* Controls for evaluation re-editing and host transition */}
+                          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-4 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={handleStartReEditingEvaluation}
+                              className="px-4 py-2 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs"
+                            >
+                              <Edit2 className="w-3.5 h-3.5 text-slate-600" />
+                              <span>✏️ 내 익명 평가 내용 수정하기</span>
+                            </button>
+
+                            {roomDetails.room.hostId === userId && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => handleForceChangeStatus('CRITERIA_REVIEW')}
+                                  className="px-3.5 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
+                                >
+                                  이전 2단계(평가검토)로 되돌아가기
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleForceChangeStatus('ELIMINATION')}
+                                  className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Sparkles className="w-4 h-4 text-slate-950" />
+                                  피드백 보러가기 & 2차 투표 하러가기
+                                  <ArrowRight className="w-4 h-4" />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
                       ) : (
                         /* ACTIVE SCREENING VOTING CARDS */
                         <div className="space-y-6">
+                          {isReEditingEvaluation && (
+                            <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-left shadow-xs">
+                              <div className="space-y-0.5">
+                                <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
+                                  <Edit2 className="w-3.5 h-3.5 text-amber-600" />
+                                  이전 평가 내용 재작성 및 수정 모드
+                                </span>
+                                <p className="text-[11px] text-amber-800 font-medium">
+                                  이전에 제출했던 평가 내용이 입력창에 복원되었습니다. 수정 완료 후 하단의 [4단계 2차 투표로 이동] 버튼을 클릭해 주세요.
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setIsReEditingEvaluation(false)}
+                                className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
+                              >
+                                수정 취소
+                              </button>
+                            </div>
+                          )}
+
                           <div className="border-b border-slate-200 pb-2">
                             <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
                           </div>
