@@ -6071,9 +6071,12 @@ export default function App() {
                 {/* Star Status Display Header Banner */}
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
-                  const currentSelectedCount = isSubmitted ? (roomDetails?.myStarVotes?.length || 0) : mySelectedStarIdeaIds.length;
-                  const remainingStars = targetWinners - currentSelectedCount;
+                  const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+                  const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+                  const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+                  const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
+                  const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
 
                   return (
                     <div className="bg-slate-900 text-white p-3 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -6184,9 +6187,12 @@ export default function App() {
               {/* Fixed Footer with Submission Controls */}
               {(() => {
                 const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                const isSubmitted = roomDetails?.isStarVoteSubmitted || (roomDetails?.myStarVotes && roomDetails.myStarVotes.length > 0);
-                const currentSelectedCount = isSubmitted ? (roomDetails?.myStarVotes?.length || 0) : mySelectedStarIdeaIds.length;
-                const remainingStars = targetWinners - currentSelectedCount;
+                const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+                const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+                const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+                const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+                const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
+                const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
 
                 return (
                   <div className="p-4 md:px-6 border-t border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between gap-3">
