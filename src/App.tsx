@@ -446,16 +446,60 @@ export default function App() {
   const handleCancelReEditingEvaluation = async () => {
     setIsReEditingEvaluation(false);
     if (activeRoomId && userId) {
-      try {
-        await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, isReEditing: false })
-        });
-        fetchRoomDetails(activeRoomId, true);
-      } catch (err) {
-        console.warn('Cancel re-edit status update error:', err);
+      const activeIdeas = roomDetails?.ideas.filter(i => i.status === 'ACTIVE') || [];
+      const hasAllSubmissions = activeIdeas.every(i => evalSubmissions[i.id]?.decision);
+
+      if (hasAllSubmissions && activeIdeas.length > 0) {
+        const submissions = activeIdeas.map(i => ({
+          ideaId: i.id,
+          decision: evalSubmissions[i.id].decision,
+          excludedCriterionIds: evalSubmissions[i.id].excludedCriterionIds || [],
+          reasonText: evalSubmissions[i.id].reasonText || '',
+          reasonType: evalSubmissions[i.id].reasonType || 'PREFERENCE',
+        }));
+
+        try {
+          await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ evaluatorId: userId, submissions })
+          });
+        } catch (err) {
+          console.warn('Cancel re-edit re-submission error:', err);
+        }
+
+        if (activeRoomId !== 'room-gominhajo') {
+          try {
+            for (const sub of submissions) {
+              await supabase.from('evaluations').insert({
+                id: `eval-${Math.random().toString(36).substring(2, 9)}`,
+                room_id: activeRoomId,
+                idea_id: sub.ideaId,
+                evaluator_id: userId,
+                decision: sub.decision,
+                excluded_criterion_ids: sub.excludedCriterionIds || [],
+                reason_text: sub.reasonText || '',
+                reason_type: sub.reasonType || 'PREFERENCE',
+                round: 1
+              });
+            }
+          } catch (supaErr) {
+            console.error('Supabase DB re-insert on cancel re-edit error:', supaErr);
+          }
+        }
+      } else {
+        try {
+          await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, isReEditing: false })
+          });
+        } catch (err) {
+          console.warn('Cancel re-edit status update error:', err);
+        }
       }
+
+      fetchRoomDetails(activeRoomId, true);
     }
   };
 
