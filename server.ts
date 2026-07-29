@@ -470,8 +470,8 @@ function seedData() {
   participants.set(r3Id, room3Participants);
 }
 
-// Initialize seed data
-seedData();
+// Initialize seed data on-demand only (Default clean start)
+// seedData();
 
 // ----------------------------------------------------------------
 // AI LLM Helper Services (using @google/genai)
@@ -1395,6 +1395,22 @@ app.post('/api/rooms', (req, res) => {
   });
 
   res.status(201).json(newRoom);
+});
+
+/**
+ * On-Demand Seed Demo Data API (Executes seedData idempotently when requested by user)
+ */
+app.post('/api/demo/seed', (req, res) => {
+  try {
+    seedData();
+    res.json({
+      success: true,
+      message: '데모 버전에 사용될 샘플 데이터가 성공적으로 생성되었습니다.',
+      demoRoomId: 'room-gominhajo'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: '데모 데이터 생성 중 오류가 발생했습니다: ' + (err.message || err) });
+  }
 });
 
 /**

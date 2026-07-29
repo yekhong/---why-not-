@@ -582,6 +582,26 @@ export default function App() {
   const [editRoomTargetWinnerCount, setEditRoomTargetWinnerCount] = useState(1);
   const [editRoomMinThreshold, setEditRoomMinThreshold] = useState(3);
   const [isUpdatingRoomSettings, setIsUpdatingRoomSettings] = useState(false);
+  // On-Demand Demo Seed Data Handler
+  const [isGeneratingDemo, setIsGeneratingDemo] = useState(false);
+
+  const handleLoadDemoData = async () => {
+    setIsGeneratingDemo(true);
+    try {
+      const res = await fetch('/api/demo/seed', { method: 'POST' });
+      if (res.ok) {
+        triggerToast('🚀 데모 샘플 방(고민하조 팀 프로젝트)이 1초 만에 생성되었습니다!', 'success');
+        await fetchRooms();
+      } else {
+        triggerToast('데모 데이터 생성을 완료할 수 없습니다.', 'error');
+      }
+    } catch (e) {
+      console.error(e);
+      triggerToast('데모 데이터 생성 중 오류가 발생했습니다.', 'error');
+    } finally {
+      setIsGeneratingDemo(false);
+    }
+  };
 
   const openRoomSettingsModal = () => {
     if (!roomDetails?.room) return;
@@ -3711,13 +3731,24 @@ export default function App() {
                 </p>
               </div>
 
-              <button
-                onClick={() => setIsCreatingRoom(true)}
-                className="flex items-center gap-2 self-start md:self-auto bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition"
-              >
-                <Plus className="w-4 h-4" />
-                회의방 개설
-              </button>
+              <div className="flex items-center gap-2 self-start md:self-auto flex-wrap">
+                <button
+                  onClick={handleLoadDemoData}
+                  disabled={isGeneratingDemo}
+                  className="flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 px-4 py-2.5 rounded-xl font-extrabold text-xs shadow-md transition disabled:opacity-50 cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 text-slate-950" />
+                  <span>{isGeneratingDemo ? '데모 데이터 로딩 중...' : '🚀 데모 버전 체험하기'}</span>
+                </button>
+
+                <button
+                  onClick={() => setIsCreatingRoom(true)}
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  회의방 개설
+                </button>
+              </div>
             </div>
 
             {/* Create Room Drawer/Form block */}
@@ -3914,9 +3945,31 @@ export default function App() {
               </div>
 
               {roomsList.length === 0 ? (
-                <div className="text-center py-12 bg-white rounded-2xl border border-slate-200">
-                  <Info className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                  <p className="text-sm font-bold text-slate-500">생성된 회의실이 없습니다. 첫 방을 만들어보세요!</p>
+                <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                    <Sparkles className="w-6 h-6 text-amber-500" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-base font-bold text-slate-900">생성된 회의실이 없습니다.</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed px-4">새로운 회의실을 직접 개설해보거나, 아래 데모 버튼을 눌러 샘플 방을 체험해보세요!</p>
+                  </div>
+                  <div className="flex items-center justify-center gap-3 pt-2">
+                    <button
+                      onClick={handleLoadDemoData}
+                      disabled={isGeneratingDemo}
+                      className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>{isGeneratingDemo ? '로딩 중...' : '🚀 데모 버전 체험하기'}</span>
+                    </button>
+                    <button
+                      onClick={() => setIsCreatingRoom(true)}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+ 새 회의방 개설</span>
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
