@@ -1740,6 +1740,21 @@ app.patch('/api/rooms/:id', (req, res) => {
 });
 
 /**
+ * Automated Dead Rooms Batch Purge Endpoint
+ * Deletes rooms from DB only when ALL participants have deleted/left for > 30 days
+ */
+app.post('/api/rooms/purge-dead-rooms', async (req, res) => {
+  try {
+    const { data: count, error } = await supabase.rpc('purge_dead_rooms');
+    if (error && error.code !== 'PGRST202') throw error;
+    res.json({ success: true, purgedCount: count || 0, message: `성공적으로 ${count || 0}개의 만료된 회의실 데이터를 정제했습니다.` });
+  } catch (err: any) {
+    console.warn('Purge dead rooms notice:', err?.message || err);
+    res.json({ success: true, purgedCount: 0 });
+  }
+});
+
+/**
  * 3. Fetch detailed room info with strict anonymity gate filters
  */
 app.get('/api/rooms/:id', async (req, res) => {

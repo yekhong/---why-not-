@@ -1444,12 +1444,17 @@ export default function App() {
 
       const { data: memberPart, error: partErr } = await supabase
         .from('participants')
-        .select('room_id')
+        .select('room_id, hidden_at')
         .eq('user_id', activeUserId);
 
       if (hostErr && partErr) {
         throw new Error('Supabase DB room query failed: ' + (hostErr?.message || partErr?.message));
       }
+
+      const participantMap = new Map<string, { hiddenAt: string | null }>();
+      (memberPart || []).forEach(p => {
+        participantMap.set(p.room_id, { hiddenAt: p.hidden_at || null });
+      });
 
       const joinedRoomIds = (memberPart || []).map(p => p.room_id);
 
@@ -1467,6 +1472,17 @@ export default function App() {
       joinedRooms.forEach(r => combinedMap.set(r.id, r));
       const supaRooms = Array.from(combinedMap.values());
 
+      // Prepare local storage hidden fallback across re-login sessions
+      let localHiddenSet = new Set<string>();
+      try {
+        const curEmail = userEmail || localStorage.getItem('why_not_user_email') || '';
+        const rawIdHidden = localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]';
+        const rawEmailHidden = curEmail ? localStorage.getItem(`why_not_hidden_rooms_${curEmail}`) || '[]' : '[]';
+        const parsedId = JSON.parse(rawIdHidden);
+        const parsedEmail = JSON.parse(rawEmailHidden);
+        localHiddenSet = new Set([...parsedId, ...parsedEmail]);
+      } catch (e) {}
+
       // Calculate participant count and format room card info
       const mapped = await Promise.all(supaRooms.map(async r => {
         const { count } = await supabase
@@ -1474,8 +1490,11 @@ export default function App() {
           .select('*', { count: 'exact', head: true })
           .eq('room_id', r.id);
 
-        const isHost = r.host_id === activeUserId;
+        const isHost = Boolean(r.host_id && activeUserId && r.host_id === activeUserId && r.host_id !== 'anon-host');
         const myRole = isHost ? '방장' : '참여자';
+
+        const pInfo = participantMap.get(r.id);
+        const isHidden = Boolean(pInfo?.hiddenAt || localHiddenSet.has(r.id));
 
         let readableStatus = '아이디어 모집';
         if (r.status === 'SETUP') readableStatus = '설정 중';
@@ -1500,7 +1519,8 @@ export default function App() {
           updatedAt: r.updated_at || r.created_at,
           hostId: r.host_id,
           isHost,
-          myRole
+          myRole,
+          isHidden
         };
       }));
 
@@ -4139,7 +4159,7 @@ export default function App() {
                     onClick={() => setShowHiddenRooms(prev => !prev)}
                     className={`px-3 py-1.5 rounded-lg transition ${showHiddenRooms ? 'bg-amber-500 text-slate-950 font-extrabold shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    🙈 숨긴 회의실
+                    🗑️ 삭제/숨긴 회의실
                   </button>
                 </div>
 
@@ -4319,11 +4339,16 @@ export default function App() {
                                   </button>
                                 ) : (
                                   <button
-                                    onClick={(e) => handleHideRoom(e, room.id)}
-                                    title="내 목록에서 숨기기"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (window.confirm('이 회의실을 내 목록에서 삭제하시겠습니까?\n(다른 참여자의 회의 내용 및 데이터는 보호됩니다)')) {
+                                        handleHideRoom(e, room.id);
+                                      }
+                                    }}
+                                    title="내 목록에서 삭제 (참여자 회의 내용 보존)"
                                     className="p-1.5 rounded-full bg-slate-50 text-slate-400 border border-slate-200 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition"
                                   >
-                                    <X className="w-3.5 h-3.5" />
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-500 hover:text-rose-700" />
                                   </button>
                                 )}
 
