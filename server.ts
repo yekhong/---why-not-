@@ -1344,7 +1344,7 @@ app.post('/api/rooms', (req, res) => {
     isPinned: false,
     hostId: hostId || 'host-user',
     status: 'IDEA_SUBMISSION', // Starts in IDEA_SUBMISSION state
-    minResponseThreshold: minResponseThreshold || 3,
+    minResponseThreshold: minResponseThreshold !== undefined ? Number(minResponseThreshold) : Math.min(Number(maxParticipants) || 4, 6),
     eliminationConfig: {
       countPerRound: eliminationConfig?.countPerRound || 1,
       ratioPerRound: eliminationConfig?.ratioPerRound,

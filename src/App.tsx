@@ -1745,7 +1745,7 @@ export default function App() {
         targetWinnerCount: newRoomTargetWinners,
         isPublic: newRoomIsPublic,
         hostId: userId || 'anon-host',
-        minResponseThreshold: 1,
+        minResponseThreshold: Math.min(newRoomMaxParticipants, 6),
         eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
       };
 
@@ -4218,7 +4218,20 @@ export default function App() {
                           const ideaCompletedCount = roomDetails.completedParticipantsCount !== undefined
                             ? roomDetails.completedParticipantsCount
                             : (showIdeaSubmissionGate ? 1 : 0);
-                          const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= (roomDetails.room.minResponseThreshold || 3);
+
+                          const targetMinThreshold = Math.min(
+                            roomDetails.room.minResponseThreshold || 3,
+                            roomDetails.room.maxParticipants || 6
+                          );
+
+                          const targetTotalCount = Math.max(
+                            roomDetails.room.maxParticipants || 2,
+                            targetMinThreshold,
+                            ideaCompletedCount,
+                            (roomDetails.participants || []).length || 1
+                          );
+
+                          const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
 
                           return (
                             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
@@ -4239,7 +4252,7 @@ export default function App() {
                                 <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
                                   {isIdeaGateMinMet
                                     ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + (roomDetails.room.minResponseThreshold || 3) + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
+                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
                                 </p>
                               </div>
 
@@ -4247,7 +4260,7 @@ export default function App() {
                               <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
                                 <span className="text-slate-500">현재 수집 상태 :</span>
                                 <span className={isIdeaGateMinMet ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
-                                  {ideaCompletedCount} / {roomDetails.room.minResponseThreshold || 3} 명 완료
+                                  {ideaCompletedCount} / {targetTotalCount} 명 완료
                                 </span>
                               </div>
 
