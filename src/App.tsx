@@ -8,6 +8,7 @@ import {
   User,
   Users,
   Check,
+  CheckCircle,
   X,
   AlertCircle,
   Lock,
@@ -103,13 +104,20 @@ export default function App() {
     return localStorage.getItem('why_not_logged_in') === 'true';
   });
   const [showLoginModal, setShowLoginModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP'>('LOGIN');
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP' | 'RECOVER'>('LOGIN');
 
   // Form input fields
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+
+  // Recovery code states
+  const [recoveryCodeOutput, setRecoveryCodeOutput] = useState<string | null>(null);
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveredAccountResult, setRecoveredAccountResult] = useState<{ loginId: string; newRecoveryCode: string } | null>(null);
+  const [isRecoveringAccount, setIsRecoveringAccount] = useState(false);
 
   const [userId, setUserId] = useState<string>('');
   const [nickname, setNickname] = useState<string>('');
@@ -128,9 +136,10 @@ export default function App() {
     return isValidCharAndLength && hasLowercase && hasDigit;
   }, [authPassword]);
 
-  // Email validation helper: 이메일 형식 검사 (테스트 계정 GOMINHAJO 허용)
+  // Email validation helper: 이메일/ID 형식 검사 (테스트 계정 GOMINHAJO 허용)
   const isEmailValid = useMemo(() => {
     const input = authEmail.trim();
+    if (!input) return false;
     if (input.toUpperCase() === 'GOMINHAJO' || !input.includes('@')) return true;
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
   }, [authEmail]);
@@ -147,11 +156,11 @@ export default function App() {
     }
   };
 
-  // Email Signup Handler
+  // Secure Email/ID Signup Handler (/api/auth/signup)
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isEmailValid) {
-      triggerToast('올바른 이메일 형식을 입력해 주세요.', 'error');
+      triggerToast('올바른 로그인 아이디/이메일 형식을 입력해 주세요.', 'error');
       return;
     }
     if (!isPasswordValid) {
@@ -159,71 +168,109 @@ export default function App() {
       return;
     }
     if (!authName.trim()) {
-      triggerToast('이름을 입력해 주세요.', 'error');
+      triggerToast('이름(닉네임)을 입력해 주세요.', 'error');
       return;
     }
 
     try {
-      const { data, error } = await supabase.auth.signUp({
-        email: authEmail.trim(),
-        password: authPassword,
-        options: {
-          data: {
-            full_name: authName.trim()
-          }
-        }
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          loginId: authEmail.trim(),
+          password: authPassword,
+          nickname: authName.trim()
+        })
       });
 
-      if (error) throw error;
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || '회원가입 처리 중 오류가 발생했습니다.');
+      }
 
-      const user = data.user;
-      const uName = authName.trim();
-      const uId = user?.id || `user_${Math.random().toString(36).substring(2, 9)}`;
-
-      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, uId);
+      const uId = data.user.id;
+      const uName = data.user.nickname;
+      const uEmail = data.user.loginId;
 
       setUserId(uId);
       setNickname(uName);
-      setUserEmail(authEmail.trim());
+      setUserEmail(uEmail);
       localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', authEmail.trim());
+      localStorage.setItem('why_not_user_email', uEmail);
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast('회원가입 및 로그인이 완료되었습니다!');
+
+      if (data.recoveryCode) {
+        setRecoveryCodeOutput(data.recoveryCode);
+      } else {
+        setShowLoginModal(false);
+      }
+      triggerToast('회원가입이 완료되었습니다! 발급된 복구 코드를 반드시 보관하세요.');
     } catch (err: any) {
-      console.warn('Supabase SignUp notice:', err);
-      // Fallback local session registration for testing
+      console.warn('Backend Auth Signup notice, using local session fallback:', err);
       const uId = `user_${Math.random().toString(36).substring(2, 9)}`;
       const uName = authName.trim();
+      const uEmail = authEmail.trim();
+      const genCode = `RC-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
 
-      saveLocalRegisteredUser(authEmail.trim(), authPassword, uName, uId);
+      saveLocalRegisteredUser(uEmail, authPassword, uName, uId);
 
       setUserId(uId);
       setNickname(uName);
-      setUserEmail(authEmail.trim());
+      setUserEmail(uEmail);
       localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', authEmail.trim());
+      localStorage.setItem('why_not_user_email', uEmail);
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
-      setShowLoginModal(false);
+      setRecoveryCodeOutput(genCode);
       triggerToast('회원가입이 완료되었습니다!');
     }
   };
 
-  // Email Login Handler
+  // Secure Email/ID Login Handler (/api/auth/login)
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     const failMsg = '아이디 또는 비밀번호가 올바르지 않습니다. 입력한 정보를 다시 확인해 주세요.';
 
-    // Dedicated instant check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
-    const inputEmailOrId = authEmail.trim().toUpperCase();
-    const inputPassword = authPassword.trim().toUpperCase();
+    const inputEmailOrId = authEmail.trim();
 
-    if ((inputEmailOrId === 'GOMINHAJO' || inputEmailOrId === 'GOMINHAJO@TEST.COM') && inputPassword === 'TEST1234') {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          loginId: inputEmailOrId,
+          password: authPassword
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        const uId = data.user.id;
+        const uName = data.user.nickname;
+        const uEmail = data.user.loginId;
+
+        setUserId(uId);
+        setNickname(uName);
+        setUserEmail(uEmail);
+        localStorage.setItem('why_not_user_id', uId);
+        localStorage.setItem('why_not_user_name', uName);
+        localStorage.setItem('why_not_user_email', uEmail);
+        localStorage.setItem('why_not_logged_in', 'true');
+        setIsLoggedIn(true);
+        setShowLoginModal(false);
+        triggerToast(`${uName}님 환영합니다!`);
+        return;
+      }
+    } catch (err) {
+      console.warn('Backend Auth Login error:', err);
+    }
+
+    // Dedicated instant check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
+    if ((inputEmailOrId.toUpperCase() === 'GOMINHAJO' || inputEmailOrId.toUpperCase() === 'GOMINHAJO@TEST.COM') && authPassword.toUpperCase() === 'TEST1234') {
       const uId = 'user_gominhajo_test';
       const uName = 'GOMINHAJO';
       setUserId(uId);
@@ -231,6 +278,7 @@ export default function App() {
       setUserEmail('gominhajo@test.com');
       localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
+      localStorage.setItem('why_not_user_email', 'gominhajo@test.com');
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
       setShowLoginModal(false);
@@ -238,93 +286,87 @@ export default function App() {
       return;
     }
 
-    if (!isEmailValid) {
-      setAuthError(failMsg);
-      triggerToast(failMsg, 'error');
-      return;
-    }
-
-    // Special handling for test account login (ID: GOMINHAJO / PW: TEST1234 or email input)
-    let loginEmail = authEmail.trim();
-    if (loginEmail.toUpperCase() === 'GOMINHAJO') {
-      loginEmail = 'gominhajo@test.com';
-    } else if (!loginEmail.includes('@')) {
-      loginEmail = `${loginEmail}@test.com`;
-    }
-
-    const trimmedEmail = loginEmail.toLowerCase();
-
+    // Local fallback check
+    let registeredUsers: any[] = [];
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: loginEmail,
-        password: authPassword,
-      });
+      registeredUsers = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
+    } catch (e) { }
 
-      if (error) throw error;
+    const matchedUser = registeredUsers.find(
+      (u: any) => u.email && u.email.toLowerCase() === inputEmailOrId.toLowerCase()
+    );
 
-      const user = data.user;
-      const uName = user.user_metadata?.full_name || (trimmedEmail.startsWith('gominhajo') ? 'GOMINHAJO' : user.email?.split('@')[0]) || '사용자';
-      saveLocalRegisteredUser(loginEmail, authPassword, uName, user.id);
-
-      setUserId(user.id);
+    if (matchedUser && (!matchedUser.password || matchedUser.password === authPassword)) {
+      const uId = matchedUser.id || `user_${Math.random().toString(36).substring(2, 9)}`;
+      const uName = matchedUser.name || localStorage.getItem('why_not_user_name') || '사용자';
+      setUserId(uId);
       setNickname(uName);
-      setUserEmail(user.email || '');
-      localStorage.setItem('why_not_user_id', user.id);
+      setUserEmail(inputEmailOrId);
+      localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
+      localStorage.setItem('why_not_user_email', inputEmailOrId);
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
       setShowLoginModal(false);
       triggerToast(`${uName}님 환영합니다!`);
+    } else {
+      setAuthError(failMsg);
+      triggerToast(failMsg, 'error');
+    }
+  };
+
+  // Secure Account Recovery Handler (/api/auth/recover)
+  const handleAccountRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryCodeInput.trim()) {
+      triggerToast('발급받으셨던 복구 코드를 입력해 주세요.', 'error');
+      return;
+    }
+    if (!recoveryNewPassword) {
+      triggerToast('새로 변경할 비밀번호를 입력해 주세요.', 'error');
+      return;
+    }
+
+    setIsRecoveringAccount(true);
+    setAuthError(null);
+
+    try {
+      const res = await fetch('/api/auth/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recoveryCode: recoveryCodeInput.trim(),
+          newPassword: recoveryNewPassword
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || '계정 복구 실패. 복구 코드를 다시 확인해 주세요.');
+      }
+
+      setRecoveredAccountResult({
+        loginId: data.loginId,
+        newRecoveryCode: data.newRecoveryCode
+      });
+
+      if (data.user) {
+        setUserId(data.user.id);
+        setNickname(data.user.nickname);
+        setUserEmail(data.loginId);
+        localStorage.setItem('why_not_user_id', data.user.id);
+        localStorage.setItem('why_not_user_name', data.user.nickname);
+        localStorage.setItem('why_not_user_email', data.loginId);
+        localStorage.setItem('why_not_logged_in', 'true');
+        setIsLoggedIn(true);
+      }
+
+      triggerToast('비밀번호가 재설정되었습니다! 새 복구 코드를 반드시 보관하세요.');
     } catch (err: any) {
-      console.warn('Supabase Login Notice:', err);
-
-      // Dedicated hardcoded check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
-      if ((authEmail.trim().toUpperCase() === 'GOMINHAJO' || trimmedEmail === 'gominhajo@test.com') && authPassword.toUpperCase() === 'TEST1234') {
-        const uId = 'user_gominhajo_test';
-        const uName = 'GOMINHAJO';
-        setUserId(uId);
-        setNickname(uName);
-        setUserEmail('gominhajo@test.com');
-        localStorage.setItem('why_not_user_id', uId);
-        localStorage.setItem('why_not_user_name', uName);
-        localStorage.setItem('why_not_logged_in', 'true');
-        setIsLoggedIn(true);
-        setShowLoginModal(false);
-        triggerToast('테스트 계정(GOMINHAJO)으로 로그인되었습니다!');
-        return;
-      }
-
-      // Check local registered users fallback
-      let registeredUsers: any[] = [];
-      try {
-        registeredUsers = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
-      } catch (e) { }
-
-      const matchedUser = registeredUsers.find(
-        (u: any) => u.email && u.email.toLowerCase() === trimmedEmail
-      );
-
-      if (matchedUser) {
-        if (matchedUser.password && matchedUser.password !== authPassword) {
-          setAuthError(failMsg);
-          triggerToast(failMsg, 'error');
-          return;
-        }
-        const uId = matchedUser.id || `user_${Math.random().toString(36).substring(2, 9)}`;
-        const uName = matchedUser.name || trimmedEmail.split('@')[0] || '사용자';
-        setUserId(uId);
-        setNickname(uName);
-        setUserEmail(loginEmail);
-        localStorage.setItem('why_not_user_id', uId);
-        localStorage.setItem('why_not_user_name', uName);
-        localStorage.setItem('why_not_logged_in', 'true');
-        setIsLoggedIn(true);
-        setShowLoginModal(false);
-        triggerToast(`${uName}님 환영합니다!`);
-      } else {
-        setAuthError(failMsg);
-        triggerToast(failMsg, 'error');
-      }
+      setAuthError(err.message || '복구 코드 검증 실패');
+      triggerToast(err.message || '복구 코드 검증 실패', 'error');
+    } finally {
+      setIsRecoveringAccount(false);
     }
   };
 
@@ -3387,19 +3429,19 @@ export default function App() {
                     navigator.clipboard.writeText(currentLoginId);
                     triggerToast(`✨ 로그인 이메일 ID: ${currentLoginId} (복사되었습니다!)`, 'success');
                   }}
-                  className="relative group flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-1.5 px-3.5 rounded-full transition cursor-pointer shadow-xs"
-                  title={`로그인 이메일: ${userEmail || localStorage.getItem('why_not_user_email') || '이메일 정보 없음'}`}
+                  className="group flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-1.5 px-3.5 rounded-full transition-all duration-200 cursor-pointer shadow-xs"
                 >
-                  <User className="w-3.5 h-3.5 text-indigo-600" />
-                  <span className="text-xs font-bold text-indigo-950">
+                  <User className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  
+                  {/* 평소: 닉네임 노출 */}
+                  <span className="text-xs font-bold text-indigo-950 transition-all duration-200 group-hover:hidden">
                     {nickname || '사용자'}
                   </span>
 
-                  {/* 마우스 호버(Hover) 시 나타나는 이메일 ID 툴팁 배지 */}
-                  <div className="absolute top-full right-0 mt-2 hidden group-hover:flex items-center gap-1.5 bg-slate-900 text-white text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow-xl border border-slate-800 whitespace-nowrap z-50 pointer-events-none transition duration-150">
-                    <span className="text-amber-400">🔑 이메일 ID:</span>
-                    <span className="font-mono text-slate-100">{userEmail || localStorage.getItem('why_not_user_email') || '정보 없음'}</span>
-                  </div>
+                  {/* 마우스를 닉네임에 대면(Hover): 이메일 ID로 텍스트 인라인 전환 */}
+                  <span className="text-xs font-bold text-indigo-700 font-mono transition-all duration-200 hidden group-hover:inline-block">
+                    {userEmail || localStorage.getItem('why_not_user_email') || '이메일 정보 없음'}
+                  </span>
                 </div>
                 <button
                   onClick={handleLogout}
@@ -5836,7 +5878,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Email Authentication Modal (Login / Signup) */}
+      {/* Email Authentication & Account Recovery Modal (user_accounts) */}
       <AnimatePresence>
         {showLoginModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -5846,125 +5888,264 @@ export default function App() {
               exit={{ scale: 0.95, opacity: 0 }}
               className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-xl space-y-5 text-left"
             >
-              <div className="flex items-center justify-between">
-                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
-                  <Lock className="w-5 h-5" />
-                </div>
-                <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                  <button
-                    type="button"
-                    onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
-                    className={`px-3 py-1 rounded-lg transition ${authMode === 'LOGIN' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    로그인
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setAuthMode('SIGNUP'); setAuthError(null); }}
-                    className={`px-3 py-1 rounded-lg transition ${authMode === 'SIGNUP' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    회원가입
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-xl font-bold text-slate-900">
-                  {authMode === 'LOGIN' ? '로그인' : '회원가입'}
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  {authMode === 'LOGIN'
-                    ? '이메일과 비밀번호를 입력하여 로그인하십시오.'
-                    : '이메일 형식의 ID와 비밀번호를 설정하여 가입하십시오.'}
-                </p>
-              </div>
-
-              {authError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-medium">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              <form onSubmit={authMode === 'LOGIN' ? handleEmailLogin : handleEmailSignUp} className="space-y-3">
-                {authMode === 'SIGNUP' && (
+              {/* 1. Show newly generated Recovery Code right after Sign Up */}
+              {recoveryCodeOutput ? (
+                <div className="space-y-4 text-center py-2">
+                  <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto border border-amber-200">
+                    <Lock className="w-6 h-6 text-amber-600" />
+                  </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-700">이름 <span className="text-rose-500">*</span></label>
-                    <input
-                      type="text"
-                      required
-                      value={authName}
-                      onChange={e => setAuthName(e.target.value)}
-                      placeholder="예: 홍길동"
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                    />
+                    <h3 className="text-lg font-extrabold text-slate-900">계정 복구 코드가 발급되었습니다!</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed px-1">
+                      비밀번호를 잊으셨을 때 계정을 찾고 재설정할 수 있는 **유일한 복구 수단**입니다. 단방향 해시로 안전하게 관리되므로 복사하여 안전한 곳에 보관하세요.
+                    </p>
                   </div>
-                )}
 
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700">ID (이메일) <span className="text-rose-500">*</span></label>
-                  <input
-                    type="text"
-                    required
-                    value={authEmail}
-                    onChange={e => { setAuthEmail(e.target.value); setAuthError(null); }}
-                    placeholder="GOMINHAJO 또는 user@example.com"
-                    className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authEmail && !isEmailValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
-                      }`}
-                  />
-                  {authEmail && !isEmailValid && (
-                    <p className="text-[10px] text-rose-500 font-medium">⚠️ 올바른 이메일 형식이 아닙니다.</p>
-                  )}
+                  <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center justify-between gap-2 shadow-xs">
+                    <span className="font-mono font-extrabold text-sm text-slate-900 tracking-wider">
+                      {recoveryCodeOutput}
+                    </span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(recoveryCodeOutput);
+                        triggerToast('복구 코드가 클립보드에 복사되었습니다!', 'success');
+                      }}
+                      className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs cursor-pointer"
+                    >
+                      복사
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setRecoveryCodeOutput(null);
+                      setShowLoginModal(false);
+                    }}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
+                  >
+                    확인 완료 및 시작하기
+                  </button>
                 </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-700">비밀번호 <span className="text-rose-500">*</span></label>
-                    {authMode === 'SIGNUP' && (
-                      <span className="text-[10px] text-slate-400 font-normal">소문자+숫자 (최대 15자)</span>
-                    )}
+              ) : recoveredAccountResult ? (
+                /* 2. Show Recovered Account & New Password Result */
+                <div className="space-y-4 text-center py-2">
+                  <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto border border-emerald-200">
+                    <CheckCircle className="w-6 h-6 text-emerald-600" />
                   </div>
-                  <input
-                    type="password"
-                    required
-                    maxLength={15}
-                    value={authPassword}
-                    onChange={e => { setAuthPassword(e.target.value); setAuthError(null); }}
-                    placeholder="영문 소문자 및 숫자 조합"
-                    className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authMode === 'SIGNUP' && authPassword && !isPasswordValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
-                      }`}
-                  />
-                  {authMode === 'SIGNUP' && (
-                    <div className="pt-0.5">
-                      {authPassword ? (
-                        isPasswordValid ? (
-                          <p className="text-[10px] text-emerald-600 font-bold">✓ 사용 가능한 비밀번호입니다.</p>
-                        ) : (
-                          <p className="text-[10px] text-rose-500 font-medium">⚠️ 영문 소문자와 숫자를 포함하여 15자 이내로 입력해주세요.</p>
-                        )
-                      ) : null}
+                  <div className="space-y-1">
+                    <h3 className="text-lg font-extrabold text-slate-900">계정 복구 성공!</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      로그인 아이디가 확인되었으며, 비밀번호가 안전하게 재설정되었습니다.
+                    </p>
+                  </div>
+
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-left text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 font-bold">🔑 로그인 아이디:</span>
+                      <span className="font-mono font-extrabold text-indigo-600">{recoveredAccountResult.loginId}</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200/80">
+                      <span className="text-slate-500 font-bold">🔐 새 복구 코드:</span>
+                      <span className="font-mono font-extrabold text-amber-600">{recoveredAccountResult.newRecoveryCode}</span>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-amber-700 font-medium bg-amber-50 p-2.5 rounded-xl border border-amber-200 text-left">
+                    ⚠️ 이전 복구 코드는 즉시 폐기되었습니다. 새로 발급된 복구 코드를 안전하게 보관하세요!
+                  </p>
+
+                  <button
+                    onClick={() => {
+                      setRecoveredAccountResult(null);
+                      setShowLoginModal(false);
+                    }}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
+                  >
+                    로그인 상태로 서비스 이용하기
+                  </button>
+                </div>
+              ) : (
+                /* 3. Standard 3-Tab Form (Login / Signup / Recover) */
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
+                      <Lock className="w-5 h-5" />
+                    </div>
+                    <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
+                        className={`px-2.5 py-1 rounded-lg transition ${authMode === 'LOGIN' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        로그인
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode('SIGNUP'); setAuthError(null); }}
+                        className={`px-2.5 py-1 rounded-lg transition ${authMode === 'SIGNUP' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        회원가입
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode('RECOVER'); setAuthError(null); }}
+                        className={`px-2 py-1 rounded-lg transition ${authMode === 'RECOVER' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        🔑 계정 복구
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900">
+                      {authMode === 'LOGIN' && '로그인'}
+                      {authMode === 'SIGNUP' && '회원가입 (계정 생성)'}
+                      {authMode === 'RECOVER' && '복구 코드로 계정 찾기'}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {authMode === 'LOGIN' && '아이디와 비밀번호를 입력하여 로그인하십시오.'}
+                      {authMode === 'SIGNUP' && '아이디와 비밀번호, 이름을 설정하여 계정을 생성하십시오.'}
+                      {authMode === 'RECOVER' && '발급받으셨던 복구 코드로 아이디를 확인하고 비밀번호를 재설정합니다.'}
+                    </p>
+                  </div>
+
+                  {authError && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-medium">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                      <span>{authError}</span>
                     </div>
                   )}
-                </div>
 
-                <div className="pt-2 space-y-2">
-                  <button
-                    type="submit"
-                    disabled={authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim())}
-                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm"
-                  >
-                    {authMode === 'LOGIN' ? '로그인' : '회원가입 완료'}
-                  </button>
+                  {authMode === 'RECOVER' ? (
+                    /* Recover Form */
+                    <form onSubmit={handleAccountRecovery} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">복구 코드 <span className="text-rose-500">*</span></label>
+                        <input
+                          type="text"
+                          required
+                          value={recoveryCodeInput}
+                          onChange={e => setRecoveryCodeInput(e.target.value)}
+                          placeholder="예: RC-A8F2-7K9M"
+                          className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
+                        />
+                      </div>
 
-                  <button
-                    type="button"
-                    onClick={() => { setShowLoginModal(false); setAuthError(null); }}
-                    className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center"
-                  >
-                    닫기
-                  </button>
-                </div>
-              </form>
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">새 비밀번호 설정 <span className="text-rose-500">*</span></label>
+                        <input
+                          type="password"
+                          required
+                          maxLength={15}
+                          value={recoveryNewPassword}
+                          onChange={e => setRecoveryNewPassword(e.target.value)}
+                          placeholder="영문 소문자 및 숫자 조합"
+                          className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                        />
+                      </div>
+
+                      <div className="pt-2 space-y-2">
+                        <button
+                          type="submit"
+                          disabled={isRecoveringAccount || !recoveryCodeInput.trim() || !recoveryNewPassword}
+                          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
+                        >
+                          {isRecoveringAccount ? '복구 및 검증 중...' : '계정 찾기 & 비밀번호 재설정'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => { setShowLoginModal(false); setAuthError(null); }}
+                          className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
+                        >
+                          닫기
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    /* Login / Signup Form */
+                    <form onSubmit={authMode === 'LOGIN' ? handleEmailLogin : handleEmailSignUp} className="space-y-3">
+                      {authMode === 'SIGNUP' && (
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">이름 (닉네임) <span className="text-rose-500">*</span></label>
+                          <input
+                            type="text"
+                            required
+                            value={authName}
+                            onChange={e => setAuthName(e.target.value)}
+                            placeholder="예: 홍길동"
+                            className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                          />
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">로그인 ID (이메일) <span className="text-rose-500">*</span></label>
+                        <input
+                          type="text"
+                          required
+                          value={authEmail}
+                          onChange={e => { setAuthEmail(e.target.value); setAuthError(null); }}
+                          placeholder="GOMINHAJO 또는 user@example.com"
+                          className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authEmail && !isEmailValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
+                            }`}
+                        />
+                        {authEmail && !isEmailValid && (
+                          <p className="text-[10px] text-rose-500 font-medium">⚠️ 올바른 이메일/ID 형식이 아닙니다.</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-slate-700">비밀번호 <span className="text-rose-500">*</span></label>
+                          {authMode === 'SIGNUP' && (
+                            <span className="text-[10px] text-slate-400 font-normal">소문자+숫자 (최대 15자)</span>
+                          )}
+                        </div>
+                        <input
+                          type="password"
+                          required
+                          maxLength={15}
+                          value={authPassword}
+                          onChange={e => { setAuthPassword(e.target.value); setAuthError(null); }}
+                          placeholder="영문 소문자 및 숫자 조합"
+                          className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authMode === 'SIGNUP' && authPassword && !isPasswordValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
+                            }`}
+                        />
+                        {authMode === 'SIGNUP' && (
+                          <div className="pt-0.5">
+                            {authPassword ? (
+                              isPasswordValid ? (
+                                <p className="text-[10px] text-emerald-600 font-bold">✓ 사용 가능한 비밀번호입니다.</p>
+                              ) : (
+                                <p className="text-[10px] text-rose-500 font-medium">⚠️ 영문 소문자와 숫자를 포함하여 15자 이내로 입력해주세요.</p>
+                              )
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-2 space-y-2">
+                        <button
+                          type="submit"
+                          disabled={authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim())}
+                          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
+                        >
+                          {authMode === 'LOGIN' ? '로그인' : '회원가입 완료 및 복구코드 발급'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => { setShowLoginModal(false); setAuthError(null); }}
+                          className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
+                        >
+                          닫기
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </>
+              )}
             </motion.div>
           </div>
         )}

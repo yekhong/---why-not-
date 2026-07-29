@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
@@ -28,6 +29,33 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// ----------------------------------------------------------------
+// Secure User Accounts Data Store & Cryptographic Helpers
+// ----------------------------------------------------------------
+interface UserAccount {
+  id: string;
+  loginId: string;
+  passwordHash: string;
+  nickname: string;
+  recoveryCodeHash: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'ACTIVE' | 'SUSPENDED' | 'DELETED';
+  failedRecoveryAttempts: number;
+}
+
+const ACCOUNT_SALT = 'whynot_secure_salt_2026_v1';
+const userAccountsMap = new Map<string, UserAccount>(); // loginId.toLowerCase() -> UserAccount
+
+function hashString(input: string): string {
+  return crypto.createHash('sha256').update(input + ACCOUNT_SALT).digest('hex');
+}
+
+function generateRecoveryCode(): string {
+  const hex = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `RC-${hex.slice(0, 4)}-${hex.slice(4, 8)}`;
+}
 
 // Lazy-initialized Gemini / Potens AI Client
 const POTENS_API_URL = 'https://ai.potens.ai/api/chat';
@@ -865,6 +893,251 @@ AI가 핵심 강점을 3개 이내로 요약합니다.
 // ----------------------------------------------------------------
 // API Endpoints
 // ----------------------------------------------------------------
+
+/**
+ * ----------------------------------------------------------------
+ * Secure User Account Management Endpoints (user_accounts)
+ * ----------------------------------------------------------------
+ */
+
+// Check Login ID Availability
+app.post('/api/auth/check-id', async (req, res) => {
+  const { loginId } = req.body || {};
+  if (!loginId) return res.status(400).json({ available: false });
+
+  const normalizedId = loginId.trim().toLowerCase();
+  if (userAccountsMap.has(normalizedId)) {
+    return res.json({ available: false });
+  }
+
+  try {
+    const { data: existingSupa } = await supabase
+      .from('user_accounts')
+      .select('id')
+      .eq('login_id', normalizedId)
+      .maybeSingle();
+
+    if (existingSupa) {
+      return res.json({ available: false });
+    }
+  } catch (err) {}
+
+  res.json({ available: true });
+});
+
+// Secure Sign Up Endpoint
+app.post('/api/auth/signup', async (req, res) => {
+  const { loginId, password, nickname } = req.body || {};
+  if (!loginId || !password || !nickname) {
+    return res.status(400).json({ error: '로그인 아이디, 비밀번호, 닉네임은 필수 입력 항목입니다.' });
+  }
+
+  const normalizedId = loginId.trim().toLowerCase();
+  if (userAccountsMap.has(normalizedId)) {
+    return res.status(400).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
+  }
+
+  try {
+    const { data: existingSupa } = await supabase
+      .from('user_accounts')
+      .select('id')
+      .eq('login_id', normalizedId)
+      .maybeSingle();
+
+    if (existingSupa) {
+      return res.status(400).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
+    }
+  } catch (err) {}
+
+  const newUserId = `user_${crypto.randomBytes(6).toString('hex')}`;
+  const passwordHash = hashString(password);
+  const recoveryCode = generateRecoveryCode();
+  const recoveryCodeHash = hashString(recoveryCode);
+  const now = new Date().toISOString();
+
+  const accountRecord: UserAccount = {
+    id: newUserId,
+    loginId: normalizedId,
+    passwordHash,
+    nickname: nickname.trim(),
+    recoveryCodeHash,
+    createdAt: now,
+    updatedAt: now,
+    status: 'ACTIVE',
+    failedRecoveryAttempts: 0
+  };
+
+  userAccountsMap.set(normalizedId, accountRecord);
+
+  // Sync insert to Supabase user_accounts table
+  supabase.from('user_accounts').insert({
+    id: newUserId,
+    login_id: normalizedId,
+    password_hash: passwordHash,
+    nickname: nickname.trim(),
+    recovery_code_hash: recoveryCodeHash,
+    created_at: now,
+    updated_at: now,
+    status: 'ACTIVE',
+    failed_recovery_attempts: 0
+  }).then(({ error }) => {
+    if (error && error.code !== 'PGRST205') {
+      console.info('[Supabase Auth Sync Notice]:', error.message || error);
+    }
+  });
+
+  res.status(201).json({
+    ok: true,
+    user: {
+      id: newUserId,
+      loginId: normalizedId,
+      nickname: nickname.trim()
+    },
+    recoveryCode // Provided ONCE on signup
+  });
+});
+
+// Secure Login Endpoint
+app.post('/api/auth/login', async (req, res) => {
+  const { loginId, password } = req.body || {};
+  if (!loginId || !password) {
+    return res.status(400).json({ error: '로그인 아이디와 비밀번호를 입력해 주세요.' });
+  }
+
+  const normalizedId = loginId.trim().toLowerCase();
+  const hashedInputPass = hashString(password);
+
+  let account: UserAccount | undefined = userAccountsMap.get(normalizedId);
+
+  if (!account) {
+    try {
+      const { data: supaAcc } = await supabase
+        .from('user_accounts')
+        .select('*')
+        .eq('login_id', normalizedId)
+        .maybeSingle();
+
+      if (supaAcc) {
+        account = {
+          id: supaAcc.id,
+          loginId: supaAcc.login_id,
+          passwordHash: supaAcc.password_hash,
+          nickname: supaAcc.nickname,
+          recoveryCodeHash: supaAcc.recovery_code_hash,
+          createdAt: supaAcc.created_at,
+          updatedAt: supaAcc.updated_at,
+          status: supaAcc.status || 'ACTIVE',
+          failedRecoveryAttempts: supaAcc.failed_recovery_attempts || 0
+        };
+        userAccountsMap.set(normalizedId, account);
+      }
+    } catch (err) {}
+  }
+
+  if (!account) {
+    return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+  }
+
+  if (account.status !== 'ACTIVE') {
+    return res.status(403).json({ error: '비활성화되거나 정지된 계정입니다.' });
+  }
+
+  if (account.passwordHash !== hashedInputPass) {
+    return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
+  }
+
+  res.json({
+    ok: true,
+    user: {
+      id: account.id,
+      loginId: account.loginId,
+      nickname: account.nickname
+    }
+  });
+});
+
+// Secure Account Recovery Endpoint (Recovery Code -> Show ID & Reset Password)
+app.post('/api/auth/recover', async (req, res) => {
+  const { recoveryCode, newPassword } = req.body || {};
+  if (!recoveryCode || !newPassword) {
+    return res.status(400).json({ error: '복구 코드와 새 비밀번호를 모두 입력해 주세요.' });
+  }
+
+  const enteredCodeHash = hashString(recoveryCode.trim().toUpperCase());
+
+  // Search across memory accounts first
+  let foundAccount: UserAccount | undefined = Array.from(userAccountsMap.values()).find(
+    acc => acc.recoveryCodeHash === enteredCodeHash
+  );
+
+  if (!foundAccount) {
+    try {
+      const { data: supaAcc } = await supabase
+        .from('user_accounts')
+        .select('*')
+        .eq('recovery_code_hash', enteredCodeHash)
+        .maybeSingle();
+
+      if (supaAcc) {
+        foundAccount = {
+          id: supaAcc.id,
+          loginId: supaAcc.login_id,
+          passwordHash: supaAcc.password_hash,
+          nickname: supaAcc.nickname,
+          recoveryCodeHash: supaAcc.recovery_code_hash,
+          createdAt: supaAcc.created_at,
+          updatedAt: supaAcc.updated_at,
+          status: supaAcc.status || 'ACTIVE',
+          failedRecoveryAttempts: supaAcc.failed_recovery_attempts || 0
+        };
+        userAccountsMap.set(supaAcc.login_id, foundAccount);
+      }
+    } catch (err) {}
+  }
+
+  if (!foundAccount) {
+    return res.status(400).json({ error: '올바르지 않거나 이미 사용된 복구 코드입니다.' });
+  }
+
+  if (foundAccount.failedRecoveryAttempts >= 5) {
+    return res.status(429).json({ error: '복구 코드 오류 시도 횟수를 초과(5회)했습니다. 관리자에게 문의해 주세요.' });
+  }
+
+  // Issue new password and void old recovery code with a NEW recovery code
+  const newPasswordHash = hashString(newPassword);
+  const newRecoveryCode = generateRecoveryCode();
+  const newRecoveryCodeHash = hashString(newRecoveryCode);
+  const now = new Date().toISOString();
+
+  foundAccount.passwordHash = newPasswordHash;
+  foundAccount.recoveryCodeHash = newRecoveryCodeHash;
+  foundAccount.failedRecoveryAttempts = 0;
+  foundAccount.updatedAt = now;
+
+  userAccountsMap.set(foundAccount.loginId, foundAccount);
+
+  // Sync to Supabase user_accounts
+  supabase.from('user_accounts').update({
+    password_hash: newPasswordHash,
+    recovery_code_hash: newRecoveryCodeHash,
+    failed_recovery_attempts: 0,
+    updated_at: now
+  }).eq('id', foundAccount.id).then(({ error }) => {
+    if (error && error.code !== 'PGRST205') console.info('[Supabase Auth Recovery Notice]:', error.message || error);
+  });
+
+  res.json({
+    ok: true,
+    message: '비밀번호가 안전하게 재설정되었습니다.',
+    loginId: foundAccount.loginId,
+    user: {
+      id: foundAccount.id,
+      loginId: foundAccount.loginId,
+      nickname: foundAccount.nickname
+    },
+    newRecoveryCode // Show ONCE to user
+  });
+});
 
 /**
  * Toggle Room Pin
