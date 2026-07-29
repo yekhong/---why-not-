@@ -4139,7 +4139,7 @@ export default function App() {
                             className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
                           >
                             <Copy className="w-3 h-3" />
-                            🔗 초대자 공유 링크 발급/관리
+                            🔗 공유 링크 발급/관리
                           </button>
                         </div>
 
@@ -4178,59 +4178,8 @@ export default function App() {
                     ----------------------------------------------------------- */}
                   {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
                     (showIdeaSubmissionGate || Boolean(activeRoomId && localStorage.getItem(`why_not_idea_step_gate_${activeRoomId}`) === 'true')) ? (
-                      /* COMBINED SUMMARY LIST & ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 1, 2, 3 */
+                      /* ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 2 & 3 */
                       <div className="space-y-6">
-                        {/* 1. Image 1 Equivalent: Submitted Ideas Summary List Confirmation Card */}
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="border-b border-slate-100 pb-3">
-                            <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                              <Sparkles className="w-4 h-4 text-amber-500" />
-                              총 제출된 핵심 아이디어 목록 확인
-                            </h2>
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              참여진들이 익명으로 제안한 전체 아이디어 리스트입니다. 내용을 확인하신 후 2단계 평가 기준 설정을 진행해 주세요.
-                            </p>
-                          </div>
-
-                          <div className="space-y-3">
-                            {(roomDetails.ideas || []).length === 0 ? (
-                              <div className="p-4 bg-slate-50 text-slate-500 text-xs text-center rounded-xl">
-                                등록된 아이디어가 없습니다.
-                              </div>
-                            ) : (
-                              (roomDetails.ideas || []).map((idea, idx) => (
-                                <div key={idea.id || idx} className="p-4 bg-slate-50 hover:bg-indigo-50/30 rounded-xl border border-slate-200 transition space-y-1 text-left">
-                                  <div className="flex items-center justify-between gap-4">
-                                    <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase tracking-wider">
-                                      아이디어 #{idx + 1}
-                                    </span>
-                                    <span className="text-[11px] font-semibold text-slate-400">
-                                      {idea.anonymousLabel || '익명 아이디어'}
-                                    </span>
-                                  </div>
-
-                                  <div>
-                                    <h4 className="text-sm font-bold text-slate-900">{idea.title}</h4>
-                                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed whitespace-pre-wrap">{idea.description}</p>
-                                    {idea.attachmentUrl && (
-                                      <div className="pt-1">
-                                        <a
-                                          href={idea.attachmentUrl}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          className="inline-flex items-center gap-1 text-[11px] text-indigo-600 font-semibold underline"
-                                        >
-                                          <FileText className="w-3 h-3" />
-                                          참고 링크 / 첨부자료 보기
-                                        </a>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
 
                         {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
                         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
