@@ -1568,30 +1568,43 @@ app.get('/api/health', (req, res) => {
 });
 
 /**
- * 1. Get room list (Summary representation)
+ * 1. Get room list (Summary representation - Filtered by authorization for user privacy)
  */
 app.get('/api/rooms', (req, res) => {
-  const list = Array.from(rooms.values()).map(r => {
-    const rIdeas = ideas.get(r.id) || [];
-    const rEvals = evaluations.get(r.id) || [];
-    const rParticipants = participants.get(r.id);
-    const uniqueEvaluators = new Set(rEvals.map(e => e.evaluatorId)).size;
-    const participantCount = rParticipants ? rParticipants.size : 1;
-    return {
-      id: r.id,
-      title: r.title,
-      description: r.description,
-      category: r.category || '기획',
-      isPublic: r.isPublic !== undefined ? r.isPublic : true,
-      maxParticipants: r.maxParticipants || 10,
-      isPinned: r.isPinned || false,
-      status: r.status,
-      ideasCount: rIdeas.length,
-      evaluatorsCount: Math.max(participantCount, uniqueEvaluators),
-      minResponseThreshold: r.minResponseThreshold,
-      createdAt: r.createdAt
-    };
-  });
+  const reqUserId = req.query.userId as string | undefined;
+
+  const list = Array.from(rooms.values())
+    .filter(r => {
+      if (!reqUserId) return false; // Hide public listing unless user is authorized host or participant
+      const rParticipants = participants.get(r.id);
+      const isHost = r.hostId === reqUserId;
+      const isJoined = rParticipants ? rParticipants.has(reqUserId) : false;
+      return isHost || isJoined;
+    })
+    .map(r => {
+      const rIdeas = ideas.get(r.id) || [];
+      const rEvals = evaluations.get(r.id) || [];
+      const rParticipants = participants.get(r.id);
+      const uniqueEvaluators = new Set(rEvals.map(e => e.evaluatorId)).size;
+      const participantCount = rParticipants ? rParticipants.size : 1;
+      return {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category || '기획',
+        isPublic: r.isPublic !== undefined ? r.isPublic : true,
+        maxParticipants: r.maxParticipants || 10,
+        isPinned: r.isPinned || false,
+        status: r.status,
+        ideasCount: rIdeas.length,
+        evaluatorsCount: Math.max(participantCount, uniqueEvaluators),
+        minResponseThreshold: r.minResponseThreshold,
+        createdAt: r.createdAt,
+        hostId: r.hostId,
+        isHost: r.hostId === reqUserId,
+        isJoined: rParticipants ? rParticipants.has(reqUserId) : false
+      };
+    });
   res.json(list);
 });
 

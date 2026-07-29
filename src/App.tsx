@@ -375,6 +375,9 @@ export default function App() {
   // ----------------------------------------------------------------
   const [roomsList, setRoomsList] = useState<any[]>([]);
   const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IDEA_SUBMISSION' | 'EVALUATION' | 'CLOSED'>('ALL');
+  const [roomOwnershipFilter, setRoomOwnershipFilter] = useState<'ALL' | 'CREATED_BY_ME' | 'JOINED_BY_ME'>('ALL');
+  const [isJoinCodeModalOpen, setIsJoinCodeModalOpen] = useState(false);
+  const [inputJoinCode, setInputJoinCode] = useState('');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1418,8 +1421,10 @@ export default function App() {
   };
 
   const fetchRooms = async () => {
+    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
+
     try {
-      const res = await fetch('/api/rooms');
+      const res = await fetch(`/api/rooms?userId=${encodeURIComponent(activeUserId)}`);
       if (res.ok) {
         const data = await res.json();
         setRoomsList(data || []);
@@ -1429,16 +1434,42 @@ export default function App() {
       console.warn('Express backend offline, fetching rooms directly from Supabase DB...');
     }
 
-    // Direct Supabase DB query fallback
+    // Direct Supabase DB query fallback (Filtered by host_id or participants table for security)
     try {
-      const { data: supaRooms, error } = await supabase
-        .from('rooms')
-        .select('*')
-        .order('created_at', { ascending: false });
+      let supaRooms: any[] = [];
+      if (activeUserId) {
+        // Query rooms created by active user
+        const { data: hostRooms } = await supabase
+          .from('rooms')
+          .select('*')
+          .eq('host_id', activeUserId);
 
-      if (error) throw error;
+        // Query rooms joined by active user via participants table
+        const { data: memberPart } = await supabase
+          .from('participants')
+          .select('room_id')
+          .eq('user_id', activeUserId);
 
-      const mapped = (supaRooms || []).map(r => ({
+        const joinedRoomIds = (memberPart || []).map(p => p.room_id);
+
+        let joinedRooms: any[] = [];
+        if (joinedRoomIds.length > 0) {
+          const { data: jRooms } = await supabase
+            .from('rooms')
+            .select('*')
+            .in('id', joinedRoomIds);
+          joinedRooms = jRooms || [];
+        }
+
+        const combinedMap = new Map<string, any>();
+        (hostRooms || []).forEach(r => combinedMap.set(r.id, r));
+        joinedRooms.forEach(r => combinedMap.set(r.id, r));
+        supaRooms = Array.from(combinedMap.values());
+      } else {
+        supaRooms = [];
+      }
+
+      const mapped = supaRooms.map(r => ({
         id: r.id,
         title: r.title,
         description: r.description,
@@ -1451,7 +1482,9 @@ export default function App() {
         ideasCount: 0,
         evaluatorsCount: 1,
         minResponseThreshold: r.min_response_threshold || 1,
-        createdAt: r.created_at
+        createdAt: r.created_at,
+        hostId: r.host_id,
+        isHost: r.host_id === activeUserId
       }));
 
       setRoomsList(mapped);
@@ -3735,24 +3768,116 @@ export default function App() {
           </div>
         ) : !activeRoomId ? (
           <div>
+            {/* Personal Dashboard Header (내 회의실) */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
               <div>
-                <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-                  눈치가 아닌 근거로, 팀 모두가 납득하는 결정을 만들어 보세요.
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-extrabold mb-2 shadow-2xs">
+                  <Lock className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>팀 보안 대시보드 - 허가된 멤버 전용 비공개 공간</span>
+                </div>
+                <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+                  내 회의실
                 </h1>
-                <p className="text-slate-500 text-sm md:text-base mt-1">
-                  직급이나 관계 때문에 주저했던 의견을 익명으로 제출하고, 기준을 제시해 단계적으로 아이디어를 소거해보세요.
+                <p className="text-slate-500 text-xs md:text-sm mt-1">
+                  내가 개설했거나 초대 코드로 참여 중인 팀 전용 회의실 대시보드입니다. (외부 타인에게 방 목록이 노출되지 않습니다)
                 </p>
               </div>
 
-              <button
-                onClick={() => setIsCreatingRoom(true)}
-                className="flex items-center gap-2 self-start md:self-auto bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-indigo-700 shadow-md transition cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                회의방 개설
-              </button>
+              <div className="flex items-center gap-2 self-start md:self-auto flex-wrap">
+                <button
+                  onClick={() => setIsJoinCodeModalOpen(true)}
+                  className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-2.5 rounded-xl font-bold text-xs shadow-xs transition cursor-pointer"
+                >
+                  <Share2 className="w-4 h-4 text-indigo-600" />
+                  <span>🔗 초대 코드로 참여</span>
+                </button>
+
+                <button
+                  onClick={() => setIsCreatingRoom(true)}
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-indigo-700 shadow-md transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ 새 회의실 개설</span>
+                </button>
+              </div>
             </div>
+
+            {/* Join Code Modal */}
+            <AnimatePresence>
+              {isJoinCodeModalOpen && (
+                <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+                  <motion.div
+                    initial={{ scale: 0.95, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.95, opacity: 0 }}
+                    className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-2xl space-y-5 text-left"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
+                        <Share2 className="w-5 h-5" />
+                      </div>
+                      <button
+                        onClick={() => setIsJoinCodeModalOpen(false)}
+                        className="text-slate-400 hover:text-slate-600 transition"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-900">초대 코드로 회의실 참여</h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        방장이나 팀 동료가 전달해 준 회의실 코드(예: room-xxxxxx)를 입력해 주세요.
+                      </p>
+                    </div>
+
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!inputJoinCode.trim()) {
+                          triggerToast('초대 코드를 입력해 주세요.', 'error');
+                          return;
+                        }
+                        const targetId = inputJoinCode.trim().replace('http://', '').replace('https://', '').split('/').pop() || inputJoinCode.trim();
+                        handleSelectRoom(targetId);
+                        setIsJoinCodeModalOpen(false);
+                        setInputJoinCode('');
+                      }}
+                      className="space-y-4"
+                    >
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-700">초대 코드 / 링크 <span className="text-rose-500">*</span></label>
+                        <input
+                          type="text"
+                          required
+                          value={inputJoinCode}
+                          onChange={e => setInputJoinCode(e.target.value)}
+                          placeholder="room-xxxxxx 또는 초대 링크"
+                          className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsJoinCodeModalOpen(false)}
+                          className="w-1/2 py-2.5 text-xs font-bold text-slate-500 hover:text-slate-700 bg-slate-100 rounded-xl transition"
+                        >
+                          취소
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={!inputJoinCode.trim()}
+                          className="w-1/2 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition shadow-md cursor-pointer"
+                        >
+                          입장하기
+                        </button>
+                      </div>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
 
             {/* Create Room Drawer/Form block */}
             <AnimatePresence>
@@ -3905,64 +4030,91 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            {/* Seeded & Existing Rooms Grid */}
-            {/* Filter and Seeded & Existing Rooms Grid (ENTRY-01, ENTRY-03, ENTRY-04) */}
+            {/* Dashboard Rooms Grid & Filter Tabs */}
             <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                <div className="flex items-center gap-2">
-                  <Users className="w-4 h-4 text-slate-600" />
-                  <h2 className="text-base font-extrabold text-slate-900">현재 활성화된 회의실</h2>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                {/* Ownership Filter Tabs: 전체 | 내가 만든 방 | 초대받은 방 */}
+                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start">
+                  <button
+                    onClick={() => setRoomOwnershipFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'ALL' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    전체 회의실
+                  </button>
+                  <button
+                    onClick={() => setRoomOwnershipFilter('CREATED_BY_ME')}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'CREATED_BY_ME' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    👑 내가 만든 방
+                  </button>
+                  <button
+                    onClick={() => setRoomOwnershipFilter('JOINED_BY_ME')}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'JOINED_BY_ME' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    🙋 초대받은 방
+                  </button>
                 </div>
 
-                {/* Filter buttons */}
+                {/* Status Filter buttons */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     onClick={() => setRoomFilterStatus('ALL')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    전체
+                    상태 전체
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    아이디어 모집
+                    💡 아이디어 모집
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('EVALUATION')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    익명 평가중
+                    🔒 익명 평가중
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('CLOSED')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    종료 (최종선정)
+                    🎉 종료 (최종선정)
                   </button>
                 </div>
               </div>
 
               {roomsList.length === 0 ? (
-                <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
-                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
-                    <Info className="w-6 h-6 text-indigo-600" />
+                <div className="text-center py-12 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto border border-indigo-100">
+                    <Lock className="w-6 h-6 text-indigo-600" />
                   </div>
                   <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">생성된 회의실이 없습니다.</h3>
-                    <p className="text-xs text-slate-500 leading-relaxed px-4">새로운 회의실을 개설하여 익명 아이디어 수집 및 평가를 시작해 보세요!</p>
+                    <h3 className="text-base font-bold text-slate-900">참여 중인 회의실이 없습니다.</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed px-6">
+                      새로운 회의실을 개설하거나, 팀장/동료에게 전달받은 초대 코드로 참여해 보세요.<br />
+                      (타인의 회의실 정보는 노출되지 않는 비공개 공간입니다)
+                    </p>
                   </div>
                   <div className="flex items-center justify-center gap-3 pt-2">
                     <button
+                      onClick={() => setIsJoinCodeModalOpen(true)}
+                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Share2 className="w-4 h-4 text-indigo-600" />
+                      <span>초대 코드로 참여</span>
+                    </button>
+
+                    <button
                       onClick={() => setIsCreatingRoom(true)}
-                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
+                      className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
-                      <span>+ 회의방 개설하기</span>
+                      <span>+ 새 회의실 개설</span>
                     </button>
                   </div>
                 </div>
@@ -3970,6 +4122,15 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                   {roomsList
                     .filter(room => {
+                      // Ownership Filter
+                      const curUserId = userId || localStorage.getItem('why_not_user_id') || '';
+                      if (roomOwnershipFilter === 'CREATED_BY_ME') {
+                        if (room.hostId !== curUserId && !room.isHost) return false;
+                      } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
+                        if (room.hostId === curUserId || room.isHost) return false;
+                      }
+
+                      // Status Filter
                       if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION';
                       if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
                       if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
