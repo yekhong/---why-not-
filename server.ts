@@ -22,10 +22,7 @@ const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL |
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const __filename = typeof import.meta !== 'undefined' && import.meta.url 
-  ? fileURLToPath(import.meta.url) 
-  : '';
-const __dirname = __filename ? path.dirname(__filename) : process.cwd();
+const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
 
 const app = express();
 const PORT = 3000;
@@ -2532,9 +2529,14 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
   const roomIdeas = ideas.get(roomId) || [];
   const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
 
-  // Determine total required participants: unique submitters count (completed participants)
-  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
-  const requiredCount = uniqueSubmitters.size || 1;
+  // Determine total required participants: combining unique submitters and registered participants
+  const roomParticipants = participants.get(roomId);
+  const participantIds = roomParticipants ? Array.from(roomParticipants.keys()) : [];
+  const uniqueSubmitters = new Set([
+    ...roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean),
+    ...participantIds
+  ]);
+  const requiredCount = Math.max(uniqueSubmitters.size, room.minResponseThreshold || 1);
   const currentVoteCount = rStarVotes.size;
 
   if (currentVoteCount < requiredCount) {
@@ -2601,93 +2603,108 @@ async function checkAndAutoTransitionStarVotes(roomId: string) {
  * 10.2 Submit Star Vote (4단계 2차 투표 별 스티커 투표)
  */
 app.post('/api/rooms/:id/star-vote', async (req, res) => {
-  const { id } = req.params;
-  const { userId, selectedIdeaIds } = req.body;
+  try {
+    const { id } = req.params;
+    const { userId, selectedIdeaIds } = req.body;
 
-  const room = rooms.get(id);
-  if (!room) {
-    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const room = rooms.get(id);
+    if (!room) {
+      return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    }
+
+    if (!userId || !Array.isArray(selectedIdeaIds)) {
+      return res.status(400).json({ error: '올바르지 않은 투표 정보입니다.' });
+    }
+
+    const targetWinners = room.targetWinnerCount || 1;
+    if (selectedIdeaIds.length !== targetWinners) {
+      return res.status(400).json({ error: `별 스티커 ${targetWinners}개를 모두 사용해 주세요.` });
+    }
+
+    let rStarVotes = starVotesMap.get(id);
+    if (!rStarVotes) {
+      rStarVotes = new Map<string, string[]>();
+      starVotesMap.set(id, rStarVotes);
+    }
+
+    rStarVotes.set(String(userId), selectedIdeaIds);
+
+    const transitionResult = await checkAndAutoTransitionStarVotes(id);
+
+    res.json({ success: true, count: selectedIdeaIds.length, ...transitionResult });
+  } catch (err: any) {
+    console.error('Submit star-vote error:', err);
+    res.status(500).json({ error: err?.message || '별 스티커 투표 처리 중 오류가 발생했습니다.' });
   }
-
-  if (!userId || !Array.isArray(selectedIdeaIds)) {
-    return res.status(400).json({ error: '올바르지 않은 투표 정보입니다.' });
-  }
-
-  const targetWinners = room.targetWinnerCount || 1;
-  if (selectedIdeaIds.length !== targetWinners) {
-    return res.status(400).json({ error: `별 스티커 ${targetWinners}개를 모두 사용해 주세요.` });
-  }
-
-  let rStarVotes = starVotesMap.get(id);
-  if (!rStarVotes) {
-    rStarVotes = new Map<string, string[]>();
-    starVotesMap.set(id, rStarVotes);
-  }
-
-  rStarVotes.set(String(userId), selectedIdeaIds);
-
-  const transitionResult = await checkAndAutoTransitionStarVotes(id);
-
-  res.json({ success: true, count: selectedIdeaIds.length, ...transitionResult });
 });
 
 /**
  * 10.3 Seed Mock Star Votes (4단계 정족수 달성용 가상 시뮬레이션 버튼 API)
  */
 app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
 
-  const room = rooms.get(id);
-  if (!room) {
-    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
-  }
+    const room = rooms.get(id);
+    if (!room) {
+      return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    }
 
-  const roomIdeas = ideas.get(id) || [];
-  const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
+    const roomIdeas = ideas.get(id) || [];
+    const activeIdeas = roomIdeas.filter(i => i.status === 'ACTIVE');
 
-  if (activeIdeas.length === 0) {
-    return res.status(400).json({ error: '투표 대상 활성 후보가 없습니다.' });
-  }
+    if (activeIdeas.length === 0) {
+      return res.status(400).json({ error: '투표 대상 활성 후보가 없습니다.' });
+    }
 
-  let rStarVotes = starVotesMap.get(id);
-  if (!rStarVotes) {
-    rStarVotes = new Map<string, string[]>();
+    let rStarVotes = starVotesMap.get(id);
+    if (!rStarVotes) {
+      rStarVotes = new Map<string, string[]>();
+      starVotesMap.set(id, rStarVotes);
+    }
+
+    // Quorum equals unique submitters + registered participants count
+    const roomParticipants = participants.get(id);
+    const participantIds = roomParticipants ? Array.from(roomParticipants.keys()) : [];
+    const uniqueSubmitters = new Set([
+      ...roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean),
+      ...participantIds
+    ]);
+    const targetThreshold = Math.max(uniqueSubmitters.size, room.minResponseThreshold || 1);
+    const currentCount = rStarVotes.size;
+
+    if (currentCount >= targetThreshold) {
+      return res.status(400).json({ error: '이미 2차 투표 정족수가 달성되었습니다.' });
+    }
+
+    const neededCount = targetThreshold - currentCount;
+    const targetWinners = room.targetWinnerCount || 1;
+    const timestamp = Date.now();
+
+    for (let i = 0; i < neededCount; i++) {
+      const mockUserId = `mock-star-voter-${timestamp}-${i + 1}`;
+      
+      // Pick distinct targetWinners ideas for this mock voter
+      const shuffledIdeas = [...activeIdeas].sort(() => 0.5 - Math.random());
+      const selectedIds = shuffledIdeas.slice(0, Math.min(targetWinners, activeIdeas.length)).map(item => item.id);
+
+      rStarVotes.set(mockUserId, selectedIds);
+    }
+
     starVotesMap.set(id, rStarVotes);
+
+    const transitionResult = await checkAndAutoTransitionStarVotes(id);
+
+    res.json({
+      success: true,
+      addedCount: neededCount,
+      message: `가상 참여자 ${neededCount}명의 별 스티커 투표가 성공적으로 생성되어 전체 투표(${targetThreshold}명)가 완료되었습니다!`,
+      ...transitionResult
+    });
+  } catch (err: any) {
+    console.error('Seed star votes error:', err);
+    res.status(500).json({ error: err?.message || '가상 투표 시뮬레이션 생성 중 오류가 발생했습니다.' });
   }
-
-  // Quorum equals unique submitters count (completed participants)
-  const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
-  const targetThreshold = uniqueSubmitters.size || 1;
-  const currentCount = rStarVotes.size;
-
-  if (currentCount >= targetThreshold) {
-    return res.status(400).json({ error: '이미 2차 투표 정족수가 달성되었습니다.' });
-  }
-
-  const neededCount = targetThreshold - currentCount;
-  const targetWinners = room.targetWinnerCount || 1;
-  const timestamp = Date.now();
-
-  for (let i = 0; i < neededCount; i++) {
-    const mockUserId = `mock-star-voter-${timestamp}-${i + 1}`;
-    
-    // Pick distinct targetWinners ideas for this mock voter
-    const shuffledIdeas = [...activeIdeas].sort(() => 0.5 - Math.random());
-    const selectedIds = shuffledIdeas.slice(0, Math.min(targetWinners, activeIdeas.length)).map(item => item.id);
-
-    rStarVotes.set(mockUserId, selectedIds);
-  }
-
-  starVotesMap.set(id, rStarVotes);
-
-  const transitionResult = await checkAndAutoTransitionStarVotes(id);
-
-  res.json({
-    success: true,
-    addedCount: neededCount,
-    message: `가상 참여자 ${neededCount}명의 별 스티커 투표가 성공적으로 생성되어 전체 투표(${targetThreshold}명)가 완료되었습니다!`,
-    ...transitionResult
-  });
 });
 
 /**
@@ -3021,7 +3038,9 @@ async function startServer() {
       }
     });
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = fs.existsSync(path.join(currentDir, 'dist'))
+      ? path.join(currentDir, 'dist')
+      : path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

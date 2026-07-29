@@ -178,3 +178,33 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ==========================================
+-- 8. Room Invites Table & Unique Constraints
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.room_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    invite_token TEXT UNIQUE NOT NULL,
+    created_by TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_invites_token ON public.room_invites(invite_token);
+CREATE INDEX IF NOT EXISTS idx_room_invites_room_id ON public.room_invites(room_id);
+
+ALTER TABLE public.participants DROP CONSTRAINT IF EXISTS unique_room_participant;
+ALTER TABLE public.participants ADD CONSTRAINT unique_room_participant UNIQUE (room_id, user_id);
+
+ALTER TABLE public.room_invites ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can select active room invites" ON public.room_invites;
+CREATE POLICY "Anyone can select active room invites" ON public.room_invites FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Anyone can insert room invites" ON public.room_invites;
+CREATE POLICY "Anyone can insert room invites" ON public.room_invites FOR INSERT WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Anyone can update room invites" ON public.room_invites;
+CREATE POLICY "Anyone can update room invites" ON public.room_invites FOR UPDATE USING (true);
