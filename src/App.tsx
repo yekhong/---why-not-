@@ -720,6 +720,18 @@ export default function App() {
     handleForceChangeStatus('CRITERIA_PROPOSAL');
   };
 
+  const handleRestartStage2WithSurvivingIdeas = async () => {
+    if (activeIdeasCount < 2) {
+      triggerToast('최소 2개 이상의 생존 아이디어가 있어야 2단계로 재진행할 수 있습니다.', 'error');
+      return;
+    }
+    if (!window.confirm(`소거되지 않은 ${activeIdeasCount}개의 생존 아이디어만으로 2단계(평가 기준 설정)부터 3, 4, 5단계를 다시 진행하시겠습니까?`)) {
+      return;
+    }
+    await handleForceChangeStatus('CRITERIA_PROPOSAL');
+    triggerToast(`소거되지 않은 ${activeIdeasCount}개 생존 아이디어로 2단계 평가 기준 설정 단계부터 재진행합니다!`);
+  };
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -5472,6 +5484,34 @@ export default function App() {
                                 <li key={c.id}>{c.title}</li>
                               ))}
                             </ul>
+                          </div>
+                        )}
+
+                        {/* Host Option: Restart Stage 2 with Surviving Ideas */}
+                        {roomDetails.room.hostId === userId && (
+                          <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 shadow-md border border-slate-800">
+                            <div className="flex items-center justify-between gap-2">
+                              <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
+                                <Sparkles className="w-4 h-4 text-amber-400" />
+                                생존 아이디어 2단계 재설정
+                              </h3>
+                              <span className="text-[10px] font-extrabold bg-slate-800 text-indigo-200 px-2.5 py-0.5 rounded-full border border-slate-700">
+                                생존 {activeIdeasCount}개
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              현재 소거되지 않은 <strong>생존 아이디어들만 보존한 채 2단계(평가 기준 설정)로 돌아가 3, 4, 5단계를 재진행</strong>할 수 있습니다.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handleRestartStage2WithSurvivingIdeas}
+                              disabled={activeIdeasCount < 2}
+                              className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5 text-slate-950" />
+                              <span>생존 아이디어만으로 2단계부터 재진행</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         )}
 
