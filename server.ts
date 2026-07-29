@@ -811,12 +811,16 @@ AI가 핵심 강점을 3개 이내로 요약합니다.
 마크다운 양식을 정교하게 활용해 정돈된 비즈니스 보고서로 출력해 주십시오.
 `;
 
-  // 1. Try Potens AI first
-  try {
-    const text = await callPotensAI(prompt, 'gemini-2.5-flash');
-    if (text && text.trim()) return text.trim();
-  } catch (potensErr) {
-    console.warn('Potens AI final summary failed, fallback to Gemini SDK:', potensErr);
+  // 1. Try Potens AI first if configured
+  if (process.env.POTENS_API_KEY) {
+    try {
+      const text = await callPotensAI(prompt, 'gemini-2.5-flash');
+      if (text && text.trim()) return text.trim();
+    } catch (potensErr: any) {
+      console.info('[AI Provider] Potens AI fallback to Gemini SDK:', potensErr?.message || potensErr);
+    }
+  } else {
+    console.info('[AI Provider] Using Gemini SDK (@google/genai) as primary AI engine.');
   }
 
   // 2. Fallback to Gemini SDK
@@ -921,7 +925,7 @@ app.post('/api/rooms/:id/invites', (req, res) => {
     expires_at: expiresAt,
     is_active: true
   }).then(({ error }) => {
-    if (error) console.warn('Supabase DB room_invites insert notice:', error);
+    if (error && error.code !== 'PGRST205') console.info('[Supabase Sync] room_invites insert notice:', error.message || error);
   });
 
   res.json({ success: true, invite: inviteRecord });
@@ -1377,15 +1381,17 @@ app.post('/api/rooms', (req, res) => {
     elimination_config: newRoom.eliminationConfig,
     deadlines: newRoom.deadlines
   }).then(({ error }) => {
-    if (error) console.warn('Supabase DB room insert notice:', error);
-  });
-
-  supabase.from('participants').insert({
-    room_id: newId,
-    user_id: newRoom.hostId,
-    nickname: '개설자'
-  }).then(({ error }) => {
-    if (error) console.warn('Supabase DB host participant insert notice:', error);
+    if (error) {
+      if (error.code !== 'PGRST205') console.info('[Supabase Sync] DB room insert notice:', error.message || error);
+    } else {
+      supabase.from('participants').insert({
+        room_id: newId,
+        user_id: newRoom.hostId,
+        nickname: '개설자'
+      }).then(({ error: partErr }) => {
+        if (partErr && partErr.code !== 'PGRST205') console.info('[Supabase Sync] Host participant insert notice:', partErr.message || partErr);
+      });
+    }
   });
 
   res.status(201).json(newRoom);
