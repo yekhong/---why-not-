@@ -1384,6 +1384,19 @@ app.patch('/api/rooms/:id', (req, res) => {
   if (minResponseThreshold !== undefined) room.minResponseThreshold = Number(minResponseThreshold) || 3;
 
   rooms.set(id, room);
+
+  // Synchronize room updates to Supabase DB rooms table
+  supabase.from('rooms').update({
+    title: room.title,
+    description: room.description,
+    category: room.category,
+    max_participants: room.maxParticipants,
+    target_winner_count: room.targetWinnerCount,
+    min_response_threshold: room.minResponseThreshold
+  }).eq('id', id).then(({ error }) => {
+    if (error) console.warn('Supabase DB room update notice:', error);
+  });
+
   res.json({ success: true, room });
 });
 

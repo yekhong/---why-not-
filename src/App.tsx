@@ -336,6 +336,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchRoomError, setFetchRoomError] = useState(false);
+  const [showIdeaSubmissionGate, setShowIdeaSubmissionGate] = useState(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -602,6 +603,8 @@ export default function App() {
     }
 
     setIsUpdatingRoomSettings(true);
+    let isUpdated = false;
+
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}`, {
         method: 'PATCH',
@@ -617,19 +620,45 @@ export default function App() {
         })
       });
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || '방 정보 수정 실패');
+      if (res.ok) {
+        isUpdated = true;
       }
-
-      triggerToast('방 정보가 성공적으로 수정되었습니다!');
-      setShowRoomSettingsModal(false);
-      fetchRoomDetails(activeRoomId, false);
-    } catch (err: any) {
-      triggerToast(`방 정보 수정 오류: ${err.message}`, 'error');
-    } finally {
-      setIsUpdatingRoomSettings(false);
+    } catch (err) {
+      console.warn('Express API room patch failed, trying direct Supabase DB fallback:', err);
     }
+
+    // Direct Supabase DB update fallback
+    if (!isUpdated && activeRoomId) {
+      try {
+        const { error: supaErr } = await supabase
+          .from('rooms')
+          .update({
+            title: editRoomTitle.trim(),
+            description: editRoomDesc.trim(),
+            category: editRoomCategory,
+            max_participants: editRoomMaxParticipants,
+            target_winner_count: editRoomTargetWinnerCount,
+            min_response_threshold: editRoomMinThreshold
+          })
+          .eq('id', activeRoomId);
+
+        if (supaErr) {
+          triggerToast(`방 정보 수정 오류: ${supaErr.message}`, 'error');
+          setIsUpdatingRoomSettings(false);
+          return;
+        }
+        isUpdated = true;
+      } catch (supaEx: any) {
+        triggerToast(`방 정보 수정 오류: ${supaEx.message}`, 'error');
+        setIsUpdatingRoomSettings(false);
+        return;
+      }
+    }
+
+    triggerToast('방 정보가 성공적으로 수정되었습니다!');
+    setShowRoomSettingsModal(false);
+    setIsUpdatingRoomSettings(false);
+    fetchRoomDetails(activeRoomId, false);
   };
 
   // Dual link copy helpers (① Participant link vs ② Voter link)
@@ -652,6 +681,43 @@ export default function App() {
     if (!inviteEmailInput.trim()) return;
     triggerToast(`[${inviteEmailInput.trim()}] (으)로 초대 메일 발송이 완료되었습니다!`);
     setInviteEmailInput('');
+  };
+
+  // Return to Lobby (Clean active room ID, role, local state, and URL query params)
+  const handleLeaveRoom = () => {
+    setActiveRoomId(null);
+    setRoomDetails(null);
+    setFetchRoomError(false);
+    setShowIdeaSubmissionGate(false);
+    setIsReEditingEvaluation(false);
+    if (activeRoomId) {
+      localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+    }
+    localStorage.removeItem('why_not_active_room_id');
+    localStorage.removeItem('why_not_user_role');
+    if (window.location.search || window.location.pathname.startsWith('/invite')) {
+      window.history.replaceState({}, '', '/');
+    }
+  };
+
+  // Stage 1 Gate helper functions
+  const handleEnterIdeaGate = () => {
+    setShowIdeaSubmissionGate(true);
+    if (activeRoomId) {
+      localStorage.setItem(`why_not_idea_step_gate_${activeRoomId}`, 'true');
+    }
+  };
+
+  const handleExitIdeaGate = () => {
+    setShowIdeaSubmissionGate(false);
+    if (activeRoomId) {
+      localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+    }
+  };
+
+  const handleConfirmIdeaGateToStage2 = () => {
+    handleExitIdeaGate();
+    handleForceChangeStatus('CRITERIA_PROPOSAL');
   };
 
   const handleLogout = async () => {
@@ -690,6 +756,17 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
+  }, []);
+
+  // Multi-tab LocalStorage Sync Observer (why_not_user_name)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'why_not_user_name' && e.newValue) {
+        setNickname(e.newValue);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
   // ----------------------------------------------------------------
@@ -1821,6 +1898,8 @@ export default function App() {
     setActiveRoomId(id);
     setLoading(true);
     setFetchRoomError(false);
+    setIsReEditingEvaluation(false);
+    setShowIdeaSubmissionGate(false);
     localStorage.setItem('why_not_active_room_id', id);
     const uId = customUserId || userId;
     const nick = customNickname || currentSavedNickname || nickname;
@@ -3258,7 +3337,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 md:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => { setActiveRoomId(null); setRoomDetails(null); }}
+              onClick={handleLeaveRoom}
               className="flex items-center gap-3 transition hover:opacity-85 text-left"
             >
               <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
@@ -3325,7 +3404,7 @@ export default function App() {
 
             {activeRoomId && (
               <button
-                onClick={() => { setActiveRoomId(null); setRoomDetails(null); }}
+                onClick={handleLeaveRoom}
                 className="text-xs font-bold text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-slate-200 transition py-1.5 px-3.5 rounded-full"
               >
                 로비로 나가기
@@ -4060,7 +4139,7 @@ export default function App() {
                             className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
                           >
                             <Copy className="w-3 h-3" />
-                            🔗 공유 링크 발급/관리
+                            🔗 초대자 공유 링크 발급/관리
                           </button>
                         </div>
 
@@ -4098,7 +4177,118 @@ export default function App() {
                     VIEW 1: IDEA_SUBMISSION
                     ----------------------------------------------------------- */}
                   {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    (showIdeaSubmissionGate || Boolean(activeRoomId && localStorage.getItem(`why_not_idea_step_gate_${activeRoomId}`) === 'true')) ? (
+                      /* COMBINED SUMMARY LIST & ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 1, 2, 3 */
+                      <div className="space-y-6">
+                        {/* 1. Image 1 Equivalent: Submitted Ideas Summary List Confirmation Card */}
+                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                          <div className="border-b border-slate-100 pb-3">
+                            <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-amber-500" />
+                              총 제출된 핵심 아이디어 목록 확인
+                            </h2>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              참여진들이 익명으로 제안한 전체 아이디어 리스트입니다. 내용을 확인하신 후 2단계 평가 기준 설정을 진행해 주세요.
+                            </p>
+                          </div>
+
+                          <div className="space-y-3">
+                            {(roomDetails.ideas || []).length === 0 ? (
+                              <div className="p-4 bg-slate-50 text-slate-500 text-xs text-center rounded-xl">
+                                등록된 아이디어가 없습니다.
+                              </div>
+                            ) : (
+                              (roomDetails.ideas || []).map((idea, idx) => (
+                                <div key={idea.id || idx} className="p-4 bg-slate-50 hover:bg-indigo-50/30 rounded-xl border border-slate-200 transition space-y-1 text-left">
+                                  <div className="flex items-center justify-between gap-4">
+                                    <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase tracking-wider">
+                                      아이디어 #{idx + 1}
+                                    </span>
+                                    <span className="text-[11px] font-semibold text-slate-400">
+                                      {idea.anonymousLabel || '익명 아이디어'}
+                                    </span>
+                                  </div>
+
+                                  <div>
+                                    <h4 className="text-sm font-bold text-slate-900">{idea.title}</h4>
+                                    <p className="text-xs text-slate-500 mt-0.5 leading-relaxed whitespace-pre-wrap">{idea.description}</p>
+                                    {idea.attachmentUrl && (
+                                      <div className="pt-1">
+                                        <a
+                                          href={idea.attachmentUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="inline-flex items-center gap-1 text-[11px] text-indigo-600 font-semibold underline"
+                                        >
+                                          <FileText className="w-3 h-3" />
+                                          참고 링크 / 첨부자료 보기
+                                        </a>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
+                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
+                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                            {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) ? (
+                              <Unlock className="w-5 h-5 text-indigo-600" />
+                            ) : (
+                              <Lock className="w-5 h-5 text-indigo-600" />
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <h3 className="text-lg font-bold text-slate-900">
+                              {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3)))
+                                ? '팀 내 최소 응답 수 충족 완료!'
+                                : '다른 구성원들의 참가를 기다리는 중'}
+                            </h3>
+                            <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+                              {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3)))
+                                ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
+                                : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + (roomDetails.room.minResponseThreshold || 3) + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
+                            </p>
+                          </div>
+
+                          {/* Gate details */}
+                          <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
+                            <span className="text-slate-500">현재 수집 상태 :</span>
+                            <span className={((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
+                              {new Set((roomDetails.ideas || []).map(i => i.submitterId)).size} / {roomDetails.room.minResponseThreshold || 3} 명 완료
+                            </span>
+                          </div>
+
+                          {/* Action Controls matching Images 1, 2, 3 */}
+                          <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={handleExitIdeaGate}
+                              className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
+                            >
+                              이전 단계(아이디어 등록)로 되돌아가기
+                            </button>
+
+                            {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) && roomDetails.room.hostId === userId && (
+                              <button
+                                type="button"
+                                onClick={handleConfirmIdeaGateToStage2}
+                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                              >
+                                <Sparkles className="w-4 h-4 text-slate-950" />
+                                <span>2단계: 평가 기준 설정하러 가기</span>
+                                <ArrowRight className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Left: Ideas List (Anonymous Labels) */}
                       <div className="lg:col-span-7 space-y-4">
@@ -4410,33 +4600,27 @@ export default function App() {
                             >
                               아이디어 올리기 (익명)
                             </button>
+
+                            {(roomDetails.ideas || []).length >= 1 && (
+                              <div className="pt-2 border-t border-slate-100 mt-2">
+                                <button
+                                  type="button"
+                                  onClick={handleEnterIdeaGate}
+                                  className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                                >
+                                  <Sparkles className="w-4 h-4 text-slate-950" />
+                                  <span>아이디어 등록 완료 & 제출 목록/게이트 보기</span>
+                                  <ArrowRight className="w-4 h-4" />
+                                </button>
+                              </div>
+                            )}
                           </form>
                         </div>
-
-                        {/* Host Control: Step transition gate */}
-                        {roomDetails.room.hostId === userId && (
-                          <div className="bg-slate-900 text-white p-5 md:p-6 rounded-2xl space-y-4 shadow-md">
-                            <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-400">
-                              <Settings className="w-4 h-4" />
-                              방장 마일스톤 제어
-                            </h3>
-                            <p className="text-xs text-slate-300 leading-relaxed">
-                              참여진들의 아이디어 등록이 마무리되었다면, 다음 단계인 **'평가 기준 익명 제안'**으로 진행하십시오. (최소 2개 이상의 아이디어가 등록되어야 진행이 원활합니다)
-                            </p>
-                            <button
-                              onClick={() => handleForceChangeStatus('CRITERIA_PROPOSAL')}
-                              disabled={(roomDetails.ideas || []).length < 2}
-                              className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-50 transition rounded-xl text-xs font-bold flex items-center justify-center gap-1"
-                            >
-                              2단계: 평가 기준 제안 단계로 전환
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
                       </div>
 
                     </div>
-                  )}
+                  )
+                )}
 
                   {/* -----------------------------------------------------------
                     VIEW 2: CRITERIA_PROPOSAL
@@ -5598,7 +5782,7 @@ export default function App() {
                       <div className="text-center pt-4">
                         <button
                           type="button"
-                          onClick={() => { setActiveRoomId(null); setRoomDetails(null); }}
+                          onClick={handleLeaveRoom}
                           className="px-7 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
                         >
                           로비 홈화면으로 이동하기
