@@ -52,10 +52,24 @@ DECLARE
     v_token TEXT;
     v_invite public.room_invites%ROWTYPE;
 BEGIN
-    -- Deactivate all existing invites for this room
-    UPDATE public.room_invites
-    SET is_active = false
-    WHERE room_id = p_room_id AND is_active = true;
+    -- Check if an active unexpired invite (> 15 seconds remaining) already exists
+    SELECT * INTO v_invite
+    FROM public.room_invites
+    WHERE room_id = p_room_id 
+      AND is_active = true 
+      AND expires_at > (NOW() + INTERVAL '15 seconds')
+    ORDER BY expires_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'invite_token', v_invite.invite_token,
+            'expires_at', v_invite.expires_at,
+            'created_at', v_invite.created_at,
+            'is_active', v_invite.is_active
+        );
+    END IF;
 
     -- Generate a new secure random token (e.g. inv_xxxxxxxx)
     v_token := 'inv_' || encode(gen_random_bytes(9), 'hex');

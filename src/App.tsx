@@ -863,7 +863,7 @@ export default function App() {
       if (!error && data && data.success) {
         setActiveInviteToken(data.invite_token);
         setInviteTokenExpiresAt(data.expires_at);
-        triggerToast('새로운 3분 초대 링크가 생성되었습니다. (기존 링크 비활성화 완료)');
+        triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
         return data.invite_token;
       }
 
@@ -877,7 +877,7 @@ export default function App() {
       if (apiData.success && apiData.invite) {
         setActiveInviteToken(apiData.invite.inviteToken);
         setInviteTokenExpiresAt(apiData.invite.expiresAt);
-        triggerToast('새로운 3분 초대 링크가 생성되었습니다. (기존 링크 비활성화 완료)');
+        triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
         return apiData.invite.inviteToken;
       }
     } catch (err: any) {
@@ -953,12 +953,107 @@ export default function App() {
       }
 
       // 2. Express Backend API fallback
-      const res = await fetch(`/api/invites/${token}`);
-      const apiData: InviteDetailsResponse = await res.json();
-      setLandingInviteData(apiData);
-      if (apiData.secondsRemaining) {
-        setInviteSecondsLeft(apiData.secondsRemaining);
+      try {
+        const res = await fetch(`/api/invites/${token}`);
+        if (res.ok) {
+          const apiData: InviteDetailsResponse = await res.json();
+          if (apiData && apiData.isValid !== undefined) {
+            setLandingInviteData(apiData);
+            if (apiData.secondsRemaining) {
+              setInviteSecondsLeft(apiData.secondsRemaining);
+            }
+            setLandingLoading(false);
+            return;
+          }
+        }
+      } catch (apiErr) {
+        console.warn('Express API invite fetch failed, trying direct Supabase DB fallback:', apiErr);
       }
+
+      // 3. Direct Supabase DB Table Fallback
+      const { data: invRow } = await supabase.from('room_invites').select('*').eq('invite_token', token).maybeSingle();
+      if (!invRow) {
+        setLandingInviteData({
+          isValid: false,
+          errorCode: 'NOT_FOUND',
+          errorMessage: '존재하지 않는 초대 링크입니다.'
+        });
+        setLandingLoading(false);
+        return;
+      }
+
+      if (!invRow.is_active) {
+        setLandingInviteData({
+          isValid: false,
+          errorCode: 'DEACTIVATED',
+          errorMessage: '방장에 의해 비활성화된 초대 링크입니다.'
+        });
+        setLandingLoading(false);
+        return;
+      }
+
+      const nowMs = Date.now();
+      const expMs = new Date(invRow.expires_at).getTime();
+      const secondsRem = Math.max(0, Math.floor((expMs - nowMs) / 1000));
+
+      if (expMs <= nowMs) {
+        setLandingInviteData({
+          isValid: false,
+          errorCode: 'EXPIRED',
+          errorMessage: '생성된 지 3분이 지나 만료된 초대 링크입니다.',
+          secondsRemaining: 0
+        });
+        setLandingLoading(false);
+        return;
+      }
+
+      const { data: roomRow } = await supabase.from('rooms').select('*').eq('id', invRow.room_id).maybeSingle();
+      if (!roomRow) {
+        setLandingInviteData({
+          isValid: false,
+          errorCode: 'ROOM_DELETED',
+          errorMessage: '삭제된 회의실입니다.'
+        });
+        setLandingLoading(false);
+        return;
+      }
+
+      if (roomRow.status === 'CLOSED') {
+        setLandingInviteData({
+          isValid: false,
+          errorCode: 'ROOM_CLOSED',
+          errorMessage: '이미 종료된 회의실입니다.'
+        });
+        setLandingLoading(false);
+        return;
+      }
+
+      const { data: partRows } = await supabase.from('participants').select('*').eq('room_id', roomRow.id);
+      const participantCount = Math.max(1, partRows?.length || 0);
+
+      setLandingInviteData({
+        isValid: true,
+        room: {
+          id: roomRow.id,
+          title: roomRow.title,
+          description: roomRow.description,
+          category: roomRow.category,
+          isPublic: roomRow.is_public,
+          maxParticipants: roomRow.max_participants,
+          status: roomRow.status,
+          hostId: roomRow.host_id,
+          minResponseThreshold: roomRow.min_response_threshold || 1,
+          eliminationConfig: roomRow.elimination_config || { countPerRound: 1, tieBreak: 'random' },
+          deadlines: roomRow.deadlines || {},
+          createdAt: roomRow.created_at || new Date().toISOString()
+        },
+        hostNickname: '방장',
+        participantCount,
+        maxParticipants: roomRow.max_participants || 6,
+        expiresAt: invRow.expires_at,
+        secondsRemaining: secondsRem
+      });
+      setInviteSecondsLeft(secondsRem);
     } catch (err: any) {
       console.error('Failed to fetch invite details:', err);
       setLandingInviteData({
@@ -1002,23 +1097,48 @@ export default function App() {
       }
 
       // 2. Express Backend API fallback
-      const res = await fetch(`/api/invites/${token}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, nickname: nameToUse })
-      });
-      const apiData = await res.json();
-      if (!res.ok) throw new Error(apiData.error || '참가 처리에 실패했습니다.');
+      try {
+        const res = await fetch(`/api/invites/${token}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, nickname: nameToUse })
+        });
+        if (res.ok) {
+          const apiData = await res.json();
+          const targetRoomId = apiData.roomId;
+          localStorage.setItem('why_not_active_room_id', targetRoomId);
+          setActiveRoomId(targetRoomId);
+          setLandingInviteToken(null);
+          setLandingInviteData(null);
+          setInviteTokenExpiresAt(null);
+          window.history.replaceState({}, '', '/');
+          triggerToast('회의실 참가가 완료되었습니다!');
+          handleSelectRoom(targetRoomId, userId, nameToUse);
+          return;
+        }
+      } catch (apiErr) {
+        console.warn('Express API join failed, trying direct Supabase DB fallback:', apiErr);
+      }
 
-      const targetRoomId = apiData.roomId;
-      localStorage.setItem('why_not_active_room_id', targetRoomId);
-      setActiveRoomId(targetRoomId);
-      setLandingInviteToken(null);
-      setLandingInviteData(null);
-      setInviteTokenExpiresAt(null);
-      window.history.replaceState({}, '', '/');
-      triggerToast('회의실 참가가 완료되었습니다!');
-      handleSelectRoom(targetRoomId, userId, nameToUse);
+      // 3. Direct Supabase DB Fallback
+      if (landingInviteData?.room?.id) {
+        const targetRoomId = landingInviteData.room.id;
+        await supabase.from('participants').upsert({
+          room_id: targetRoomId,
+          user_id: userId,
+          nickname: nameToUse
+        }, { onConflict: 'room_id,user_id' });
+
+        localStorage.setItem('why_not_active_room_id', targetRoomId);
+        setActiveRoomId(targetRoomId);
+        setLandingInviteToken(null);
+        setLandingInviteData(null);
+        setInviteTokenExpiresAt(null);
+        window.history.replaceState({}, '', '/');
+        triggerToast('회의실 참가가 완료되었습니다!');
+        handleSelectRoom(targetRoomId, userId, nameToUse);
+        return;
+      }
     } catch (err: any) {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');

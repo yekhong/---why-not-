@@ -884,16 +884,19 @@ app.post('/api/rooms/:id/invites', (req, res) => {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   }
 
-  // Deactivate existing active invites for this room
+  const now = new Date();
+  // Reuse existing valid active token if it has > 15 seconds remaining
   for (const [token, inv] of roomInvites.entries()) {
     if (inv.roomId === id && inv.isActive) {
-      inv.isActive = false;
+      const exp = new Date(inv.expiresAt);
+      if (exp.getTime() - now.getTime() > 15000) {
+        return res.json({ success: true, invite: inv });
+      }
     }
   }
 
   // Generate new 3-minute invite token
   const inviteToken = `inv_${Math.random().toString(36).substring(2, 11)}${Date.now().toString(36)}`;
-  const now = new Date();
   const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString(); // EXACTLY 3 MINUTES
 
   const inviteRecord = {
@@ -907,6 +910,18 @@ app.post('/api/rooms/:id/invites', (req, res) => {
   };
 
   roomInvites.set(inviteToken, inviteRecord);
+
+  // Synchronize invite record to Supabase DB room_invites table for direct frontend fallback
+  supabase.from('room_invites').insert({
+    room_id: id,
+    invite_token: inviteToken,
+    created_by: inviteRecord.createdBy,
+    expires_at: expiresAt,
+    is_active: true
+  }).then(({ error }) => {
+    if (error) console.warn('Supabase DB room_invites insert notice:', error);
+  });
+
   res.json({ success: true, invite: inviteRecord });
 });
 
@@ -1314,6 +1329,33 @@ app.post('/api/rooms', (req, res) => {
   const roomParticipants = new Map<string, string>();
   roomParticipants.set(newRoom.hostId, '개설자');
   participants.set(newId, roomParticipants);
+
+  // Synchronize new room to Supabase DB rooms table for direct DB queries
+  supabase.from('rooms').insert({
+    id: newId,
+    title: newRoom.title,
+    description: newRoom.description,
+    category: newRoom.category,
+    is_public: newRoom.isPublic,
+    max_participants: newRoom.maxParticipants,
+    target_winner_count: newRoom.targetWinnerCount,
+    is_pinned: newRoom.isPinned,
+    host_id: newRoom.hostId,
+    status: newRoom.status,
+    min_response_threshold: newRoom.minResponseThreshold,
+    elimination_config: newRoom.eliminationConfig,
+    deadlines: newRoom.deadlines
+  }).then(({ error }) => {
+    if (error) console.warn('Supabase DB room insert notice:', error);
+  });
+
+  supabase.from('participants').insert({
+    room_id: newId,
+    user_id: newRoom.hostId,
+    nickname: '개설자'
+  }).then(({ error }) => {
+    if (error) console.warn('Supabase DB host participant insert notice:', error);
+  });
 
   res.status(201).json(newRoom);
 });
