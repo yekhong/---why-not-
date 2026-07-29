@@ -335,6 +335,7 @@ export default function App() {
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchRoomError, setFetchRoomError] = useState(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -713,27 +714,24 @@ export default function App() {
 
     fetchRooms();
 
-    // 1. URL 쿼리 파라미터 및 로컬 저장소에서 활성 방 정보 복원
+    // 1. Detect /invite/:inviteToken or ?inviteToken=... (Invite token takes precedence over savedRoomId)
     const params = new URLSearchParams(window.location.search);
     const urlRoomId = params.get('room') || params.get('roomId');
     const urlRole = params.get('role') || 'member';
-    const savedRoomId = localStorage.getItem('why_not_active_room_id');
-    const targetRoomId = urlRoomId || savedRoomId;
 
-    // 2. Detect /invite/:inviteToken or ?inviteToken=... (Only if not already active in a room)
     const pathname = window.location.pathname;
     const inviteMatch = pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
     const tokenFromUrl = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
 
-    if (tokenFromUrl && !targetRoomId) {
+    if (tokenFromUrl) {
       setLandingInviteToken(tokenFromUrl);
       fetchInviteLandingDetails(tokenFromUrl);
       return;
     }
 
-    if (tokenFromUrl && targetRoomId) {
-      window.history.replaceState({}, '', '/');
-    }
+    // 2. URL 쿼리 파라미터 및 로컬 저장소에서 활성 방 정보 복원
+    const savedRoomId = localStorage.getItem('why_not_active_room_id');
+    const targetRoomId = urlRoomId || savedRoomId;
 
     if (targetRoomId) {
       if (urlRole === 'voter') {
@@ -908,6 +906,10 @@ export default function App() {
   // Fetch Invite Landing Details
   const fetchInviteLandingDetails = async (token: string) => {
     setLandingLoading(true);
+    const savedName = localStorage.getItem('why_not_user_name') || nickname;
+    if (savedName) {
+      setLandingNicknameInput(savedName);
+    }
     try {
       // 1. Try Supabase RPC
       const { data, error } = await supabase.rpc('get_invite_details', { p_token: token });
@@ -1213,6 +1215,7 @@ export default function App() {
   const fetchRoomDetails = async (id: string, isSilent = false) => {
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
+    setFetchRoomError(false);
 
     console.log(`[SYNC] 회의 정보 조회 시작 (roomId: ${id})`);
 
@@ -1457,6 +1460,7 @@ export default function App() {
       console.log('[SYNC] 현재 단계 적용 완료');
     } catch (supaErr) {
       console.error('[SYNC ERROR] Supabase fetchRoomDetails failed:', supaErr);
+      setFetchRoomError(true);
       triggerToast('방 정보를 불러오는 데 실패했습니다.', 'error');
     } finally {
       console.log('[SYNC] 초기 로딩 종료');
@@ -1695,6 +1699,8 @@ export default function App() {
     }
 
     setActiveRoomId(id);
+    setLoading(true);
+    setFetchRoomError(false);
     localStorage.setItem('why_not_active_room_id', id);
     const uId = customUserId || userId;
     const nick = customNickname || currentSavedNickname || nickname;
@@ -3787,7 +3793,7 @@ export default function App() {
             )}
 
             {/* Error Fallback Box when fetch fails */}
-            {!loading && !roomDetails && (
+            {!loading && !roomDetails && fetchRoomError && (
               <div className="bg-white p-8 rounded-3xl border border-rose-200 shadow-md max-w-md mx-auto text-center space-y-4 my-12">
                 <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto">
                   <AlertCircle className="w-6 h-6" />
