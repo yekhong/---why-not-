@@ -374,8 +374,11 @@ export default function App() {
   // Room Navigation / Filter / Pinning State (ENTRY-01 ~ ENTRY-04)
   // ----------------------------------------------------------------
   const [roomsList, setRoomsList] = useState<any[]>([]);
-  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IDEA_SUBMISSION' | 'EVALUATION' | 'CLOSED'>('ALL');
+  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'ACTIVE' | 'CLOSED'>('ACTIVE');
   const [roomOwnershipFilter, setRoomOwnershipFilter] = useState<'ALL' | 'CREATED_BY_ME' | 'JOINED_BY_ME'>('ALL');
+  const [showHiddenRooms, setShowHiddenRooms] = useState<boolean>(false);
+  const [isFetchRoomsLoading, setIsFetchRoomsLoading] = useState<boolean>(false);
+  const [fetchRoomsError, setFetchRoomsError] = useState<boolean>(false);
   const [isJoinCodeModalOpen, setIsJoinCodeModalOpen] = useState(false);
   const [inputJoinCode, setInputJoinCode] = useState('');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -1422,75 +1425,95 @@ export default function App() {
 
   const fetchRooms = async () => {
     const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-
-    try {
-      const res = await fetch(`/api/rooms?userId=${encodeURIComponent(activeUserId)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setRoomsList(data || []);
-        return;
-      }
-    } catch (err) {
-      console.warn('Express backend offline, fetching rooms directly from Supabase DB...');
+    if (!activeUserId) {
+      setRoomsList([]);
+      setIsFetchRoomsLoading(false);
+      setFetchRoomsError(false);
+      return;
     }
 
-    // Direct Supabase DB query fallback (Filtered by host_id or participants table for security)
+    setIsFetchRoomsLoading(true);
+    setFetchRoomsError(false);
+
     try {
-      let supaRooms: any[] = [];
-      if (activeUserId) {
-        // Query rooms created by active user
-        const { data: hostRooms } = await supabase
-          .from('rooms')
-          .select('*')
-          .eq('host_id', activeUserId);
+      // Direct Supabase DB query: Single Source of Truth for Rooms created or joined by user
+      const { data: hostRooms, error: hostErr } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('host_id', activeUserId);
 
-        // Query rooms joined by active user via participants table
-        const { data: memberPart } = await supabase
-          .from('participants')
-          .select('room_id')
-          .eq('user_id', activeUserId);
+      const { data: memberPart, error: partErr } = await supabase
+        .from('participants')
+        .select('room_id')
+        .eq('user_id', activeUserId);
 
-        const joinedRoomIds = (memberPart || []).map(p => p.room_id);
-
-        let joinedRooms: any[] = [];
-        if (joinedRoomIds.length > 0) {
-          const { data: jRooms } = await supabase
-            .from('rooms')
-            .select('*')
-            .in('id', joinedRoomIds);
-          joinedRooms = jRooms || [];
-        }
-
-        const combinedMap = new Map<string, any>();
-        (hostRooms || []).forEach(r => combinedMap.set(r.id, r));
-        joinedRooms.forEach(r => combinedMap.set(r.id, r));
-        supaRooms = Array.from(combinedMap.values());
-      } else {
-        supaRooms = [];
+      if (hostErr && partErr) {
+        throw new Error('Supabase DB room query failed: ' + (hostErr?.message || partErr?.message));
       }
 
-      const mapped = supaRooms.map(r => ({
-        id: r.id,
-        title: r.title,
-        description: r.description,
-        category: r.category || '기획',
-        isPublic: r.is_public !== undefined ? r.is_public : true,
-        maxParticipants: r.max_participants || 6,
-        targetWinnerCount: r.target_winner_count || 1,
-        isPinned: r.is_pinned || false,
-        status: r.status,
-        ideasCount: 0,
-        evaluatorsCount: 1,
-        minResponseThreshold: r.min_response_threshold || 1,
-        createdAt: r.created_at,
-        hostId: r.host_id,
-        isHost: r.host_id === activeUserId
+      const joinedRoomIds = (memberPart || []).map(p => p.room_id);
+
+      let joinedRooms: any[] = [];
+      if (joinedRoomIds.length > 0) {
+        const { data: jRooms } = await supabase
+          .from('rooms')
+          .select('*')
+          .in('id', joinedRoomIds);
+        joinedRooms = jRooms || [];
+      }
+
+      const combinedMap = new Map<string, any>();
+      (hostRooms || []).forEach(r => combinedMap.set(r.id, r));
+      joinedRooms.forEach(r => combinedMap.set(r.id, r));
+      const supaRooms = Array.from(combinedMap.values());
+
+      // Calculate participant count and format room card info
+      const mapped = await Promise.all(supaRooms.map(async r => {
+        const { count } = await supabase
+          .from('participants')
+          .select('*', { count: 'exact', head: true })
+          .eq('room_id', r.id);
+
+        const isHost = r.host_id === activeUserId;
+        const myRole = isHost ? '방장' : '참여자';
+
+        let readableStatus = '아이디어 모집';
+        if (r.status === 'SETUP') readableStatus = '설정 중';
+        else if (r.status === 'CLOSED') readableStatus = '최종 선정';
+        else if (['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(r.status)) readableStatus = '평가 중';
+
+        return {
+          id: r.id,
+          title: r.title,
+          description: r.description,
+          category: r.category || '기획',
+          isPublic: r.is_public !== undefined ? r.is_public : true,
+          maxParticipants: r.max_participants || 6,
+          targetWinnerCount: r.target_winner_count || 1,
+          isPinned: r.is_pinned || false,
+          status: r.status || 'IDEA_SUBMISSION',
+          readableStatus,
+          ideasCount: 0,
+          evaluatorsCount: count || 1,
+          minResponseThreshold: r.min_response_threshold || 1,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at || r.created_at,
+          hostId: r.host_id,
+          isHost,
+          myRole
+        };
       }));
 
+      // Sort by creation date descending
+      mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
       setRoomsList(mapped);
+      setFetchRoomsError(false);
     } catch (supaErr) {
       console.error('Supabase DB fetchRooms error:', supaErr);
-      setRoomsList([]);
+      setFetchRoomsError(true);
+    } finally {
+      setIsFetchRoomsLoading(false);
     }
   };
 
@@ -1785,101 +1808,102 @@ export default function App() {
     }
     if (!newRoomTitle.trim()) return;
 
+    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
+    if (!activeUserId) {
+      triggerToast('로그인 세션이 유효하지 않습니다. 다시 로그인해 주세요.', 'error');
+      setShowLoginModal(true);
+      return;
+    }
+
     const hostNick = newRoomHostNickname.trim().slice(0, 6) || nickname.slice(0, 6) || '방장';
     localStorage.setItem('why_not_room_nickname', hostNick);
     setNickname(hostNick);
 
+    const createdRoomId = `room-${Math.random().toString(36).substring(2, 9)}`;
+
     try {
-      const roomPayload = {
-        title: newRoomTitle,
-        description: newRoomDesc,
-        category: newRoomCategory,
-        maxParticipants: Math.min(newRoomMaxParticipants, 6),
-        targetWinnerCount: newRoomTargetWinners,
-        isPublic: newRoomIsPublic,
-        hostId: userId || 'anon-host',
-        minResponseThreshold: Math.min(newRoomMaxParticipants, 6),
-        eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-      };
-
-      let createdRoomId = '';
-
-      // Try Express backend endpoint first
-      try {
-        const res = await fetch('/api/rooms', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(roomPayload),
+      // 1. Insert into Supabase DB 'rooms' (Single Source of Truth)
+      const { error: supaError } = await supabase
+        .from('rooms')
+        .insert({
+          id: createdRoomId,
+          title: newRoomTitle.trim(),
+          description: newRoomDesc || '',
+          category: newRoomCategory,
+          is_public: newRoomIsPublic,
+          max_participants: Math.min(Math.max(newRoomMaxParticipants, 2), 6),
+          target_winner_count: newRoomTargetWinners,
+          is_pinned: false,
+          host_id: activeUserId,
+          status: 'IDEA_SUBMISSION',
+          min_response_threshold: 1,
+          elimination_config: { countPerRound: 1, tieBreak: 'random' },
+          deadlines: {
+            evaluationAt: newRoomVoteEndTime || undefined,
+            voteStartTime: newRoomVoteStartTime || undefined
+          },
         });
-        if (res.ok) {
-          const created = await res.json();
-          createdRoomId = created.id;
-        }
-      } catch (e) {
-        console.warn('Express API server unaccessible, trying direct Supabase insertion...', e);
+
+      if (supaError) {
+        console.error('Supabase DB room insert error:', supaError);
+        throw new Error('회의실 DB 저장 실패: ' + (supaError.message || '오류 발생'));
       }
 
-      // If backend was not reached or failed (e.g. Vercel static frontend), insert directly into Supabase DB
-      if (!createdRoomId) {
-        const newId = `room-${Math.random().toString(36).substring(2, 9)}`;
-        const { error: supaError } = await supabase
-          .from('rooms')
-          .insert({
-            id: newId,
-            title: newRoomTitle,
-            description: newRoomDesc || '',
-            category: newRoomCategory,
-            is_public: newRoomIsPublic,
-            max_participants: Math.min(Math.max(newRoomMaxParticipants, 2), 6),
-            target_winner_count: newRoomTargetWinners,
-            is_pinned: false,
-            host_id: userId || 'anon-host',
-            status: 'IDEA_SUBMISSION',
-            min_response_threshold: 1,
-            elimination_config: { countPerRound: 1, tieBreak: 'random' },
-            deadlines: {
-              evaluationAt: newRoomVoteEndTime || undefined,
-              voteStartTime: newRoomVoteStartTime || undefined
-            },
-          });
-
-        if (supaError) {
-          console.error('Supabase DB room insert error:', supaError);
-          throw supaError;
-        }
-        createdRoomId = newId;
-      }
-
-      // Register host participant
-      try {
-        await supabase.from('participants').insert({
+      // 2. Insert host into Supabase DB 'participants' (Atomic completion)
+      const { error: partErr } = await supabase
+        .from('participants')
+        .insert({
           room_id: createdRoomId,
-          user_id: userId || 'anon-host',
+          user_id: activeUserId,
           nickname: hostNick
         });
-      } catch (pErr) {
-        console.warn(pErr);
+
+      if (partErr) {
+        console.error('Supabase host participant insert error:', partErr);
+        // Rollback room insertion to avoid orphan room!
+        await supabase.from('rooms').delete().eq('id', createdRoomId);
+        throw new Error('방장 정보 등록 실패: ' + (partErr.message || '오류 발생'));
       }
 
-      triggerToast(`회의실이 성공적으로 개설되었습니다! (방장 닉네임: ${hostNick})`);
+      // 3. Notify Express server memory (if active)
+      try {
+        await fetch('/api/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: createdRoomId,
+            title: newRoomTitle.trim(),
+            description: newRoomDesc,
+            category: newRoomCategory,
+            maxParticipants: Math.min(newRoomMaxParticipants, 6),
+            targetWinnerCount: newRoomTargetWinners,
+            isPublic: newRoomIsPublic,
+            hostId: activeUserId,
+            minResponseThreshold: 1,
+            eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
+          })
+        });
+      } catch (e) {
+        console.info('Express server memory sync notice:', e);
+      }
+
+      triggerToast(`회의실이 성공적으로 생성되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
       setNewRoomHostNickname('');
       setNewRoomTitle('');
       setNewRoomDesc('');
       setNewRoomVoteStartTime('');
       setNewRoomVoteEndTime('');
-      setNewRoomThreshold(3);
 
-      // Select the newly created room, generate 3-minute invite token & open Share Modal
+      // Select newly created room, open share modal and refresh dashboard list
       setActiveRoomId(createdRoomId);
       setShowShareModal(true);
       handleGenerateNewInviteToken(createdRoomId);
       fetchRoomDetails(createdRoomId);
-      fetchRooms();
-      fetchRooms();
+      await fetchRooms();
     } catch (err: any) {
       console.error('Room Creation Failed:', err);
-      triggerToast(`방 생성 도중 오류가 발생했습니다: ${err?.message || ''}`, 'error');
+      triggerToast(err.message || '회의실 생성 도중 오류가 발생했습니다.', 'error');
     }
   };
 
@@ -1916,6 +1940,64 @@ export default function App() {
       } catch (supaErr) {
         console.error('Supabase DB pin toggle error:', supaErr);
       }
+    }
+  };
+
+  // Hide Room from My Dashboard (Only affects active user, preserves room & other participants)
+  const handleHideRoom = async (e: React.MouseEvent, roomId: string) => {
+    e.stopPropagation();
+    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
+    if (!activeUserId) return;
+
+    // 1. Instant local UI update
+    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
+
+    // Persist in localStorage fallback
+    try {
+      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
+      set.add(roomId);
+      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
+    } catch (err) {}
+
+    triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
+
+    // 2. Persist in Supabase DB participants table (hidden_at)
+    try {
+      await supabase
+        .from('participants')
+        .update({ hidden_at: new Date().toISOString() })
+        .match({ room_id: roomId, user_id: activeUserId });
+    } catch (err) {
+      console.warn('Supabase hidden_at update notice:', err);
+    }
+  };
+
+  // Restore Room to My Dashboard
+  const handleRestoreRoom = async (e: React.MouseEvent, roomId: string) => {
+    e.stopPropagation();
+    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
+    if (!activeUserId) return;
+
+    // 1. Instant local UI update
+    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
+
+    // Remove from localStorage fallback
+    try {
+      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
+      set.delete(roomId);
+      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
+    } catch (err) {}
+
+    triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
+
+    // 2. Persist in Supabase DB participants table (hidden_at = null)
+    try {
+      await supabase
+        .from('participants')
+        .update({ hidden_at: null })
+        .match({ room_id: roomId, user_id: activeUserId });
+    } catch (err) {
+      console.warn('Supabase hidden_at restore notice:', err);
     }
   };
 
@@ -3789,7 +3871,7 @@ export default function App() {
                   className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-2.5 rounded-xl font-bold text-xs shadow-xs transition cursor-pointer"
                 >
                   <Share2 className="w-4 h-4 text-indigo-600" />
-                  <span>🔗 초대 코드로 참여</span>
+                  <span>초대 코드로 참여하기</span>
                 </button>
 
                 <button
@@ -3797,7 +3879,7 @@ export default function App() {
                   className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-indigo-700 shadow-md transition cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>+ 새 회의실 개설</span>
+                  <span>새 회의실 만들기</span>
                 </button>
               </div>
             </div>
@@ -4033,95 +4115,137 @@ export default function App() {
             {/* Dashboard Rooms Grid & Filter Tabs */}
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                {/* Ownership Filter Tabs: 전체 | 내가 만든 방 | 초대받은 방 */}
+                {/* Ownership Filter Tabs: 전체 | 내가 만든 방 | 초대받은 방 | 🙈 숨긴 회의실 */}
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start">
                   <button
-                    onClick={() => setRoomOwnershipFilter('ALL')}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'ALL' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                    onClick={() => { setRoomOwnershipFilter('ALL'); setShowHiddenRooms(false); }}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'ALL' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    전체 회의실
+                    전체
                   </button>
                   <button
-                    onClick={() => setRoomOwnershipFilter('CREATED_BY_ME')}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'CREATED_BY_ME' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                    onClick={() => { setRoomOwnershipFilter('CREATED_BY_ME'); setShowHiddenRooms(false); }}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'CREATED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
                     👑 내가 만든 방
                   </button>
                   <button
-                    onClick={() => setRoomOwnershipFilter('JOINED_BY_ME')}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'JOINED_BY_ME' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                    onClick={() => { setRoomOwnershipFilter('JOINED_BY_ME'); setShowHiddenRooms(false); }}
+                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'JOINED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
                     🙋 초대받은 방
+                  </button>
+                  <button
+                    onClick={() => setShowHiddenRooms(prev => !prev)}
+                    className={`px-3 py-1.5 rounded-lg transition ${showHiddenRooms ? 'bg-amber-500 text-slate-950 font-extrabold shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    🙈 숨긴 회의실
                   </button>
                 </div>
 
                 {/* Status Filter buttons */}
                 <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-bold text-slate-500 mr-1">진행 상태:</span>
                   <button
                     onClick={() => setRoomFilterStatus('ALL')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    상태 전체
+                    전체
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    💡 아이디어 모집
+                    아이디어 모집
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('EVALUATION')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    🔒 익명 평가중
+                    평가 중
                   </button>
                   <button
                     onClick={() => setRoomFilterStatus('CLOSED')}
                     className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                   >
-                    🎉 종료 (최종선정)
+                    최종 선정
                   </button>
                 </div>
               </div>
 
-              {roomsList.length === 0 ? (
-                <div className="text-center py-12 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+              {/* Dashboard Content: Loading / Error / Empty / Grid */}
+              {isFetchRoomsLoading ? (
+                /* Loading State UI */
+                <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                  <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                  <div className="space-y-1">
+                    <h3 className="text-base font-bold text-slate-900">내 회의실 목록을 불러오는 중입니다...</h3>
+                    <p className="text-xs text-slate-400">Supabase 데이터베이스에서 최신 상태를 동기화하고 있습니다.</p>
+                  </div>
+                </div>
+              ) : fetchRoomsError ? (
+                /* Error State UI */
+                <div className="text-center py-16 bg-white rounded-3xl border border-rose-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                  <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto border border-rose-200">
+                    <AlertCircle className="w-6 h-6 text-rose-600" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-base font-bold text-slate-900">회의실 목록을 불러오지 못했습니다. 다시 시도해 주세요.</h3>
+                    <p className="text-xs text-slate-500 leading-relaxed px-4">네트워크 연결 또는 데이터베이스 조회를 다시 확인해 주세요.</p>
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => fetchRooms()}
+                      className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition shadow-md inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>다시 시도</span>
+                    </button>
+                  </div>
+                </div>
+              ) : roomsList.length === 0 ? (
+                /* Empty State UI */
+                <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
                   <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto border border-indigo-100">
                     <Lock className="w-6 h-6 text-indigo-600" />
                   </div>
                   <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">참여 중인 회의실이 없습니다.</h3>
+                    <h3 className="text-base font-bold text-slate-900">아직 생성하거나 참여한 회의실이 없습니다.</h3>
                     <p className="text-xs text-slate-500 leading-relaxed px-6">
-                      새로운 회의실을 개설하거나, 팀장/동료에게 전달받은 초대 코드로 참여해 보세요.<br />
-                      (타인의 회의실 정보는 노출되지 않는 비공개 공간입니다)
+                      새로운 회의실을 만들거나 초대 코드로 참여해 보세요.
                     </p>
                   </div>
                   <div className="flex items-center justify-center gap-3 pt-2">
                     <button
                       onClick={() => setIsJoinCodeModalOpen(true)}
-                      className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
                     >
                       <Share2 className="w-4 h-4 text-indigo-600" />
-                      <span>초대 코드로 참여</span>
+                      <span>초대 코드로 참여하기</span>
                     </button>
 
                     <button
                       onClick={() => setIsCreatingRoom(true)}
-                      className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
+                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
-                      <span>+ 새 회의실 개설</span>
+                      <span>새 회의실 만들기</span>
                     </button>
                   </div>
                 </div>
               ) : (
+                /* Room Cards Grid */
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                   {roomsList
                     .filter(room => {
+                      // Hide filter: If showHiddenRooms is false, exclude hidden rooms. If true, show only hidden rooms.
+                      if (!showHiddenRooms && room.isHidden) return false;
+                      if (showHiddenRooms && !room.isHidden) return false;
+
                       // Ownership Filter
                       const curUserId = userId || localStorage.getItem('why_not_user_id') || '';
                       if (roomOwnershipFilter === 'CREATED_BY_ME') {
@@ -4131,7 +4255,7 @@ export default function App() {
                       }
 
                       // Status Filter
-                      if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION';
+                      if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION' || room.status === 'SETUP';
                       if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
                       if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
                       return true;
@@ -4144,16 +4268,27 @@ export default function App() {
                     .map(room => {
                       let statusBadge = (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                          준비중
+                          ⚙️ 설정 중
                         </span>
                       );
                       if (room.status === 'IDEA_SUBMISSION') {
                         statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
                       } else if (room.status === 'CLOSED') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 종료 (최종선정)</span>;
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 최종 선정</span>;
                       } else {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 익명 평가중</span>;
+                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 평가 중</span>;
                       }
+
+                      const myRoleBadge = (room.isHost || room.hostId === (userId || localStorage.getItem('why_not_user_id')))
+                        ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">👑 방장</span>
+                        : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
+
+                      const formattedDate = new Date(room.updatedAt || room.createdAt).toLocaleDateString('ko-KR', {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      });
 
                       return (
                         <motion.div
@@ -4165,37 +4300,53 @@ export default function App() {
                             : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
                             }`}
                         >
-                          <div className="space-y-2">
+                          <div className="space-y-2.5">
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-center gap-1.5 flex-wrap">
+                                {myRoleBadge}
                                 {statusBadge}
-                                {room.category && (
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                                    {room.category}
-                                  </span>
-                                )}
                               </div>
 
-                              {/* Star Pin icon button (Yellow Star = ON, Gray Star = OFF) */}
-                              <button
-                                onClick={(e) => handleTogglePin(e, room.id)}
-                                title={room.isPinned ? '상단 고정 해제 (OFF)' : '상단 고정 (ON)'}
-                                className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
-                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
-                                  : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
-                                  }`}
-                              >
-                                <Star
-                                  className={`w-4 h-4 ${room.isPinned
-                                    ? 'fill-amber-400 text-amber-500'
-                                    : 'text-slate-400 fill-slate-200'
+                              <div className="flex items-center gap-1">
+                                {/* Hide / Restore icon button */}
+                                {room.isHidden ? (
+                                  <button
+                                    onClick={(e) => handleRestoreRoom(e, room.id)}
+                                    title="로비 목록으로 복원하기"
+                                    className="p-1.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 transition flex items-center text-[10px] font-bold border border-amber-300 gap-0.5 px-2"
+                                  >
+                                    <span>👁️ 복원</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={(e) => handleHideRoom(e, room.id)}
+                                    title="내 목록에서 숨기기"
+                                    className="p-1.5 rounded-full bg-slate-50 text-slate-400 border border-slate-200 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+
+                                {/* Star Pin icon button */}
+                                <button
+                                  onClick={(e) => handleTogglePin(e, room.id)}
+                                  title={room.isPinned ? '상단 고정 해제' : '상단 고정'}
+                                  className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
+                                    : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
                                     }`}
-                                />
-                                {room.isPinned && <span className="pr-1 text-[11px]">고정</span>}
-                              </button>
+                                >
+                                  <Star
+                                    className={`w-3.5 h-3.5 ${room.isPinned
+                                      ? 'fill-amber-400 text-amber-500'
+                                      : 'text-slate-400 fill-slate-200'
+                                      }`}
+                                  />
+                                </button>
+                              </div>
                             </div>
 
-                            <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition pt-1">
+                            <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition pt-1 leading-snug">
                               {room.title}
                             </h3>
                             <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
@@ -4203,14 +4354,22 @@ export default function App() {
                             </p>
                           </div>
 
-                          <div className="border-t border-slate-100 mt-4 pt-3 flex items-center justify-between text-xs font-semibold text-slate-500">
-                            <div className="flex items-center gap-3">
-                              <span className="bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-md border border-indigo-100">
-                                🏷️ {room.category || '기획'}
-                              </span>
-                              <span>•</span>
-                              <span className="font-bold text-slate-700">👥 {room.evaluatorsCount || 1}/6명</span>
+                          <div className="border-t border-slate-100 mt-4 pt-3 space-y-3">
+                            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                              <span className="font-bold text-slate-700">👥 {room.evaluatorsCount || 1}명 참여 중</span>
+                              <span className="text-[11px] text-slate-400">{formattedDate}</span>
                             </div>
+
+                            <button
+                              onClick={() => handleSelectRoom(room.id)}
+                              className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${room.status === 'CLOSED'
+                                ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs'
+                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/60'
+                                }`}
+                            >
+                              <span>{room.status === 'CLOSED' ? '결과 보기' : '계속하기'}</span>
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </motion.div>
                       );
