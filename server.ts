@@ -102,6 +102,8 @@ const aiFinalSummaries = new Map<string, string>();
 const starVotesMap = new Map<string, Map<string, string[]>>();
 // Map for 3단계 Active Re-editing Evaluators: room_id -> Set<user_id>
 const reEditingEvaluatorsMap = new Map<string, Set<string>>();
+// Map for 1단계 Explicitly Completed Users: room_id -> Set<user_id>
+const ideaCompletedUsersMap = new Map<string, Set<string>>();
 
 // ----------------------------------------------------------------
 // Seed Mock Data Creator
@@ -1189,6 +1191,35 @@ app.delete('/api/rooms/:id/ideas/:ideaId', (req, res) => {
 });
 
 /**
+ * Mark 1단계 Idea Registration Step as Completed for a user
+ */
+app.post('/api/rooms/:id/ideas/complete', (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.body;
+  if (!ideaCompletedUsersMap.has(id)) {
+    ideaCompletedUsersMap.set(id, new Set());
+  }
+  if (userId) {
+    ideaCompletedUsersMap.get(id)!.add(userId);
+  }
+  const count = ideaCompletedUsersMap.get(id)!.size;
+  res.json({ success: true, count });
+});
+
+/**
+ * Unmark 1단계 Idea Registration Step for a user (returning to registration)
+ */
+app.post('/api/rooms/:id/ideas/uncomplete', (req, res) => {
+  const { id } = req.params;
+  const { userId } = req.body;
+  if (ideaCompletedUsersMap.has(id) && userId) {
+    ideaCompletedUsersMap.get(id)!.delete(userId);
+  }
+  const count = ideaCompletedUsersMap.get(id)?.size || 0;
+  res.json({ success: true, count });
+});
+
+/**
  * Update a Criterion Proposal (Host or Author only)
  */
 app.put('/api/rooms/:id/proposals/:proposalId', (req, res) => {
@@ -1486,9 +1517,10 @@ app.get('/api/rooms/:id', async (req, res) => {
     });
   });
 
-  // Calculate unique participants who have submitted 1 or more ideas
+  // Calculate participants who have explicitly completed Stage 1 by entering gate
   const uniqueSubmitters = new Set(roomIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
-  const completedParticipantsCount = uniqueSubmitters.size;
+  const ideaCompletedSet = ideaCompletedUsersMap.get(id) || new Set();
+  const completedParticipantsCount = ideaCompletedSet.size;
 
   // Determine starVoteStatus using unique submitters count (uniqueSubmitters.size)
   const starVoteThreshold = uniqueSubmitters.size || 1;

@@ -701,17 +701,37 @@ export default function App() {
   };
 
   // Stage 1 Gate helper functions
-  const handleEnterIdeaGate = () => {
+  const handleEnterIdeaGate = async () => {
     setShowIdeaSubmissionGate(true);
     if (activeRoomId) {
       localStorage.setItem(`why_not_idea_step_gate_${activeRoomId}`, 'true');
+      try {
+        await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId })
+        });
+        fetchRoomDetails(activeRoomId, false);
+      } catch (e) {
+        console.error(e);
+      }
     }
   };
 
-  const handleExitIdeaGate = () => {
+  const handleExitIdeaGate = async () => {
     setShowIdeaSubmissionGate(false);
     if (activeRoomId) {
       localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+      try {
+        await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId })
+        });
+        fetchRoomDetails(activeRoomId, false);
+      } catch (e) {
+        console.error(e);
+      }
     }
   };
 
@@ -4194,59 +4214,68 @@ export default function App() {
                       <div className="space-y-6">
 
                         {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
-                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
-                            {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) ? (
-                              <Unlock className="w-5 h-5 text-indigo-600" />
-                            ) : (
-                              <Lock className="w-5 h-5 text-indigo-600" />
-                            )}
-                          </div>
+                        {(() => {
+                          const ideaCompletedCount = roomDetails.completedParticipantsCount !== undefined
+                            ? roomDetails.completedParticipantsCount
+                            : (showIdeaSubmissionGate ? 1 : 0);
+                          const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= (roomDetails.room.minResponseThreshold || 3);
 
-                          <div className="space-y-2">
-                            <h3 className="text-lg font-bold text-slate-900">
-                              {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3)))
-                                ? '팀 내 최소 응답 수 충족 완료!'
-                                : '다른 구성원들의 참가를 기다리는 중'}
-                            </h3>
-                            <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
-                              {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3)))
-                                ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + (roomDetails.room.minResponseThreshold || 3) + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
-                            </p>
-                          </div>
+                          return (
+                            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
+                              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                                {isIdeaGateMinMet ? (
+                                  <Unlock className="w-5 h-5 text-indigo-600" />
+                                ) : (
+                                  <Lock className="w-5 h-5 text-indigo-600" />
+                                )}
+                              </div>
 
-                          {/* Gate details */}
-                          <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
-                            <span className="text-slate-500">현재 수집 상태 :</span>
-                            <span className={((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
-                              {new Set((roomDetails.ideas || []).map(i => i.submitterId)).size} / {roomDetails.room.minResponseThreshold || 3} 명 완료
-                            </span>
-                          </div>
+                              <div className="space-y-2">
+                                <h3 className="text-lg font-bold text-slate-900">
+                                  {isIdeaGateMinMet
+                                    ? '팀 내 최소 응답 수 충족 완료!'
+                                    : '다른 구성원들의 참가를 기다리는 중'}
+                                </h3>
+                                <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+                                  {isIdeaGateMinMet
+                                    ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
+                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + (roomDetails.room.minResponseThreshold || 3) + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
+                                </p>
+                              </div>
 
-                          {/* Action Controls matching Images 1, 2, 3 */}
-                          <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
-                            <button
-                              type="button"
-                              onClick={handleExitIdeaGate}
-                              className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
-                            >
-                              이전 단계(아이디어 등록)로 되돌아가기
-                            </button>
+                              {/* Gate details */}
+                              <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
+                                <span className="text-slate-500">현재 수집 상태 :</span>
+                                <span className={isIdeaGateMinMet ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
+                                  {ideaCompletedCount} / {roomDetails.room.minResponseThreshold || 3} 명 완료
+                                </span>
+                              </div>
 
-                            {((roomDetails.ideas || []).length >= 2 && (new Set((roomDetails.ideas || []).map(i => i.submitterId)).size >= (roomDetails.room.minResponseThreshold || 3))) && roomDetails.room.hostId === userId && (
-                              <button
-                                type="button"
-                                onClick={handleConfirmIdeaGateToStage2}
-                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Sparkles className="w-4 h-4 text-slate-950" />
-                                <span>2단계: 평가 기준 설정하러 가기</span>
-                                <ArrowRight className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                              {/* Action Controls matching Images 1, 2, 3 */}
+                              <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
+                                <button
+                                  type="button"
+                                  onClick={handleExitIdeaGate}
+                                  className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
+                                >
+                                  이전 단계(아이디어 등록)로 되돌아가기
+                                </button>
+
+                                {isIdeaGateMinMet && roomDetails.room.hostId === userId && (
+                                  <button
+                                    type="button"
+                                    onClick={handleConfirmIdeaGateToStage2}
+                                    className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Sparkles className="w-4 h-4 text-slate-950" />
+                                    <span>2단계: 평가 기준 설정하러 가기</span>
+                                    <ArrowRight className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -6524,8 +6553,14 @@ export default function App() {
                           <Check className="w-4 h-4" />
                           이미 투표가 제출되었습니다
                         </span>
+                      ) : remainingStars > 0 ? (
+                        <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                          ⚠️ 평가 기준을 확인한 뒤 최종 후보로 선택할 아이디어 {targetWinners}개에 1위부터 {targetWinners}위까지 순위를 모두 지정해 주세요.
+                        </span>
                       ) : (
-                        <span>별 스티커 {remainingStars === 0 ? '완료' : `${remainingStars}개 선택 필요`}</span>
+                        <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                          ✓ 별 스티커 순위 지정 완료! 투표를 제출할 수 있습니다.
+                        </span>
                       )}
                     </div>
 
