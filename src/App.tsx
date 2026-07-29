@@ -187,6 +187,7 @@ export default function App() {
       setUserEmail(authEmail.trim());
       localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
+      localStorage.setItem('why_not_user_email', authEmail.trim());
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
       setShowLoginModal(false);
@@ -204,6 +205,7 @@ export default function App() {
       setUserEmail(authEmail.trim());
       localStorage.setItem('why_not_user_id', uId);
       localStorage.setItem('why_not_user_name', uName);
+      localStorage.setItem('why_not_user_email', authEmail.trim());
       localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
       setShowLoginModal(false);
@@ -835,6 +837,11 @@ export default function App() {
     if (!savedName) {
       savedName = '익명_참여자';
       localStorage.setItem('why_not_user_name', savedName);
+    }
+
+    const savedEmail = localStorage.getItem('why_not_user_email');
+    if (savedEmail) {
+      setUserEmail(savedEmail);
     }
 
     setUserId(savedId);
@@ -3374,11 +3381,25 @@ export default function App() {
             {/* Auth / Identity badge (이메일 정보 노출) */}
             {isLoggedIn ? (
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 py-1.5 px-3.5 rounded-full">
+                <div
+                  onClick={() => {
+                    const currentLoginId = userEmail || localStorage.getItem('why_not_user_email') || nickname || '알 수 없음';
+                    navigator.clipboard.writeText(currentLoginId);
+                    triggerToast(`✨ 로그인 이메일 ID: ${currentLoginId} (복사되었습니다!)`, 'success');
+                  }}
+                  className="relative group flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-1.5 px-3.5 rounded-full transition cursor-pointer shadow-xs"
+                  title={`로그인 이메일: ${userEmail || localStorage.getItem('why_not_user_email') || '이메일 정보 없음'}`}
+                >
                   <User className="w-3.5 h-3.5 text-indigo-600" />
-                  <span className="text-xs font-semibold text-indigo-950">
-                    {userEmail || nickname || '사용자'}
+                  <span className="text-xs font-bold text-indigo-950">
+                    {nickname || '사용자'}
                   </span>
+
+                  {/* 마우스 호버(Hover) 시 나타나는 이메일 ID 툴팁 배지 */}
+                  <div className="absolute top-full right-0 mt-2 hidden group-hover:flex items-center gap-1.5 bg-slate-900 text-white text-[11px] font-semibold px-3 py-1.5 rounded-xl shadow-xl border border-slate-800 whitespace-nowrap z-50 pointer-events-none transition duration-150">
+                    <span className="text-amber-400">🔑 이메일 ID:</span>
+                    <span className="font-mono text-slate-100">{userEmail || localStorage.getItem('why_not_user_email') || '정보 없음'}</span>
+                  </div>
                 </div>
                 <button
                   onClick={handleLogout}
