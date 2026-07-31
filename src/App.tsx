@@ -1097,7 +1097,18 @@ export default function App() {
         throw new Error(data?.error || '회의실 목록을 불러오지 못했습니다.');
       }
 
-      setRoomsList(Array.isArray(data) ? data : (data?.rooms || []));
+      const rawList = Array.isArray(data) ? data : (data?.rooms || []);
+      const mappedRooms = rawList.map((r: any) => {
+        const isQuickMode = r.decisionMode === 'QUICK' || localStorage.getItem(`why_not_room_decision_mode_${r.id}`) === 'QUICK';
+        if (isQuickMode) {
+          localStorage.setItem(`why_not_room_decision_mode_${r.id}`, 'QUICK');
+        }
+        return {
+          ...r,
+          decisionMode: isQuickMode ? 'QUICK' : 'STRUCTURED'
+        };
+      });
+      setRoomsList(mappedRooms);
       setFetchRoomsError(false);
     } catch (error) {
       console.error('BFF fetchRooms error:', error);
