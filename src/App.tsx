@@ -793,6 +793,12 @@ export default function App() {
     const targetRoomId = urlRoomId || savedRoomId;
 
     if (targetRoomId) {
+      if (targetRoomId.startsWith('inv_')) {
+        localStorage.removeItem('why_not_active_room_id');
+        setLandingInviteToken(targetRoomId);
+        fetchInviteLandingDetails(targetRoomId);
+        return;
+      }
       if (urlRole === 'voter') {
         localStorage.setItem('why_not_user_role', 'VOTER');
       } else {
@@ -813,6 +819,13 @@ export default function App() {
     const targetRoomId = pendingRoomId || savedPendingRoomId || urlRoomId;
 
     if (targetRoomId && !activeRoomId) {
+      if (targetRoomId.startsWith('inv_')) {
+        localStorage.removeItem('why_not_active_room_id');
+        localStorage.removeItem('why_not_pending_room_id');
+        setLandingInviteToken(targetRoomId);
+        fetchInviteLandingDetails(targetRoomId);
+        return;
+      }
       if (urlRole === 'voter') {
         localStorage.setItem('why_not_user_role', 'VOTER');
       } else {
@@ -1067,7 +1080,10 @@ export default function App() {
     setFetchRoomsError(false);
 
     try {
-      const response = await fetch('/api/rooms', { cache: 'no-store' });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const response = await fetch('/api/rooms', { signal: controller.signal, cache: 'no-store' });
+      clearTimeout(timeoutId);
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         if (response.status === 401) {
@@ -1092,6 +1108,14 @@ export default function App() {
   };
 
   const fetchRoomDetails = async (id: string, isSilent = false) => {
+    if (!id || id.startsWith('inv_')) {
+      if (id && id.startsWith('inv_')) {
+        setLandingInviteToken(id);
+        fetchInviteLandingDetails(id);
+      }
+      return;
+    }
+
     if (isFetchingRoomRef.current && isSilent) {
       return; // Skip overlapping background poll if previous fetch is still processing
     }
@@ -2446,11 +2470,41 @@ export default function App() {
 
 
 
+  // Robust Clipboard Copy Helper with Document Focus Fallback
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // Fallback silently if document is not focused or Clipboard API fails
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return successful;
+    } catch (err) {
+      console.warn('Fallback clipboard copy failed:', err);
+      return false;
+    }
+  };
+
   // Utility to copy share link (URL에 roomId 포함하여 링크 복사)
-  const copyShareLink = () => {
+  const copyShareLink = async (customUrl?: string) => {
     const baseUrl = window.location.origin + window.location.pathname;
-    const shareUrl = `${baseUrl}?roomId=${activeRoomId}`;
-    navigator.clipboard.writeText(shareUrl);
+    const shareUrl = typeof customUrl === 'string' ? customUrl : `${baseUrl}?roomId=${activeRoomId}`;
+    await copyToClipboard(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
     triggerToast('참여용 초대 링크가 클립보드에 복사되었습니다!');
@@ -6182,10 +6236,10 @@ export default function App() {
                     }
                     if (tokenToUse) {
                       const inviteUrl = `${window.location.origin}/invite/${tokenToUse}`;
-                      navigator.clipboard.writeText(inviteUrl);
+                      await copyToClipboard(inviteUrl);
                       triggerToast('참여자 전용 초대 링크가 클립보드에 복사되었습니다!');
                     } else {
-                      copyParticipantLink();
+                      copyShareLink();
                     }
                   }}
                   className="w-full py-3.5 bg-white hover:bg-indigo-50/50 border border-indigo-200 text-indigo-900 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"

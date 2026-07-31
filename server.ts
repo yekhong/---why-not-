@@ -121,6 +121,13 @@ function legacyHashString(input: string): string {
     .digest('hex');
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
+  ]);
+}
+
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const derived = crypto.scryptSync(password, salt, 64);
@@ -1922,6 +1929,8 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   if (cached) return cached;
   if (!SUPABASE_CONFIGURED) return null;
 
+  const emptyRes = { data: null };
+  const emptyArrRes = { data: [] };
   const [
     { data: roomRow },
     { data: ideaRows },
@@ -1929,14 +1938,18 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
     { data: proposalRows },
     { data: participantRows },
     { data: evaluationRows }
-  ] = await Promise.all([
-    supabase.from('rooms').select('*').eq('id', roomId).maybeSingle(),
-    supabase.from('ideas').select('*').eq('room_id', roomId),
-    supabase.from('criteria').select('*').eq('room_id', roomId),
-    supabase.from('criterion_proposals').select('*').eq('room_id', roomId),
-    supabase.from('participants').select('*').eq('room_id', roomId),
-    supabase.from('evaluations').select('*').eq('room_id', roomId)
-  ]);
+  ] = await withTimeout(
+    Promise.all([
+      supabase.from('rooms').select('*').eq('id', roomId).maybeSingle(),
+      supabase.from('ideas').select('*').eq('room_id', roomId),
+      supabase.from('criteria').select('*').eq('room_id', roomId),
+      supabase.from('criterion_proposals').select('*').eq('room_id', roomId),
+      supabase.from('participants').select('*').eq('room_id', roomId),
+      supabase.from('evaluations').select('*').eq('room_id', roomId)
+    ]),
+    3500,
+    [emptyRes, emptyArrRes, emptyArrRes, emptyArrRes, emptyArrRes, emptyArrRes]
+  );
   if (!roomRow) return null;
 
   const room = mapRoomRow(roomRow);
