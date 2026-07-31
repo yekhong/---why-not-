@@ -393,6 +393,7 @@ const SCORE_CONFIG = {
 // In-Memory Database Stores
 // ----------------------------------------------------------------
 const rooms = new Map<string, Room>();
+const roomDecisionModesMap = new Map<string, DecisionMode>();
 const ideas = new Map<string, Idea[]>();
 const criterionProposals = new Map<string, CriterionProposal[]>();
 const criteria = new Map<string, Criterion[]>();
@@ -1915,7 +1916,7 @@ function mapRoomRow(row: any): Room {
     deadlines: row.deadlines || {},
     createdAt: row.created_at || new Date().toISOString(),
     engineVersion: Number(row.engine_version || 1),
-    decisionMode: (row.decision_mode === 'QUICK' || rooms.get(row.id)?.decisionMode === 'QUICK') ? 'QUICK' : 'STRUCTURED',
+    decisionMode: (row.decision_mode === 'QUICK' || rooms.get(row.id)?.decisionMode === 'QUICK' || roomDecisionModesMap.get(row.id) === 'QUICK') ? 'QUICK' : 'STRUCTURED',
     finalVoteStatus,
     tieCandidateIdeaIds: Array.isArray(row.tie_candidate_idea_ids) ? row.tie_candidate_idea_ids : [],
     tieSlots: Number(row.tie_slots || 0),
@@ -3116,6 +3117,7 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   }
 
   rooms.set(newId, newRoom);
+  roomDecisionModesMap.set(newId, newRoom.decisionMode);
   ideas.set(newId, []);
   criterionProposals.set(newId, []);
   criteria.set(newId, []);

@@ -330,7 +330,7 @@ export default function App() {
   const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인'>('기획');
   const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(2);
   const [newRoomTargetWinners, setNewRoomTargetWinners] = useState(1);
-  const [newRoomDecisionMode, setNewRoomDecisionMode] = useState<DecisionMode>('STRUCTURED');
+  const [newRoomDecisionMode, setNewRoomDecisionMode] = useState<DecisionMode>('QUICK');
   const [newRoomVoteStartTime, setNewRoomVoteStartTime] = useState('');
   const [newRoomVoteEndTime, setNewRoomVoteEndTime] = useState('');
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
@@ -1146,6 +1146,14 @@ export default function App() {
         const data: RoomDetails = await res.json();
         console.log(`[SYNC] 회의 정보 조회 완료. 현재 단계: ${data?.room?.status}, 아이디어 수: ${data?.ideas?.length}`);
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
+
+        if (data.room && data.room.id) {
+          const isQuickMode = data.room.decisionMode === 'QUICK' || localStorage.getItem(`why_not_room_decision_mode_${data.room.id}`) === 'QUICK';
+          if (isQuickMode) {
+            data.room.decisionMode = 'QUICK';
+            localStorage.setItem(`why_not_room_decision_mode_${data.room.id}`, 'QUICK');
+          }
+        }
 
         setRoomDetails(prev => {
           const incomingProposals = data.proposals || [];
@@ -3726,7 +3734,8 @@ export default function App() {
                           ? ['IDEA_SUBMISSION', 'ELIMINATION', 'CLOSED']
                           : ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
                         const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
-                        const currentIdx = statusesOrder.indexOf(roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomSt);
+                        const mappedSt = roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : (roomSt === 'FINAL_VOTE' ? 'ELIMINATION' : roomSt);
+                        const currentIdx = statusesOrder.indexOf(mappedSt);
                         const stepIdx = statusesOrder.indexOf(step.key as RoomStatus);
                         const isCompleted = stepIdx < currentIdx;
                         const isActive = stepIdx === currentIdx;
@@ -3782,7 +3791,7 @@ export default function App() {
                             {roomDetails.room.decisionMode === 'QUICK' ? (
                               <>
                                 {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 선택지 작성'}
-                                {roomDetails.room?.status === 'ELIMINATION' && '2단계 : 익명 투표'}
+                                {(roomDetails.room?.status === 'ELIMINATION' || roomDetails.room?.status === 'FINAL_VOTE') && '2단계 : 익명 투표'}
                                 {roomDetails.room?.status === 'CLOSED' && '3단계 : 결과와 근거'}
                               </>
                             ) : (
@@ -3877,7 +3886,9 @@ export default function App() {
                             (roomDetails.participants || []).length || 1
                           );
 
-                          const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
+                          const ideasCountMet = (roomDetails.ideas || []).length >= 2;
+                          const participantQuorumMet = ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
+                          const isIdeaGateMinMet = ideasCountMet && participantQuorumMet;
 
                           return (
                             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
@@ -3892,8 +3903,10 @@ export default function App() {
                               <div className="space-y-2">
                                 <h3 className="text-lg font-bold text-slate-900">
                                   {isIdeaGateMinMet
-                                    ? '팀 내 최소 응답 수 충족 완료!'
-                                    : '다른 구성원들의 참가를 기다리는 중'}
+                                    ? '팀 내 최소 응답 수 및 아이디어 등록 충족 완료!'
+                                    : participantQuorumMet && !ideasCountMet
+                                      ? '선택지(아이디어) 추가 등록이 필요합니다'
+                                      : '다른 구성원들의 참가를 기다리는 중'}
                                 </h3>
                                 <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
                                   {isIdeaGateMinMet
@@ -3902,13 +3915,18 @@ export default function App() {
                                       : '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
                                     : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 다음 단계로 진행할 수 있습니다.'}
                                 </p>
+                                {participantQuorumMet && !ideasCountMet && (
+                                  <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 leading-relaxed max-w-md mx-auto mt-2">
+                                    ⚠️ 참여자 완료 수({ideaCompletedCount}/{targetTotalCount}명)는 달성되었으나, 투표를 진행하기 위한 선택지(아이디어)가 현재 1개뿐입니다. [이전 단계로 되돌아가기] 버튼을 눌러 최소 2개 이상의 아이디어를 등록해 주세요!
+                                  </p>
+                                )}
                               </div>
 
                               {/* Gate details */}
                               <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
                                 <span className="text-slate-500">현재 수집 상태 :</span>
                                 <span className={isIdeaGateMinMet ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
-                                  {ideaCompletedCount} / {targetTotalCount} 명 완료
+                                  {ideaCompletedCount} / {targetTotalCount} 명 완료 (아이디어 {(roomDetails.ideas || []).length}개)
                                 </span>
                               </div>
 
