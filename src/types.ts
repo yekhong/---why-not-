@@ -5,6 +5,8 @@ export type RoomStatus =
   | 'CRITERIA_REVIEW'
   | 'EVALUATION'
   | 'ELIMINATION'
+  | 'FINAL_VOTE'
+  | 'EVALUATION_ROUND_2'
   | 'CLOSED';
 
 export interface EliminationConfig {
@@ -162,9 +164,13 @@ export interface RoomInvite {
 
 export interface InviteDetailsResponse {
   isValid: boolean;
-  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'ERROR';
+  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'STORE_UNAVAILABLE' | 'ERROR';
   errorMessage?: string;
-  room?: Room;
+  // The invite landing page only needs these public display fields. Keeping
+  // this type narrow prevents the BFF from accidentally exposing hostId,
+  // deadlines, elimination settings, or other room-internal data to anyone
+  // who merely possesses a short-lived invite URL.
+  room?: Pick<Room, 'id' | 'title' | 'description' | 'category' | 'isPublic' | 'maxParticipants' | 'status'>;
   hostNickname?: string;
   participantCount?: number;
   maxParticipants?: number;

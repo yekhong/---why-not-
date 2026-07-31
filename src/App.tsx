@@ -45,7 +45,6 @@ import {
   InviteDetailsResponse
 } from './types';
 
-import { supabase } from './supabase';
 
 // Custom lightweight Markdown-to-JSX Parser for the AI reports
 function SafeMarkdown({ content }: { content: string }) {
@@ -100,9 +99,8 @@ export default function App() {
   // ----------------------------------------------------------------
   // User Authentication / Email & Password Identity (AUTH-01 & Email Auth Spec)
   // ----------------------------------------------------------------
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('why_not_logged_in') === 'true';
-  });
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isSessionChecked, setIsSessionChecked] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP' | 'RECOVER'>('LOGIN');
 
@@ -126,35 +124,22 @@ export default function App() {
   const [tempNickname, setTempNickname] = useState('');
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
-  // Password validation helper: 소문자 및 숫자로만 구성, 최대 15자 (테스트 계정 TEST1234 허용)
+  // Password validation helper: 8~64자의 영문과 숫자 조합
   const isPasswordValid = useMemo(() => {
     if (!authPassword) return false;
-    if (authPassword.toUpperCase() === 'TEST1234') return true;
-    const isValidCharAndLength = /^[a-z0-9]{1,15}$/.test(authPassword);
-    const hasLowercase = /[a-z]/.test(authPassword);
+    const isValidLength = authPassword.length >= 8 && authPassword.length <= 64;
+    const hasLetter = /[A-Za-z]/.test(authPassword);
     const hasDigit = /[0-9]/.test(authPassword);
-    return isValidCharAndLength && hasLowercase && hasDigit;
+    return isValidLength && hasLetter && hasDigit;
   }, [authPassword]);
 
-  // Email validation helper: 이메일/ID 형식 검사 (테스트 계정 GOMINHAJO 허용)
+  // Email validation helper: 이메일 또는 서비스 로그인 ID
   const isEmailValid = useMemo(() => {
     const input = authEmail.trim();
     if (!input) return false;
     if (input.toUpperCase() === 'GOMINHAJO' || !input.includes('@')) return true;
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
   }, [authEmail]);
-
-  // Helper to persist registered users locally for fallback
-  const saveLocalRegisteredUser = (email: string, pass: string, name: string, id: string) => {
-    try {
-      const existing = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
-      const filtered = existing.filter((u: any) => u.email?.toLowerCase() !== email.toLowerCase());
-      filtered.push({ email: email.toLowerCase(), password: pass, name, id });
-      localStorage.setItem('why_not_registered_users', JSON.stringify(filtered));
-    } catch (e) {
-      console.error('Failed to save registered user locally:', e);
-    }
-  };
 
   // Secure Email/ID Signup Handler (/api/auth/signup)
   const handleEmailSignUp = async (e: React.FormEvent) => {
@@ -164,7 +149,7 @@ export default function App() {
       return;
     }
     if (!isPasswordValid) {
-      triggerToast('비밀번호는 영문 소문자와 숫자의 조합으로 최대 15자까지 가능합니다.', 'error');
+      triggerToast('비밀번호는 8~64자의 영문과 숫자 조합이어야 합니다.', 'error');
       return;
     }
     if (!authName.trim()) {
@@ -195,10 +180,6 @@ export default function App() {
       setUserId(uId);
       setNickname(uName);
       setUserEmail(uEmail);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', uEmail);
-      localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
 
       if (data.recoveryCode) {
@@ -208,24 +189,9 @@ export default function App() {
       }
       triggerToast('회원가입이 완료되었습니다! 발급된 복구 코드를 반드시 보관하세요.');
     } catch (err: any) {
-      console.warn('Backend Auth Signup notice, using local session fallback:', err);
-      const uId = `user_${Math.random().toString(36).substring(2, 9)}`;
-      const uName = authName.trim();
-      const uEmail = authEmail.trim();
-      const genCode = `RC-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-      saveLocalRegisteredUser(uEmail, authPassword, uName, uId);
-
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail(uEmail);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', uEmail);
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setRecoveryCodeOutput(genCode);
-      triggerToast('회원가입이 완료되었습니다!');
+      const message = err?.message || '회원가입 처리 중 오류가 발생했습니다.';
+      setAuthError(message);
+      triggerToast(message, 'error');
     }
   };
 
@@ -256,10 +222,6 @@ export default function App() {
         setUserId(uId);
         setNickname(uName);
         setUserEmail(uEmail);
-        localStorage.setItem('why_not_user_id', uId);
-        localStorage.setItem('why_not_user_name', uName);
-        localStorage.setItem('why_not_user_email', uEmail);
-        localStorage.setItem('why_not_logged_in', 'true');
         setIsLoggedIn(true);
         setShowLoginModal(false);
         triggerToast(`${uName}님 환영합니다!`);
@@ -269,50 +231,8 @@ export default function App() {
       console.warn('Backend Auth Login error:', err);
     }
 
-    // Dedicated instant check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
-    if ((inputEmailOrId.toUpperCase() === 'GOMINHAJO' || inputEmailOrId.toUpperCase() === 'GOMINHAJO@TEST.COM') && authPassword.toUpperCase() === 'TEST1234') {
-      const uId = 'user_gominhajo_test';
-      const uName = 'GOMINHAJO';
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail('gominhajo@test.com');
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', 'gominhajo@test.com');
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast('테스트 계정(GOMINHAJO)으로 로그인되었습니다!');
-      return;
-    }
-
-    // Local fallback check
-    let registeredUsers: any[] = [];
-    try {
-      registeredUsers = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
-    } catch (e) { }
-
-    const matchedUser = registeredUsers.find(
-      (u: any) => u.email && u.email.toLowerCase() === inputEmailOrId.toLowerCase()
-    );
-
-    if (matchedUser && (!matchedUser.password || matchedUser.password === authPassword)) {
-      const uId = matchedUser.id || `user_${Math.random().toString(36).substring(2, 9)}`;
-      const uName = matchedUser.name || localStorage.getItem('why_not_user_name') || '사용자';
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail(inputEmailOrId);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', inputEmailOrId);
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast(`${uName}님 환영합니다!`);
-    } else {
-      setAuthError(failMsg);
-      triggerToast(failMsg, 'error');
-    }
+    setAuthError(failMsg);
+    triggerToast(failMsg, 'error');
   };
 
   // Secure Account Recovery Handler (/api/auth/recover)
@@ -354,10 +274,6 @@ export default function App() {
         setUserId(data.user.id);
         setNickname(data.user.nickname);
         setUserEmail(data.loginId);
-        localStorage.setItem('why_not_user_id', data.user.id);
-        localStorage.setItem('why_not_user_name', data.user.nickname);
-        localStorage.setItem('why_not_user_email', data.loginId);
-        localStorage.setItem('why_not_logged_in', 'true');
         setIsLoggedIn(true);
       }
 
@@ -365,9 +281,7 @@ export default function App() {
     } catch (err: any) {
       setAuthError(err.message || '복구 코드 검증 실패');
       triggerToast(err.message || '복구 코드 검증 실패', 'error');
-    } finally {
-      setIsRecoveringAccount(false);
-    }
+    } font-medium;
   };
 
   // ----------------------------------------------------------------
@@ -473,22 +387,10 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, isReEditing: true })
+          body: JSON.stringify({ isReEditing: true })
         });
       } catch (err) {
         console.warn('Re-edit status update error:', err);
-      }
-
-      if (activeRoomId !== 'room-gominhajo') {
-        try {
-          await supabase
-            .from('evaluations')
-            .delete()
-            .eq('room_id', activeRoomId)
-            .eq('evaluator_id', userId);
-        } catch (supaErr) {
-          console.error('Supabase DB evaluations delete error on re-edit:', supaErr);
-        }
       }
 
       fetchRoomDetails(activeRoomId, true);
@@ -511,40 +413,23 @@ export default function App() {
         }));
 
         try {
-          await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
+          const response = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ evaluatorId: userId, submissions })
+            body: JSON.stringify({ submissions })
           });
+          const data = await response.json().catch(() => null);
+          if (!response.ok) throw new Error(data?.error || '평가를 복원하지 못했습니다.');
         } catch (err) {
           console.warn('Cancel re-edit re-submission error:', err);
-        }
-
-        if (activeRoomId !== 'room-gominhajo') {
-          try {
-            for (const sub of submissions) {
-              await supabase.from('evaluations').insert({
-                id: `eval-${Math.random().toString(36).substring(2, 9)}`,
-                room_id: activeRoomId,
-                idea_id: sub.ideaId,
-                evaluator_id: userId,
-                decision: sub.decision,
-                excluded_criterion_ids: sub.excludedCriterionIds || [],
-                reason_text: sub.reasonText || '',
-                reason_type: sub.reasonType || 'PREFERENCE',
-                round: 1
-              });
-            }
-          } catch (supaErr) {
-            console.error('Supabase DB re-insert on cancel re-edit error:', supaErr);
-          }
+          triggerToast(err instanceof Error ? err.message : '평가를 복원하지 못했습니다.', 'error');
         }
       } else {
         try {
           await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, isReEditing: false })
+            body: JSON.stringify({ isReEditing: false })
           });
         } catch (err) {
           console.warn('Cancel re-edit status update error:', err);
@@ -577,17 +462,6 @@ export default function App() {
         });
       } catch (err) {
         console.warn('Status update API error:', err);
-      }
-
-      if (activeRoomId !== 'room-gominhajo') {
-        try {
-          await supabase
-            .from('rooms')
-            .update({ status: 'FINAL_VOTE' })
-            .eq('id', activeRoomId);
-        } catch (supaErr) {
-          console.error('Supabase room status update error:', supaErr);
-        }
       }
 
       fetchRoomDetails(activeRoomId, true);
@@ -648,9 +522,7 @@ export default function App() {
     } catch (e) {
       console.error(e);
       triggerToast('데모 데이터 생성 중 오류가 발생했습니다.', 'error');
-    } finally {
-      setIsGeneratingDemo(false);
-    }
+    } font-medium;
   };
 
   const openRoomSettingsModal = () => {
@@ -673,8 +545,6 @@ export default function App() {
     }
 
     setIsUpdatingRoomSettings(true);
-    let isUpdated = false;
-
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}`, {
         method: 'PATCH',
@@ -690,39 +560,13 @@ export default function App() {
         })
       });
 
-      if (res.ok) {
-        isUpdated = true;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '방 정보 수정에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API room patch failed, trying direct Supabase DB fallback:', err);
-    }
-
-    // Direct Supabase DB update fallback
-    if (!isUpdated && activeRoomId) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('rooms')
-          .update({
-            title: editRoomTitle.trim(),
-            description: editRoomDesc.trim(),
-            category: editRoomCategory,
-            max_participants: editRoomMaxParticipants,
-            target_winner_count: editRoomTargetWinnerCount,
-            min_response_threshold: editRoomMinThreshold
-          })
-          .eq('id', activeRoomId);
-
-        if (supaErr) {
-          triggerToast(`방 정보 수정 오류: ${supaErr.message}`, 'error');
-          setIsUpdatingRoomSettings(false);
-          return;
-        }
-        isUpdated = true;
-      } catch (supaEx: any) {
-        triggerToast(`방 정보 수정 오류: ${supaEx.message}`, 'error');
-        setIsUpdatingRoomSettings(false);
-        return;
-      }
+      const message = err instanceof Error ? err.message : '방 정보 수정에 실패했습니다.';
+      triggerToast(message, 'error');
+      setIsUpdatingRoomSettings(false);
+      return;
     }
 
     triggerToast('방 정보가 성공적으로 수정되었습니다!');
@@ -737,13 +581,6 @@ export default function App() {
     const url = `${window.location.origin}?room=${activeRoomId}&role=participant`;
     navigator.clipboard.writeText(url);
     triggerToast('① 참여자 전용 링크 (최대 6명, 의견등록 가능)가 복사되었습니다!');
-  };
-
-  const copyVoterLink = () => {
-    if (!activeRoomId) return;
-    const url = `${window.location.origin}?room=${activeRoomId}&role=voter`;
-    navigator.clipboard.writeText(url);
-    triggerToast('② 투표자 공개 링크 (MVP 기본 30명, 2차 투표 전용)가 복사되었습니다!');
   };
 
   const handleSendEmailInvite = (e: React.FormEvent) => {
@@ -779,7 +616,7 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId })
+          body: JSON.stringify({})
         });
         fetchRoomDetails(activeRoomId, false);
       } catch (e) {
@@ -796,7 +633,7 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId })
+          body: JSON.stringify({})
         });
         fetchRoomDetails(activeRoomId, false);
       } catch (e) {
@@ -824,96 +661,86 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
     } catch (e) {
       console.error(e);
     }
-    localStorage.setItem('why_not_logged_in', 'false');
+    [
+      'why_not_registered_users',
+      'why_not_logged_in',
+      'why_not_user_id',
+      'why_not_user_name',
+      'why_not_user_email'
+    ].forEach((key) => localStorage.removeItem(key));
     localStorage.removeItem('why_not_active_room_id');
     setIsLoggedIn(false);
+    setUserId('');
+    setNickname('');
+    setUserEmail('');
     setActiveRoomId(null);
     triggerToast('로그아웃되었습니다.');
   };
 
-  // Supabase auth state observer listener
+  // The browser never decides who the user is. The HttpOnly server session does.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
-        setNickname(name);
-        setUserEmail(session.user.email || '');
-        setIsLoggedIn(true);
-      }
-    });
+    let cancelled = false;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
-        setNickname(name);
-        setUserEmail(session.user.email || '');
-        setIsLoggedIn(true);
-      }
-    });
+    const restoreServerSession = async () => {
+      try {
+        const response = await fetch('/api/auth/session', { cache: 'no-store' });
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
 
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Multi-tab LocalStorage Sync Observer (why_not_user_name)
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'why_not_user_name' && e.newValue) {
-        setNickname(e.newValue);
+        if (response.ok && data?.authenticated && data?.user) {
+          setUserId(data.user.id);
+          setNickname(data.user.nickname || '');
+          setTempNickname(data.user.nickname || '');
+          setUserEmail(data.user.loginId || '');
+          setIsLoggedIn(true);
+        } else {
+          setUserId('');
+          setNickname('');
+          setUserEmail('');
+          setIsLoggedIn(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Session restore failed:', error);
+          setIsLoggedIn(false);
+        }
+      } finally {
+        if (!cancelled) setIsSessionChecked(true);
       }
     };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+
+    restoreServerSession();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ----------------------------------------------------------------
-  // Load User Info and Rooms list on mount
-  // ----------------------------------------------------------------
+  // Invite landing data is public only for an unexpired, unrevoked token.
   useEffect(() => {
-    let savedId = localStorage.getItem('why_not_user_id');
-    let savedName = localStorage.getItem('why_not_user_name');
-
-    if (!savedId) {
-      savedId = `user_${Math.random().toString(36).substr(2, 9)}`;
-      localStorage.setItem('why_not_user_id', savedId);
-    }
-    if (!savedName) {
-      savedName = '익명_참여자';
-      localStorage.setItem('why_not_user_name', savedName);
-    }
-
-    const savedEmail = localStorage.getItem('why_not_user_email');
-    if (savedEmail) {
-      setUserEmail(savedEmail);
-    }
-
-    setUserId(savedId);
-    setNickname(savedName);
-    setTempNickname(savedName);
-
-    fetchRooms();
-
-    // 1. Detect /invite/:inviteToken or ?inviteToken=... (Invite token takes precedence over savedRoomId)
     const params = new URLSearchParams(window.location.search);
-    const urlRoomId = params.get('room') || params.get('roomId');
-    const urlRole = params.get('role') || 'member';
-
-    const pathname = window.location.pathname;
-    const inviteMatch = pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
+    const inviteMatch = window.location.pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
     const tokenFromUrl = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
-
     if (tokenFromUrl) {
       setLandingInviteToken(tokenFromUrl);
       fetchInviteLandingDetails(tokenFromUrl);
-      return;
     }
+  }, []);
 
-    // 2. URL 쿼리 파라미터 및 로컬 저장소에서 활성 방 정보 복원
+  // Load private room data only after the server has authenticated the session.
+  useEffect(() => {
+    if (!isSessionChecked || !isLoggedIn || !userId) return;
+
+    fetchRooms();
+    const params = new URLSearchParams(window.location.search);
+    const urlRoomId = params.get('room') || params.get('roomId');
+    const urlRole = params.get('role') || 'member';
     const savedRoomId = localStorage.getItem('why_not_active_room_id');
     const targetRoomId = urlRoomId || savedRoomId;
 
@@ -923,9 +750,9 @@ export default function App() {
       } else {
         localStorage.setItem('why_not_user_role', 'MEMBER');
       }
-      handleSelectRoom(targetRoomId, savedId, savedName);
+      handleSelectRoom(targetRoomId, userId, nickname);
     }
-  }, []);
+  }, [isSessionChecked, isLoggedIn, userId]);
 
   // Auto-Redirect to target room when user logs in with URL query params or pendingRoomId
   useEffect(() => {
@@ -970,100 +797,38 @@ export default function App() {
     return () => clearInterval(interval);
   }, [inviteTokenExpiresAt, landingInviteData?.expiresAt]);
 
-  // Realtime Subscriptions for Participants, Ideas, Proposals, and Room state changes
+  // Private room synchronization goes through the authenticated BFF.
+  // Browser-side Supabase Realtime is intentionally not used here.
   useEffect(() => {
-    if (!activeRoomId) return;
+    if (!activeRoomId || !isLoggedIn) return;
 
-    // Reset AI suggested criteria cards to [] on room switch/mount
     setAiSuggestedCriteria([]);
-
     fetchRoomDetails(activeRoomId);
 
-    // Supabase Realtime Channel for active room (instantaneous 0.1s UI synchronization)
-    const channel = supabase
-      .channel(`room-realtime-${activeRoomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Participant changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'ideas', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Idea changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Room changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'criterion_proposals', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Proposal changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'evaluations', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Evaluation changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .subscribe();
-
-    // 3-second background polling fallback
     const interval = setInterval(() => {
       fetchRoomDetails(activeRoomId, true);
     }, 3000);
 
     return () => {
-      supabase.removeChannel(channel);
       clearInterval(interval);
     };
-  }, [activeRoomId]);
+  }, [activeRoomId, isLoggedIn]);
 
   // Generate or Refresh 3-Minute Invite Token
   const handleGenerateNewInviteToken = async (roomId: string) => {
     try {
-      // 1. Try Supabase RPC
-      const { data, error } = await supabase.rpc('create_room_invite', {
-        p_room_id: roomId,
-        p_user_id: userId || 'host'
-      });
-
-      if (!error && data && data.success) {
-        setActiveInviteToken(data.invite_token);
-        setInviteTokenExpiresAt(data.expires_at);
-        triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
-        return data.invite_token;
-      }
-
-      // 2. Express Backend API fallback
       const res = await fetch(`/api/rooms/${roomId}/invites`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: userId || 'host' })
+        headers: { 'Content-Type': 'application/json' }
       });
       const apiData = await res.json();
-      if (apiData.success && apiData.invite) {
+      if (res.ok && apiData.success && apiData.invite) {
         setActiveInviteToken(apiData.invite.inviteToken);
         setInviteTokenExpiresAt(apiData.invite.expiresAt);
         triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
         return apiData.invite.inviteToken;
       }
+      throw new Error(apiData?.error || '초대 링크를 생성할 수 없습니다.');
     } catch (err: any) {
       console.error('Failed to create invite token:', err);
       triggerToast('초대 링크 생성 중 오류가 발생했습니다.', 'error');
@@ -1074,11 +839,11 @@ export default function App() {
   // Deactivate active invite token for room
   const handleDeactivateInviteToken = async (roomId: string) => {
     try {
-      await supabase.rpc('deactivate_room_invite', {
-        p_room_id: roomId,
-        p_user_id: userId || 'host'
-      });
-      await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      const response = await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || '초대 링크를 비활성화할 수 없습니다.');
+      }
       setActiveInviteToken(null);
       setInviteTokenExpiresAt(null);
       triggerToast('초대 링크가 비활성화되었습니다.');
@@ -1090,154 +855,17 @@ export default function App() {
   // Fetch Invite Landing Details
   const fetchInviteLandingDetails = async (token: string) => {
     setLandingLoading(true);
-    const savedName = localStorage.getItem('why_not_user_name') || nickname;
-    if (savedName) {
-      setLandingNicknameInput(savedName);
-    }
+    if (nickname) setLandingNicknameInput(nickname);
+
     try {
-      // 1. Try Supabase RPC
-      const { data, error } = await supabase.rpc('get_invite_details', { p_token: token });
-
-      if (!error && data) {
-        if (!data.is_valid) {
-          setLandingInviteData({
-            isValid: false,
-            errorCode: data.error_code,
-            errorMessage: data.error_message
-          });
-        } else {
-          setLandingInviteData({
-            isValid: true,
-            room: {
-              id: data.room.id,
-              title: data.room.title,
-              description: data.room.description,
-              category: data.room.category,
-              isPublic: data.room.is_public,
-              maxParticipants: data.room.max_participants,
-              status: data.room.status,
-              hostId: data.room.host_id,
-              minResponseThreshold: 3,
-              eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-              deadlines: {},
-              createdAt: new Date().toISOString()
-            },
-            hostNickname: data.host_nickname,
-            participantCount: data.participant_count,
-            maxParticipants: data.max_participants,
-            expiresAt: data.expires_at,
-            secondsRemaining: data.seconds_remaining
-          });
-          if (data.seconds_remaining) {
-            setInviteSecondsLeft(data.seconds_remaining);
-          }
-        }
-        setLandingLoading(false);
-        return;
-      }
-
-      // 2. Express Backend API fallback
-      try {
-        const res = await fetch(`/api/invites/${token}`);
-        if (res.ok) {
-          const apiData: InviteDetailsResponse = await res.json();
-          if (apiData && apiData.isValid !== undefined) {
-            setLandingInviteData(apiData);
-            if (apiData.secondsRemaining) {
-              setInviteSecondsLeft(apiData.secondsRemaining);
-            }
-            setLandingLoading(false);
-            return;
-          }
-        }
-      } catch (apiErr) {
-        console.warn('Express API invite fetch failed, trying direct Supabase DB fallback:', apiErr);
-      }
-
-      // 3. Direct Supabase DB Table Fallback
-      const { data: invRow } = await supabase.from('room_invites').select('*').eq('invite_token', token).maybeSingle();
-      if (!invRow) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'NOT_FOUND',
-          errorMessage: '존재하지 않는 초대 링크입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      if (!invRow.is_active) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'DEACTIVATED',
-          errorMessage: '방장에 의해 비활성화된 초대 링크입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const nowMs = Date.now();
-      const expMs = new Date(invRow.expires_at).getTime();
-      const secondsRem = Math.max(0, Math.floor((expMs - nowMs) / 1000));
-
-      if (expMs <= nowMs) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'EXPIRED',
-          errorMessage: '생성된 지 3분이 지나 만료된 초대 링크입니다.',
-          secondsRemaining: 0
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const { data: roomRow } = await supabase.from('rooms').select('*').eq('id', invRow.room_id).maybeSingle();
-      if (!roomRow) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'ROOM_DELETED',
-          errorMessage: '삭제된 회의실입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      if (roomRow.status === 'CLOSED') {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'ROOM_CLOSED',
-          errorMessage: '이미 종료된 회의실입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const { data: partRows } = await supabase.from('participants').select('*').eq('room_id', roomRow.id);
-      const participantCount = Math.max(1, partRows?.length || 0);
-
-      setLandingInviteData({
-        isValid: true,
-        room: {
-          id: roomRow.id,
-          title: roomRow.title,
-          description: roomRow.description,
-          category: roomRow.category,
-          isPublic: roomRow.is_public,
-          maxParticipants: roomRow.max_participants,
-          status: roomRow.status,
-          hostId: roomRow.host_id,
-          minResponseThreshold: roomRow.min_response_threshold || 1,
-          eliminationConfig: roomRow.elimination_config || { countPerRound: 1, tieBreak: 'random' },
-          deadlines: roomRow.deadlines || {},
-          createdAt: roomRow.created_at || new Date().toISOString()
-        },
-        hostNickname: '방장',
-        participantCount,
-        maxParticipants: roomRow.max_participants || 6,
-        expiresAt: invRow.expires_at,
-        secondsRemaining: secondsRem
+      const response = await fetch(`/api/invites/${encodeURIComponent(token)}`, {
+        cache: 'no-store'
       });
-      setInviteSecondsLeft(secondsRem);
+      const data: InviteDetailsResponse = await response.json();
+      setLandingInviteData(data);
+      if (data.secondsRemaining !== undefined) {
+        setInviteSecondsLeft(data.secondsRemaining);
+      }
     } catch (err: any) {
       console.error('Failed to fetch invite details:', err);
       setLandingInviteData({
@@ -1256,78 +884,35 @@ export default function App() {
     setJoiningInvite(true);
 
     const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
-    localStorage.setItem('why_not_user_name', nameToUse);
     setNickname(nameToUse);
 
     try {
-      // 1. Try Supabase RPC Join (Atomic lock & 3-min expiration check in PostgreSQL)
-      const { data, error } = await supabase.rpc('join_room_via_invite', {
-        p_token: token,
-        p_user_id: userId,
-        p_nickname: nameToUse
+      const response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname: nameToUse })
       });
-
-      if (!error && data && data.success) {
-        const targetRoomId = data.room_id;
-        localStorage.setItem('why_not_active_room_id', targetRoomId);
-        setActiveRoomId(targetRoomId);
-        setLandingInviteToken(null);
-        setLandingInviteData(null);
-        setInviteTokenExpiresAt(null);
-        window.history.replaceState({}, '', '/');
-        triggerToast(data.message || '회의실 참가가 완료되었습니다!');
-        handleSelectRoom(targetRoomId, userId, nameToUse);
-        return;
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) setShowLoginModal(true);
+        throw new Error(data?.error || '참가에 실패했습니다.');
       }
 
-      // 2. Express Backend API fallback
-      try {
-        const res = await fetch(`/api/invites/${token}/join`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, nickname: nameToUse })
-        });
-        if (res.ok) {
-          const apiData = await res.json();
-          const targetRoomId = apiData.roomId;
-          localStorage.setItem('why_not_active_room_id', targetRoomId);
-          setActiveRoomId(targetRoomId);
-          setLandingInviteToken(null);
-          setLandingInviteData(null);
-          setInviteTokenExpiresAt(null);
-          window.history.replaceState({}, '', '/');
-          triggerToast('회의실 참가가 완료되었습니다!');
-          handleSelectRoom(targetRoomId, userId, nameToUse);
-          return;
-        }
-      } catch (apiErr) {
-        console.warn('Express API join failed, trying direct Supabase DB fallback:', apiErr);
-      }
-
-      // 3. Direct Supabase DB Fallback
-      if (landingInviteData?.room?.id) {
-        const targetRoomId = landingInviteData.room.id;
-        await supabase.from('participants').upsert({
-          room_id: targetRoomId,
-          user_id: userId,
-          nickname: nameToUse
-        }, { onConflict: 'room_id,user_id' });
-
-        localStorage.setItem('why_not_active_room_id', targetRoomId);
-        setActiveRoomId(targetRoomId);
-        setLandingInviteToken(null);
-        setLandingInviteData(null);
-        setInviteTokenExpiresAt(null);
-        window.history.replaceState({}, '', '/');
-        triggerToast('회의실 참가가 완료되었습니다!');
-        handleSelectRoom(targetRoomId, userId, nameToUse);
-        return;
-      }
+      const targetRoomId = data.roomId;
+      localStorage.setItem('why_not_active_room_id', targetRoomId);
+      setActiveRoomId(targetRoomId);
+      setLandingInviteToken(null);
+      setLandingInviteData(null);
+      setInviteTokenExpiresAt(null);
+      window.history.replaceState({}, '', '/');
+      triggerToast('회의실 참가가 완료되었습니다!');
+      handleSelectRoom(targetRoomId, userId, nameToUse);
     } catch (err: any) {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
       fetchInviteLandingDetails(token);
-    } finally {
+    } font-medium;
+    finally {
       setJoiningInvite(false);
     }
   };
@@ -1424,8 +1009,7 @@ export default function App() {
   };
 
   const fetchRooms = async () => {
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) {
+    if (!isLoggedIn || !userId) {
       setRoomsList([]);
       setIsFetchRoomsLoading(false);
       setFetchRoomsError(false);
@@ -1436,101 +1020,17 @@ export default function App() {
     setFetchRoomsError(false);
 
     try {
-      // Direct Supabase DB query: Single Source of Truth for Rooms created or joined by user
-      const { data: hostRooms, error: hostErr } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('host_id', activeUserId);
-
-      const { data: memberPart, error: partErr } = await supabase
-        .from('participants')
-        .select('room_id, hidden_at')
-        .eq('user_id', activeUserId);
-
-      if (hostErr && partErr) {
-        throw new Error('Supabase DB room query failed: ' + (hostErr?.message || partErr?.message));
+      const response = await fetch('/api/rooms', { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) setIsLoggedIn(false);
+        throw new Error(data?.error || '회의실 목록을 불러오지 못했습니다.');
       }
 
-      const participantMap = new Map<string, { hiddenAt: string | null }>();
-      (memberPart || []).forEach(p => {
-        participantMap.set(p.room_id, { hiddenAt: p.hidden_at || null });
-      });
-
-      const joinedRoomIds = (memberPart || []).map(p => p.room_id);
-
-      let joinedRooms: any[] = [];
-      if (joinedRoomIds.length > 0) {
-        const { data: jRooms } = await supabase
-          .from('rooms')
-          .select('*')
-          .in('id', joinedRoomIds);
-        joinedRooms = jRooms || [];
-      }
-
-      const combinedMap = new Map<string, any>();
-      (hostRooms || []).forEach(r => combinedMap.set(r.id, r));
-      joinedRooms.forEach(r => combinedMap.set(r.id, r));
-      const supaRooms = Array.from(combinedMap.values());
-
-      // Prepare local storage hidden fallback across re-login sessions
-      let localHiddenSet = new Set<string>();
-      try {
-        const curEmail = userEmail || localStorage.getItem('why_not_user_email') || '';
-        const rawIdHidden = localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]';
-        const rawEmailHidden = curEmail ? localStorage.getItem(`why_not_hidden_rooms_${curEmail}`) || '[]' : '[]';
-        const parsedId = JSON.parse(rawIdHidden);
-        const parsedEmail = JSON.parse(rawEmailHidden);
-        localHiddenSet = new Set([...parsedId, ...parsedEmail]);
-      } catch (e) {}
-
-      // Calculate participant count and format room card info
-      const mapped = await Promise.all(supaRooms.map(async r => {
-        const { count } = await supabase
-          .from('participants')
-          .select('*', { count: 'exact', head: true })
-          .eq('room_id', r.id);
-
-        const isHost = Boolean(r.host_id && activeUserId && r.host_id === activeUserId && r.host_id !== 'anon-host');
-        const myRole = isHost ? '방장' : '참여자';
-
-        const pInfo = participantMap.get(r.id);
-        const isHidden = Boolean(pInfo?.hiddenAt || localHiddenSet.has(r.id));
-
-        let readableStatus = '아이디어 모집';
-        if (r.status === 'SETUP') readableStatus = '설정 중';
-        else if (r.status === 'CLOSED') readableStatus = '최종 선정';
-        else if (['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(r.status)) readableStatus = '평가 중';
-
-        return {
-          id: r.id,
-          title: r.title,
-          description: r.description,
-          category: r.category || '기획',
-          isPublic: r.is_public !== undefined ? r.is_public : true,
-          maxParticipants: r.max_participants || 6,
-          targetWinnerCount: r.target_winner_count || 1,
-          isPinned: r.is_pinned || false,
-          status: r.status || 'IDEA_SUBMISSION',
-          readableStatus,
-          ideasCount: 0,
-          evaluatorsCount: count || 1,
-          minResponseThreshold: r.min_response_threshold || 1,
-          createdAt: r.created_at,
-          updatedAt: r.updated_at || r.created_at,
-          hostId: r.host_id,
-          isHost,
-          myRole,
-          isHidden
-        };
-      }));
-
-      // Sort by creation date descending
-      mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-      setRoomsList(mapped);
+      setRoomsList(Array.isArray(data) ? data : (data?.rooms || []));
       setFetchRoomsError(false);
-    } catch (supaErr) {
-      console.error('Supabase DB fetchRooms error:', supaErr);
+    } catch (error) {
+      console.error('BFF fetchRooms error:', error);
       setFetchRoomsError(true);
     } finally {
       setIsFetchRoomsLoading(false);
@@ -1551,7 +1051,10 @@ export default function App() {
     let isFetched = false;
 
     try {
-      const res = await fetch(`/api/rooms/${id}?userId=${userId}`, { signal: controller.signal });
+      const res = await fetch(`/api/rooms/${id}`, {
+        signal: controller.signal,
+        cache: 'no-store'
+      });
       clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
@@ -1608,6 +1111,10 @@ export default function App() {
         isFetched = true;
       } else {
         console.warn(`[SYNC ERROR] Express backend responded with status: ${res.status}`);
+        if (res.status === 401) {
+          setIsLoggedIn(false);
+          setShowLoginModal(true);
+        }
       }
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -1625,173 +1132,10 @@ export default function App() {
       return;
     }
 
-    // Special fallback for room-gominhajo
-    if (id === 'room-gominhajo') {
-      console.log('[SYNC] Default gominhajo room fallback applied');
-      setRoomDetails(prev => {
-        if (prev && prev.room.id === 'room-gominhajo') {
-          return prev;
-        }
-        return DEFAULT_GOMINHAJO_ROOM;
-      });
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
-    // Direct Supabase DB fallback
-    try {
-      const { data: roomData, error: roomErr } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (roomErr || !roomData) throw new Error('방을 찾을 수 없습니다.');
-      console.log('[SYNC] Supabase DB 방 정보 조회 완료');
-
-      const { data: ideasData } = await supabase.from('ideas').select('*').eq('room_id', id);
-      console.log(`[SYNC] Supabase DB 아이디어 조회 완료 (${ideasData?.length || 0}개)`);
-
-      const { data: criteriaData } = await supabase.from('criteria').select('*').eq('room_id', id);
-      const { data: proposalsData } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
-      const { data: participantsData } = await supabase.from('participants').select('*').eq('room_id', id);
-      console.log(`[SYNC] Supabase DB 참여자 조회 완료 (${participantsData?.length || 0}명)`);
-
-      const { data: evaluationsData } = await supabase.from('evaluations').select('*').eq('room_id', id);
-
-      const roomObj: Room = {
-        id: roomData.id,
-        title: roomData.title,
-        description: roomData.description,
-        category: roomData.category,
-        isPublic: roomData.is_public,
-        maxParticipants: roomData.max_participants,
-        targetWinnerCount: roomData.target_winner_count,
-        isPinned: roomData.is_pinned,
-        hostId: roomData.host_id,
-        status: roomData.status,
-        minResponseThreshold: roomData.min_response_threshold || 1,
-        eliminationConfig: roomData.elimination_config || { countPerRound: 1, tieBreak: 'random' },
-        deadlines: roomData.deadlines || {},
-        createdAt: roomData.created_at,
-      };
-
-      const mappedIdeas: Idea[] = (ideasData || []).map(i => ({
-        id: i.id,
-        roomId: i.room_id,
-        title: i.title,
-        description: i.description,
-        submitterId: i.submitter_id || (i as any).submitterId || '',
-        submitterName: i.submitter_name,
-        attachmentUrl: i.attachment_url,
-        pdfAttachmentUrl: i.pdf_attachment_url,
-        tags: i.tags,
-        status: i.status
-      }));
-
-      const mappedCriteria: Criterion[] = (criteriaData || []).map(c => ({
-        id: c.id,
-        roomId: c.room_id,
-        name: c.name,
-        description: c.description,
-        confirmed: true
-      }));
-
-      const mappedParticipants: Participant[] = (participantsData || []).map(p => ({
-        roomId: p.room_id,
-        userId: p.user_id,
-        nickname: p.nickname,
-        role: p.role || 'MEMBER',
-        isIdeaDone: p.is_idea_done || false
-      }));
-
-      const mappedProposals: CriterionProposal[] = (proposalsData || []).map(p => ({
-        id: p.id,
-        roomId: p.room_id,
-        rawText: p.raw_text || (p as any).rawText || '',
-        proposerId: p.proposer_id || (p as any).proposerId || '',
-        clusterId: p.cluster_id || (p as any).clusterId,
-        isAiSuggested: p.is_ai_suggested !== undefined ? p.is_ai_suggested : (Boolean((p as any).isAiSuggested) || (p.id && p.id.startsWith('prop-ai-')) || p.proposer_id === 'gemini-ai')
-      }));
-
-      const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id).filter(Boolean));
-
-      // Calculate unique submitters with fallbacks
-      const uniqueSubmitters = new Set(
-        mappedIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean)
-      );
-      console.log(`[SYNC] Supabase DB 고유 참여자 계산 완료 (${uniqueSubmitters.size}명)`);
-
-      const targetMinThreshold = Math.max(roomData.min_response_threshold || 1, (participantsData || []).length || uniqueSubmitters.size || 1);
-      roomObj.minResponseThreshold = targetMinThreshold;
-      const evaluatorsCount = uniqueEvaluators.size;
-      const minResponseThresholdMet = evaluatorsCount >= targetMinThreshold;
-
-      const dataObj: RoomDetails = {
-        room: roomObj,
-        ideas: mappedIdeas,
-        criteria: mappedCriteria,
-        proposals: mappedProposals,
-        proposalsCount: mappedProposals.length,
-        completedParticipantsCount: uniqueSubmitters.size,
-        participants: mappedParticipants,
-        rounds: [],
-        evaluatorsCount,
-        myEvaluations: (evaluationsData || []).filter(e => e.evaluator_id === userId).map(e => ({
-          id: e.id,
-          roomId: e.room_id,
-          ideaId: e.idea_id,
-          evaluatorId: e.evaluator_id,
-          decision: e.decision as any,
-          excludedCriterionIds: e.excluded_criterion_ids || [],
-          reasonText: e.reason_text || '',
-          reasonType: e.reason_type as any || 'PREFERENCE',
-          round: e.round || 1
-        })),
-        hasEvaluated: (evaluationsData || []).some(e => e.evaluator_id === userId),
-        minResponseThresholdMet,
-        scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
-      };
-
-      setRoomDetails(prev => {
-        const incomingProps = dataObj.proposals || [];
-        const existingProps = (prev && prev.room.id === dataObj.room.id) ? (prev.proposals || []) : [];
-
-        // Preserve only very recent local optimistic creations (< 3 seconds old) that haven't hit server yet
-        const now = Date.now();
-        const pendingUnsynced = existingProps.filter(ep => {
-          if (!ep.createdAt) return false;
-          const age = now - new Date(ep.createdAt).getTime();
-          return age < 3000 && ep.proposerId === userId;
-        });
-
-        const combined = [...incomingProps];
-        pendingUnsynced.forEach(ep => {
-          if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
-            combined.push(ep);
-          }
-        });
-
-        return {
-          ...dataObj,
-          proposals: combined,
-          proposalsCount: combined.length
-        };
-      });
-      if (roomObj.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
-        setEditableCriteria(mappedCriteria);
-      }
-      console.log('[SYNC] 현재 단계 적용 완료');
-    } catch (supaErr) {
-      console.error('[SYNC ERROR] Supabase fetchRoomDetails failed:', supaErr);
-      setFetchRoomError(true);
-      triggerToast('방 정보를 불러오는 데 실패했습니다.', 'error');
-    } finally {
-      console.log('[SYNC] 초기 로딩 종료');
-      setLoading(false);
-      setRefreshing(false);
-    }
+    setFetchRoomError(true);
+    setLoading(false);
+    setRefreshing(false);
+    triggerToast('방 정보를 불러오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.', 'error');
   };
 
   // Update user room entry nickname (Max 6 chars)
@@ -1808,10 +1152,10 @@ export default function App() {
       setPendingRoomId(null);
       handleSelectRoom(targetId, userId, trimmed);
     } else if (activeRoomId) {
-      fetch(`/api/rooms/${activeRoomId}/join`, {
-        method: 'POST',
+      fetch(`/api/rooms/${activeRoomId}/me`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, nickname: trimmed }),
+        body: JSON.stringify({ nickname: trimmed }),
       });
     }
   };
@@ -1828,8 +1172,7 @@ export default function App() {
     }
     if (!newRoomTitle.trim()) return;
 
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) {
+    if (!userId) {
       triggerToast('로그인 세션이 유효하지 않습니다. 다시 로그인해 주세요.', 'error');
       setShowLoginModal(true);
       return;
@@ -1839,73 +1182,30 @@ export default function App() {
     localStorage.setItem('why_not_room_nickname', hostNick);
     setNickname(hostNick);
 
-    const createdRoomId = `room-${Math.random().toString(36).substring(2, 9)}`;
-
     try {
-      // 1. Insert into Supabase DB 'rooms' (Single Source of Truth)
-      const { error: supaError } = await supabase
-        .from('rooms')
-        .insert({
-          id: createdRoomId,
+      const response = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           title: newRoomTitle.trim(),
-          description: newRoomDesc || '',
+          description: newRoomDesc,
           category: newRoomCategory,
-          is_public: newRoomIsPublic,
-          max_participants: Math.min(Math.max(newRoomMaxParticipants, 2), 6),
-          target_winner_count: newRoomTargetWinners,
-          is_pinned: false,
-          host_id: activeUserId,
-          status: 'IDEA_SUBMISSION',
-          min_response_threshold: 1,
-          elimination_config: { countPerRound: 1, tieBreak: 'random' },
+          maxParticipants: Math.min(newRoomMaxParticipants, 6),
+          targetWinnerCount: newRoomTargetWinners,
+          isPublic: false,
+          minResponseThreshold: 1,
+          eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
           deadlines: {
             evaluationAt: newRoomVoteEndTime || undefined,
             voteStartTime: newRoomVoteStartTime || undefined
-          },
-        });
-
-      if (supaError) {
-        console.error('Supabase DB room insert error:', supaError);
-        throw new Error('회의실 DB 저장 실패: ' + (supaError.message || '오류 발생'));
+          }
+        })
+      });
+      const createdRoom = await response.json().catch(() => null);
+      if (!response.ok || !createdRoom?.id) {
+        throw new Error(createdRoom?.error || '회의실을 저장하지 못했습니다.');
       }
-
-      // 2. Insert host into Supabase DB 'participants' (Atomic completion)
-      const { error: partErr } = await supabase
-        .from('participants')
-        .insert({
-          room_id: createdRoomId,
-          user_id: activeUserId,
-          nickname: hostNick
-        });
-
-      if (partErr) {
-        console.error('Supabase host participant insert error:', partErr);
-        // Rollback room insertion to avoid orphan room!
-        await supabase.from('rooms').delete().eq('id', createdRoomId);
-        throw new Error('방장 정보 등록 실패: ' + (partErr.message || '오류 발생'));
-      }
-
-      // 3. Notify Express server memory (if active)
-      try {
-        await fetch('/api/rooms', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: createdRoomId,
-            title: newRoomTitle.trim(),
-            description: newRoomDesc,
-            category: newRoomCategory,
-            maxParticipants: Math.min(newRoomMaxParticipants, 6),
-            targetWinnerCount: newRoomTargetWinners,
-            isPublic: newRoomIsPublic,
-            hostId: activeUserId,
-            minResponseThreshold: 1,
-            eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-          })
-        });
-      } catch (e) {
-        console.info('Express server memory sync notice:', e);
-      }
+      const createdRoomId = createdRoom.id;
 
       triggerToast(`회의실이 성공적으로 생성되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
@@ -1918,8 +1218,8 @@ export default function App() {
       // Select newly created room, open share modal and refresh dashboard list
       setActiveRoomId(createdRoomId);
       setShowShareModal(true);
-      handleGenerateNewInviteToken(createdRoomId);
-      fetchRoomDetails(createdRoomId);
+      await handleGenerateNewInviteToken(createdRoomId);
+      await fetchRoomDetails(createdRoomId);
       await fetchRooms();
     } catch (err: any) {
       console.error('Room Creation Failed:', err);
@@ -1946,120 +1246,69 @@ export default function App() {
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: nextPinState } : r));
     triggerToast(nextPinState ? '★ 상단 고정되었습니다. (ON)' : '☆ 상단 고정이 해제되었습니다. (OFF)');
 
-    // 2. Server API or Supabase DB persistence
     try {
       const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
-      if (!res.ok) throw new Error();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '고정 상태를 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Express backend offline, updating pin state directly in Supabase DB...');
-      try {
-        await supabase
-          .from('rooms')
-          .update({ is_pinned: nextPinState })
-          .eq('id', roomId);
-      } catch (supaErr) {
-        console.error('Supabase DB pin toggle error:', supaErr);
-      }
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: !nextPinState } : r));
+      triggerToast(err instanceof Error ? err.message : '고정 상태를 저장하지 못했습니다.', 'error');
     }
   };
 
   // Hide Room from My Dashboard (Only affects active user, preserves room & other participants)
   const handleHideRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) return;
+    if (!userId) return;
 
-    // 1. Instant local UI update
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
-
-    // Persist in localStorage fallback
-    try {
-      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
-      set.add(roomId);
-      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
-    } catch (err) {}
-
     triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
 
-    // 2. Persist in Supabase DB participants table (hidden_at)
     try {
-      await supabase
-        .from('participants')
-        .update({ hidden_at: new Date().toISOString() })
-        .match({ room_id: roomId, user_id: activeUserId });
+      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'POST' });
+      if (!response.ok) throw new Error('회의실 숨김 상태를 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Supabase hidden_at update notice:', err);
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
+      triggerToast('회의실 숨김 상태를 저장하지 못했습니다.', 'error');
     }
   };
 
   // Restore Room to My Dashboard
   const handleRestoreRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) return;
+    if (!userId) return;
 
-    // 1. Instant local UI update
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
-
-    // Remove from localStorage fallback
-    try {
-      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
-      set.delete(roomId);
-      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
-    } catch (err) {}
-
     triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
 
-    // 2. Persist in Supabase DB participants table (hidden_at = null)
     try {
-      await supabase
-        .from('participants')
-        .update({ hidden_at: null })
-        .match({ room_id: roomId, user_id: activeUserId });
+      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('회의실 숨김 상태를 해제하지 못했습니다.');
     } catch (err) {
-      console.warn('Supabase hidden_at restore notice:', err);
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
+      triggerToast('회의실 숨김 상태를 해제하지 못했습니다.', 'error');
     }
   };
 
-  // Force Change Room Status / Milestone (Host or Debug stage selector)
+  // Advance a room only through the server-validated milestone transition.
   const handleForceChangeStatus = async (nextStatus: RoomStatus) => {
     if (!activeRoomId) return;
 
-    // 1. Instant local UI update
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        room: {
-          ...prev.room,
-          status: nextStatus
-        }
-      };
-    });
-
-    triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
-
-    // 2. Persist to Express API or Supabase DB
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus })
       });
-      if (res.ok) return;
-    } catch (e) {
-      console.warn('Express status API unreachable, persisting to Supabase...');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: nextStatus })
-          .eq('id', activeRoomId);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error || '단계를 변경하지 못했습니다.');
       }
-    } catch (supaErr) {
-      console.error('Supabase status update error:', supaErr);
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
+    } catch (error) {
+      console.error('Room status transition failed:', error);
+      triggerToast(error instanceof Error ? error.message : '단계를 변경하지 못했습니다.', 'error');
     }
   };
 
@@ -2088,17 +1337,9 @@ export default function App() {
     setIsReEditingEvaluation(false);
     setShowIdeaSubmissionGate(false);
     localStorage.setItem('why_not_active_room_id', id);
-    const uId = customUserId || userId;
     const nick = customNickname || currentSavedNickname || nickname;
-    try {
-      await fetch(`/api/rooms/${id}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: uId, nickname: nick }),
-      });
-    } catch (err) {
-      console.error(err);
-    }
+    if (nick && nick !== nickname) setNickname(nick);
+    await fetchRoomDetails(id);
   };
 
   // Submit Idea (Anonymously, Max 5 ideas per user limit)
@@ -2153,53 +1394,22 @@ export default function App() {
       attachmentUrl: ideaLink,
       pdfAttachmentUrl: ideaPdfName,
       tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-      submitterId: userId,
-      submitterName: anonLabel,
     };
 
-    // 1. Try Express backend endpoint
     try {
-      await fetch(`/api/rooms/${activeRoomId}/ideas`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newIdeaObj),
       });
-    } catch (e) {
-      console.warn('Express API server unaccessible...', e);
-    }
-
-    // 2. Always persist to Supabase DB so Realtime triggers for all clients
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        if (roomDetails?.room) {
-          await supabase.from('rooms').upsert({
-            id: activeRoomId,
-            title: roomDetails.room.title || '새 회의방',
-            description: roomDetails.room.description || '',
-            category: roomDetails.room.category || '기획',
-            host_id: roomDetails.room.hostId || userId || 'host-1',
-            status: roomDetails.room.status || 'IDEA_SUBMISSION'
-          }, { onConflict: 'id' });
-        }
-
-        const newIdeaId = `idea-${Math.random().toString(36).substring(2, 9)}`;
-        await supabase
-          .from('ideas')
-          .insert({
-            id: newIdeaId,
-            room_id: activeRoomId,
-            title: ideaTitle,
-            description: ideaDesc,
-            submitter_id: userId,
-            submitter_name: anonLabel,
-            attachment_url: ideaLink || null,
-            pdf_attachment_url: ideaPdfName || null,
-            tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-            status: 'ACTIVE'
-          });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || '아이디어를 등록하지 못했습니다.');
       }
-    } catch (err: any) {
-      console.error('Supabase DB submit idea error:', err);
+    } catch (error) {
+      console.error('Idea submission failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 등록하지 못했습니다.', 'error');
+      return;
     }
 
     triggerToast(`아이디어가 익명(${anonLabel})으로 성공적으로 등록되었습니다!`);
@@ -2222,9 +1432,6 @@ export default function App() {
       return;
     }
 
-    let updatedSuccess = false;
-
-    // Try Express backend endpoint first
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'PUT',
@@ -2234,35 +1441,14 @@ export default function App() {
           description: editIdeaDesc.trim(),
           attachmentUrl: editIdeaLink.trim(),
           pdfAttachmentUrl: editIdeaPdfName.trim(),
-          submitterId: userId,
         }),
       });
-      if (res.ok) updatedSuccess = true;
-    } catch (e) {
-      console.warn('Express API server unaccessible for edit, trying direct Supabase update...', e);
-    }
-
-    // Supabase DB Direct update fallback
-    if (!updatedSuccess) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('ideas')
-          .update({
-            title: editIdeaTitle.trim(),
-            description: editIdeaDesc.trim(),
-            attachment_url: editIdeaLink.trim() || null,
-            pdf_attachment_url: editIdeaPdfName.trim() || null,
-          })
-          .eq('id', ideaId)
-          .eq('submitter_id', userId);
-
-        if (supaErr) throw supaErr;
-        updatedSuccess = true;
-      } catch (err: any) {
-        console.error('Supabase DB update idea error:', err);
-        triggerToast(`아이디어 수정 도중 오류가 발생했습니다: ${err.message}`, 'error');
-        return;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '아이디어를 수정하지 못했습니다.');
+    } catch (error) {
+      console.error('Idea update failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 수정하지 못했습니다.', 'error');
+      return;
     }
 
     // Update local roomDetails state if gominhajo or direct state match
@@ -2291,34 +1477,16 @@ export default function App() {
       return;
     }
 
-    let deletedSuccess = false;
-
-    // Try Express backend endpoint first
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}?submitterId=${userId}`, {
+      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'DELETE',
       });
-      if (res.ok) deletedSuccess = true;
-    } catch (e) {
-      console.warn('Express API server unaccessible for delete, trying direct Supabase deletion...', e);
-    }
-
-    // Supabase DB Direct deletion fallback
-    if (!deletedSuccess) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('ideas')
-          .delete()
-          .eq('id', ideaId)
-          .eq('submitter_id', userId);
-
-        if (supaErr) throw supaErr;
-        deletedSuccess = true;
-      } catch (err: any) {
-        console.error('Supabase DB delete idea error:', err);
-        triggerToast(`아이디어 삭제 도중 오류가 발생했습니다: ${err.message}`, 'error');
-        return;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '아이디어를 삭제하지 못했습니다.');
+    } catch (error) {
+      console.error('Idea deletion failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 삭제하지 못했습니다.', 'error');
+      return;
     }
 
     // Update local roomDetails state
@@ -2379,43 +1547,25 @@ export default function App() {
       };
     });
 
-    // Background API sync & Supabase DB Direct insertion fallback
+    // Persist only through the authenticated backend. The browser never writes
+    // directly to Supabase and never impersonates a synthetic "gemini-ai" user.
     for (let idx = 0; idx < uniqueSuggestions.length; idx++) {
       const item = uniqueSuggestions[idx];
       const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
       if (!text) continue;
 
-      let apiSuccess = false;
       try {
         const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
+          body: JSON.stringify({ rawText: text, isAiSuggested: true })
         });
-        if (res.ok) apiSuccess = true;
-      } catch (e) { }
-
-      // Supabase Direct DB Fallback
-      if (!apiSuccess && activeRoomId && activeRoomId !== 'room-gominhajo') {
-        try {
-          const { data: existingProps } = await supabase
-            .from('criterion_proposals')
-            .select('id')
-            .eq('room_id', activeRoomId)
-            .eq('raw_text', text);
-
-          if (!existingProps || existingProps.length === 0) {
-            const newPropId = `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`;
-            await supabase.from('criterion_proposals').insert({
-              id: newPropId,
-              room_id: activeRoomId,
-              raw_text: text,
-              proposer_id: 'gemini-ai'
-            });
-          }
-        } catch (supaErr) {
-          console.warn('Supabase DB auto proposal insert notice:', supaErr);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || 'AI 추천 기준 저장에 실패했습니다.');
         }
+      } catch (error) {
+        console.warn('AI recommendation persistence failed:', error);
       }
     }
   };
@@ -2556,48 +1706,22 @@ export default function App() {
     triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
     setProposalText('');
 
-    // Always persist to Supabase DB so data survives server restarts and realtime triggers
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        if (roomDetails?.room) {
-          await supabase.from('rooms').upsert({
-            id: activeRoomId,
-            title: roomDetails.room.title || '회의실',
-            description: roomDetails.room.description || '',
-            category: roomDetails.room.category || '기획',
-            host_id: roomDetails.room.hostId || userId || 'host-1',
-            status: roomDetails.room.status || 'CRITERIA_PROPOSAL'
-          }, { onConflict: 'id' });
-        }
-
-        await supabase
-          .from('criterion_proposals')
-          .insert({
-            id: newProposalObj.id,
-            room_id: activeRoomId,
-            raw_text: textToSubmit.trim(),
-            proposer_id: userId,
-            is_ai_suggested: isAi
-          });
-      }
-    } catch (supaErr) {
-      console.warn('Supabase DB proposal insert notice:', supaErr);
-    }
-
-    // Sync to Express API backend
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: newProposalObj.id,
           rawText: textToSubmit.trim(),
-          proposerId: userId,
           isAiSuggested: isAi,
         }),
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 제안을 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, proposal saved in Supabase & local state.');
+      const message = err instanceof Error ? err.message : '평가 기준 제안을 저장하지 못했습니다.';
+      triggerToast(message, 'error');
     }
 
     fetchRoomDetails(activeRoomId!, true);
@@ -2632,27 +1756,18 @@ export default function App() {
 
     triggerToast('제안된 평가 기준이 수정되었습니다.');
 
-    // 2. Sync to Supabase DB
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        await supabase
-          .from('criterion_proposals')
-          .update({ raw_text: updatedText })
-          .eq('id', proposalId);
-      }
-    } catch (supaErr) {
-      console.warn('Supabase proposal update notice:', supaErr);
-    }
-
-    // 3. Sync to Express Backend API
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: updatedText, userId })
+        body: JSON.stringify({ rawText: updatedText })
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 수정에 실패했습니다.');
     } catch (e) {
-      console.warn('Express proposal update notice:', e);
+      const message = e instanceof Error ? e.message : '평가 기준 수정에 실패했습니다.';
+      triggerToast(message, 'error');
     }
 
     if (activeRoomId) fetchRoomDetails(activeRoomId, true);
@@ -2675,27 +1790,17 @@ export default function App() {
 
     triggerToast('제안된 평가 기준이 삭제되었습니다.');
 
-    // 2. Sync to Supabase DB
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        await supabase
-          .from('criterion_proposals')
-          .delete()
-          .eq('id', proposalId);
-      }
-    } catch (supaErr) {
-      console.warn('Supabase proposal delete notice:', supaErr);
-    }
-
-    // 3. Sync to Express Backend API
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
+        headers: { 'Content-Type': 'application/json' }
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 삭제에 실패했습니다.');
     } catch (e) {
-      console.warn('Express proposal delete notice:', e);
+      const message = e instanceof Error ? e.message : '평가 기준 삭제에 실패했습니다.';
+      triggerToast(message, 'error');
     }
 
     if (activeRoomId) fetchRoomDetails(activeRoomId, true);
@@ -2783,31 +1888,7 @@ export default function App() {
     setEditableCriteria(finalCriteria);
     triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
 
-    // Sync to Supabase DB
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: 'CRITERIA_REVIEW' })
-          .eq('id', activeRoomId);
-
-        const supaCriteria = finalCriteria.map((c, i) => ({
-          id: c.id || `crit-candidate-${i}-${Math.random().toString(36).substr(2, 5)}`,
-          room_id: activeRoomId,
-          name: c.name,
-          description: c.description,
-          confirmed: false
-        }));
-
-        try {
-          await supabase.from('criteria').insert(supaCriteria);
-        } catch (e) { }
-      }
-    } catch (supaErr) {
-      console.error('Supabase DB criteria clustering sync error:', supaErr);
-    } finally {
-      setIsClusteringLoading(false);
-    }
+    setIsClusteringLoading(false);
   };
 
   // Confirm Criteria (Host only)
@@ -2833,7 +1914,7 @@ export default function App() {
 
     triggerToast('취합된 평가 기준이 최종 확인되었습니다. 3단계 1차 투표 및 익명 평가를 시작합니다!');
 
-    // 2. Sync to API or Supabase in background
+    // Persist through the authenticated backend only.
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
         method: 'POST',
@@ -2844,19 +1925,12 @@ export default function App() {
         fetchRoomDetails(activeRoomId!);
         return;
       }
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, criteria confirmed locally.');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: 'EVALUATION' })
-          .eq('id', activeRoomId);
-      }
-    } catch (supaErr) {
-      console.error('Supabase status update error:', supaErr);
+      const message = err instanceof Error ? err.message : '평가 기준 확정에 실패했습니다.';
+      triggerToast(message, 'error');
+      fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -3018,7 +2092,7 @@ export default function App() {
 
     setIsReEditingEvaluation(false);
 
-    // Update local state immediately & transition status to 4단계 ELIMINATION (2차 투표)
+    // Mark only this user's completion locally. The server controls phase changes.
     setRoomDetails(prev => {
       if (!prev) return prev;
       return {
@@ -3026,11 +2100,7 @@ export default function App() {
         hasEvaluated: true,
         evaluatorsCount: (prev.evaluatorsCount || 0) + 1,
         minResponseThresholdMet: true,
-        aggregatedScores: newAggregated,
-        room: {
-          ...prev.room,
-          status: 'ELIMINATION'
-        }
+        aggregatedScores: newAggregated
       };
     });
 
@@ -3049,29 +2119,13 @@ export default function App() {
         fetchRoomDetails(activeRoomId!);
         return;
       }
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || '평가 제출에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, trying Supabase DB insertion for evaluations...');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        for (const sub of submissions) {
-          const evalId = `eval-${Math.random().toString(36).substring(2, 9)}`;
-          await supabase.from('evaluations').insert({
-            id: evalId,
-            room_id: activeRoomId,
-            idea_id: sub.ideaId,
-            evaluator_id: userId || 'anon-evaluator',
-            decision: sub.decision,
-            excluded_criterion_ids: sub.excludedCriterionIds || [],
-            reason_text: sub.reasonText || '',
-            reason_type: sub.reasonType || 'PREFERENCE',
-            round: 1
-          });
-        }
-      }
-    } catch (supaErr) {
-      console.error('Supabase DB evaluations insert error:', supaErr);
+      const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
+      triggerToast(message, 'error');
+      setRoomDetails(prev => prev ? { ...prev, hasEvaluated: false } : prev);
+      fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -3560,7 +2614,7 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <div
                   onClick={() => {
-                    const currentLoginId = userEmail || localStorage.getItem('why_not_user_email') || nickname || '알 수 없음';
+                    const currentLoginId = userEmail || nickname || '알 수 없음';
                     navigator.clipboard.writeText(currentLoginId);
                     triggerToast(`✨ 로그인 이메일 ID: ${currentLoginId} (복사되었습니다!)`, 'success');
                   }}
@@ -3575,7 +2629,7 @@ export default function App() {
 
                   {/* 마우스를 닉네임에 대면(Hover): 이메일 ID로 텍스트 인라인 전환 */}
                   <span className="text-xs font-bold text-indigo-700 font-mono transition-all duration-200 hidden group-hover:inline-block">
-                    {userEmail || localStorage.getItem('why_not_user_email') || '이메일 정보 없음'}
+                    {userEmail || '이메일 정보 없음'}
                   </span>
                 </div>
                 <button
@@ -4132,1613 +3186,1303 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            {/* Dashboard Rooms Grid & Filter Tabs */}
-            <div className="space-y-4">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                {/* Ownership Filter Tabs: 전체 | 내가 만든 방 | 초대받은 방 | 🙈 숨긴 회의실 */}
-                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start">
-                  <button
-                    onClick={() => { setRoomOwnershipFilter('ALL'); setShowHiddenRooms(false); }}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'ALL' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    전체
-                  </button>
-                  <button
-                    onClick={() => { setRoomOwnershipFilter('CREATED_BY_ME'); setShowHiddenRooms(false); }}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'CREATED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    👑 내가 만든 방
-                  </button>
-                  <button
-                    onClick={() => { setRoomOwnershipFilter('JOINED_BY_ME'); setShowHiddenRooms(false); }}
-                    className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'JOINED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    🙋 초대받은 방
-                  </button>
-                  <button
-                    onClick={() => setShowHiddenRooms(prev => !prev)}
-                    className={`px-3 py-1.5 rounded-lg transition ${showHiddenRooms ? 'bg-amber-500 text-slate-950 font-extrabold shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    🗑️ 삭제/숨긴 회의실
-                  </button>
-                </div>
-
-                {/* Status Filter buttons */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-bold text-slate-500 mr-1">진행 상태:</span>
-                  <button
-                    onClick={() => setRoomFilterStatus('ALL')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    전체
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    아이디어 모집
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('EVALUATION')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    평가 중
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('CLOSED')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    최종 선정
-                  </button>
-                </div>
-              </div>
-
-              {/* Dashboard Content: Loading / Error / Empty / Grid */}
-              {isFetchRoomsLoading ? (
-                /* Loading State UI */
-                <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
-                  <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
-                  <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">내 회의실 목록을 불러오는 중입니다...</h3>
-                    <p className="text-xs text-slate-400">Supabase 데이터베이스에서 최신 상태를 동기화하고 있습니다.</p>
-                  </div>
-                </div>
-              ) : fetchRoomsError ? (
-                /* Error State UI */
-                <div className="text-center py-16 bg-white rounded-3xl border border-rose-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
-                  <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto border border-rose-200">
-                    <AlertCircle className="w-6 h-6 text-rose-600" />
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">회의실 목록을 불러오지 못했습니다. 다시 시도해 주세요.</h3>
-                    <p className="text-xs text-slate-500 leading-relaxed px-4">네트워크 연결 또는 데이터베이스 조회를 다시 확인해 주세요.</p>
-                  </div>
-                  <div className="pt-2">
-                    <button
-                      onClick={() => fetchRooms()}
-                      className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition shadow-md inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                      <span>다시 시도</span>
-                    </button>
-                  </div>
-                </div>
-              ) : roomsList.length === 0 ? (
-                /* Empty State UI */
-                <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
-                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto border border-indigo-100">
-                    <Lock className="w-6 h-6 text-indigo-600" />
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">아직 생성하거나 참여한 회의실이 없습니다.</h3>
-                    <p className="text-xs text-slate-500 leading-relaxed px-6">
-                      새로운 회의실을 만들거나 초대 코드로 참여해 보세요.
-                    </p>
-                  </div>
-                  <div className="flex items-center justify-center gap-3 pt-2">
-                    <button
-                      onClick={() => setIsJoinCodeModalOpen(true)}
-                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Share2 className="w-4 h-4 text-indigo-600" />
-                      <span>초대 코드로 참여하기</span>
-                    </button>
-
-                    <button
-                      onClick={() => setIsCreatingRoom(true)}
-                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>새 회의실 만들기</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* Room Cards Grid */
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {roomsList
-                    .filter(room => {
-                      // Hide filter: If showHiddenRooms is false, exclude hidden rooms. If true, show only hidden rooms.
-                      if (!showHiddenRooms && room.isHidden) return false;
-                      if (showHiddenRooms && !room.isHidden) return false;
-
-                      // Ownership Filter
-                      const curUserId = userId || localStorage.getItem('why_not_user_id') || '';
-                      if (roomOwnershipFilter === 'CREATED_BY_ME') {
-                        if (room.hostId !== curUserId && !room.isHost) return false;
-                      } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
-                        if (room.hostId === curUserId || room.isHost) return false;
-                      }
-
-                      // Status Filter
-                      if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION' || room.status === 'SETUP';
-                      if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
-                      if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
-                      return true;
-                    })
-                    .sort((a, b) => {
-                      if (a.isPinned && !b.isPinned) return -1;
-                      if (!a.isPinned && b.isPinned) return 1;
-                      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-                    })
-                    .map(room => {
-                      let statusBadge = (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-                          ⚙️ 설정 중
-                        </span>
-                      );
-                      if (room.status === 'IDEA_SUBMISSION') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
-                      } else if (room.status === 'CLOSED') {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 최종 선정</span>;
-                      } else {
-                        statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 평가 중</span>;
-                      }
-
-                      const myRoleBadge = (room.isHost || room.hostId === (userId || localStorage.getItem('why_not_user_id')))
-                        ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">👑 방장</span>
-                        : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
-
-                      const formattedDate = new Date(room.updatedAt || room.createdAt).toLocaleDateString('ko-KR', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      });
-
-                      return (
-                        <motion.div
-                          key={room.id}
-                          whileHover={{ y: -2 }}
-                          onClick={() => handleSelectRoom(room.id)}
-                          className={`p-5 rounded-2xl border transition flex flex-col justify-between cursor-pointer group relative ${room.isPinned
-                            ? 'bg-amber-50/40 border-amber-300/80 shadow-md ring-1 ring-amber-200/60'
-                            : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
-                            }`}
-                        >
-                          <div className="space-y-2.5">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {myRoleBadge}
-                                {statusBadge}
-                              </div>
-
-                              <div className="flex items-center gap-1">
-                                {/* Hide / Restore icon button */}
-                                {room.isHidden ? (
-                                  <button
-                                    onClick={(e) => handleRestoreRoom(e, room.id)}
-                                    title="로비 목록으로 복원하기"
-                                    className="p-1.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 transition flex items-center text-[10px] font-bold border border-amber-300 gap-0.5 px-2"
-                                  >
-                                    <span>👁️ 복원</span>
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (window.confirm('이 회의실을 내 목록에서 삭제하시겠습니까?\n(다른 참여자의 회의 내용 및 데이터는 보호됩니다)')) {
-                                        handleHideRoom(e, room.id);
-                                      }
-                                    }}
-                                    title="내 목록에서 삭제 (참여자 회의 내용 보존)"
-                                    className="p-1.5 rounded-full bg-slate-50 text-slate-400 border border-slate-200 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5 text-rose-500 hover:text-rose-700" />
-                                  </button>
-                                )}
-
-                                {/* Star Pin icon button */}
-                                <button
-                                  onClick={(e) => handleTogglePin(e, room.id)}
-                                  title={room.isPinned ? '상단 고정 해제' : '상단 고정'}
-                                  className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
-                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
-                                    : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
-                                    }`}
-                                >
-                                  <Star
-                                    className={`w-3.5 h-3.5 ${room.isPinned
-                                      ? 'fill-amber-400 text-amber-500'
-                                      : 'text-slate-400 fill-slate-200'
-                                      }`}
-                                  />
-                                </button>
-                              </div>
-                            </div>
-
-                            <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition pt-1 leading-snug">
-                              {room.title}
-                            </h3>
-                            <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
-                              {room.description || '작성된 설명이 없습니다.'}
-                            </p>
-                          </div>
-
-                          <div className="border-t border-slate-100 mt-4 pt-3 space-y-3">
-                            <div className="flex items-center justify-between text-xs font-medium text-slate-500">
-                              <span className="font-bold text-slate-700">👥 {room.evaluatorsCount || 1}명 참여 중</span>
-                              <span className="text-[11px] text-slate-400">{formattedDate}</span>
-                            </div>
-
-                            <button
-                              onClick={() => handleSelectRoom(room.id)}
-                              className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${room.status === 'CLOSED'
-                                ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs'
-                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/60'
-                                }`}
-                            >
-                              <span>{room.status === 'CLOSED' ? '결과 보기' : '계속하기'}</span>
-                              <ChevronRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          /* -----------------------------------------------------------
-              INSIDE ROOM SCREEN (STATE MACHINE)
-              ----------------------------------------------------------- */
-          <div>
-            {/* Loading Cover */}
-            {loading && !roomDetails && (
-              <div className="flex flex-col items-center justify-center py-20">
-                <RefreshCw className="w-8 h-8 text-slate-400 animate-spin mb-2" />
-                <p className="text-sm font-bold text-slate-500">회의 정보를 동기화하는 중...</p>
-              </div>
-            )}
-
-            {/* Error Fallback Box when fetch fails */}
-            {!loading && !roomDetails && fetchRoomError && (
-              <div className="bg-white p-8 rounded-3xl border border-rose-200 shadow-md max-w-md mx-auto text-center space-y-4 my-12">
-                <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto">
-                  <AlertCircle className="w-6 h-6" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-base font-extrabold text-slate-900">회의 정보를 불러오지 못했습니다.</h3>
-                  <p className="text-xs text-slate-500">기존 데이터는 유지되어 있습니다. 다시 시도해 주세요.</p>
-                </div>
+            {/* Dashboard Filters Bar */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              {/* Ownership Filter Tabs */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
                 <button
-                  type="button"
-                  onClick={() => activeRoomId && fetchRoomDetails(activeRoomId)}
-                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
+                  onClick={() => { setRoomOwnershipFilter('ALL'); setShowHiddenRooms(false); }}
+                  className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'ALL' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>다시 시도</span>
+                  전체
+                </button>
+                <button
+                  onClick={() => { setRoomOwnershipFilter('CREATED_BY_ME'); setShowHiddenRooms(false); }}
+                  className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'CREATED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  👑 내가 만든 방
+                </button>
+                <button
+                  onClick={() => { setRoomOwnershipFilter('JOINED_BY_ME'); setShowHiddenRooms(false); }}
+                  className={`px-3 py-1.5 rounded-lg transition ${roomOwnershipFilter === 'JOINED_BY_ME' && !showHiddenRooms ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  🙋 초대받은 방
+                </button>
+                <button
+                  onClick={() => setShowHiddenRooms(prev => !prev)}
+                  className={`px-3 py-1.5 rounded-lg transition ${showHiddenRooms ? 'bg-amber-500 text-slate-950 font-extrabold shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  🗑️ 삭제/숨긴 회의실
                 </button>
               </div>
-            )}
 
-            {roomDetails && roomDetails.room && (
-              <div className="flex flex-col lg:flex-row gap-8 items-start">
+              {/* Status Filter buttons */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-slate-500 mr-1">진행 상태:</span>
+                <button
+                  onClick={() => setRoomFilterStatus('ALL')}
+                  className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                >
+                  전체
+                </button>
+                <button
+                  onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
+                  className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                >
+                  아이디어 모집
+                </button>
+                <button
+                  onClick={() => setRoomFilterStatus('EVALUATION')}
+                  className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                >
+                  평가 중
+                </button>
+                <button
+                  onClick={() => setRoomFilterStatus('CLOSED')}
+                  className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                >
+                  최종 선정
+                </button>
+              </div>
+            </div>
 
-                {/* 1. SIDEBAR (SLEEK THEME DESIGN) */}
-                <aside className="w-full lg:w-64 bg-white border border-slate-200 rounded-2xl p-6 flex flex-col gap-6 shrink-0 shadow-sm lg:sticky lg:top-20">
-                  {/* Section: Process Stages */}
-                  <section className="space-y-4">
-                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                      프로세스 단계
-                    </h3>
-                    <div className="space-y-4">
-                      {[
-                        { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
-                        { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
-                        { key: 'EVALUATION', label: '3단계 : 1차 투표 및 익명 평가' },
-                        { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
-                        { key: 'CLOSED', label: '5단계 : 최종 결과' }
-                      ].map((step, idx) => {
-                        const statusesOrder: RoomStatus[] = ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
-                        const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
-                        const currentIdx = statusesOrder.indexOf(roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomSt);
-                        const stepIdx = statusesOrder.indexOf(step.key as RoomStatus);
-                        const isCompleted = stepIdx < currentIdx;
-                        const isActive = stepIdx === currentIdx;
+            {/* Dashboard Content: Loading / Error / Empty / Grid */}
+            {isFetchRoomsLoading ? (
+              /* Loading State UI */
+              <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
+                <div className="space-y-1">
+                  <h3 className="text-base font-bold text-slate-900">내 회의실 목록을 불러오는 중입니다...</h3>
+                  <p className="text-xs text-slate-400">Supabase 데이터베이스에서 최신 상태를 동기화하고 있습니다.</p>
+                </div>
+              </div>
+            ) : fetchRoomsError ? (
+              /* Error State UI */
+              <div className="text-center py-16 bg-white rounded-3xl border border-rose-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mx-auto border border-rose-200">
+                  <AlertCircle className="w-6 h-6 text-rose-600" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-base font-bold text-slate-900">회의실 목록을 불러오지 못했습니다. 다시 시도해 주세요.</h3>
+                  <p className="text-xs text-slate-500 leading-relaxed px-4">네트워크 연결 또는 데이터베이스 조회를 다시 확인해 주세요.</p>
+                </div>
+                <div className="pt-2">
+                  <button
+                    onClick={() => fetchRooms()}
+                    className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl transition shadow-md inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>다시 시도</span>
+                  </button>
+                </div>
+              </div>
+            ) : roomsList.length === 0 ? (
+              /* Empty State UI */
+              <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
+                <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto border border-indigo-100">
+                  <Lock className="w-6 h-6 text-indigo-600" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-base font-bold text-slate-900">아직 생성하거나 참여한 회의실이 없습니다.</h3>
+                  <p className="text-xs text-slate-500 leading-relaxed px-6">
+                    새로운 회의실을 만들거나 초대 코드로 참여해 보세요.
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-3 pt-2">
+                  <button
+                    onClick={() => setIsJoinCodeModalOpen(true)}
+                    className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Share2 className="w-4 h-4 text-indigo-600" />
+                    <span>초대 코드로 참여하기</span>
+                  </button>
 
-                        return (
-                          <div key={step.key} className="flex items-center gap-3">
-                            <div className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs shrink-0 transition ${isCompleted
-                              ? 'bg-indigo-600 border-indigo-600 text-white'
-                              : isActive
-                                ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-bold'
-                                : 'border-slate-100 text-slate-300 bg-slate-50'
-                              }`}>
-                              {isCompleted ? <Check className="w-3.5 h-3.5" /> : idx + 1}
-                            </div>
-                            <span className={`text-sm font-medium transition ${isActive ? 'text-indigo-600 font-bold' : isCompleted ? 'text-slate-700' : 'text-slate-400'
-                              }`}>
-                              {step.label}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
+                  <button
+                    onClick={() => setIsCreatingRoom(true)}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>새 회의실 만들기</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Room Cards Grid */
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {roomsList
+                  .filter(room => {
+                    // Hide filter: If showHiddenRooms is false, exclude hidden rooms. If true, show only hidden rooms.
+                    if (!showHiddenRooms && room.isHidden) return false;
+                    if (showHiddenRooms && !room.isHidden) return false;
 
-                  {/* Section: Confirmed Evaluation Criteria (Mockup-style!) */}
-                  {roomDetails.criteria && roomDetails.criteria.length > 0 && (
-                    <section className="space-y-3 pt-4 border-t border-slate-100">
-                      <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        확정된 평가 기준 (AI)
-                      </h3>
-                      <div className="space-y-2.5">
-                        {(roomDetails.criteria || []).map((crit) => (
-                          <div key={crit.id} className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-100">
-                            <div className="text-xs font-bold text-indigo-950">{crit.name}</div>
-                            <p className="text-[10px] text-indigo-700 leading-relaxed mt-0.5">{crit.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
+                    // Ownership Filter
+                    const curUserId = userId;
+                    if (roomOwnershipFilter === 'CREATED_BY_ME') {
+                      if (room.hostId !== curUserId && !room.isHost) return false;
+                    } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
+                      if (room.hostId === curUserId || room.isHost) return false;
+                    }
 
-                  {/* Host-only developer quick stage selector (placed at sidebar bottom) */}
-                  {roomDetails.room?.hostId === userId && (
-                    <section className="pt-4 border-t border-slate-100 space-y-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        🛠️ 단계 강제 변경:
+                    // Status Filter
+                    if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION' || room.status === 'SETUP';
+                    if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
+                    if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
+                    return true;
+                  })
+                  .sort((a, b) => {
+                    if (a.isPinned && !b.isPinned) return -1;
+                    if (!a.isPinned && b.isPinned) return 1;
+                    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                  })
+                  .map(room => {
+                    let statusBadge = (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                        ⚙️ 설정 중
                       </span>
-                      <div className="flex flex-col gap-1.5">
-                        {['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'].map((st) => (
-                          <button
-                            key={st}
-                            onClick={() => handleForceChangeStatus(st as RoomStatus)}
-                            className={`text-[10px] font-semibold py-1 px-2.5 rounded-lg border text-left transition ${roomDetails.room.status === st
-                              ? 'bg-indigo-600 text-white border-indigo-600'
-                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                              }`}
-                          >
-                            {st === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
-                            {st === 'CRITERIA_PROPOSAL' && '2단계 : 평가 기준 설정'}
-                            {st === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
-                            {st === 'ELIMINATION' && '4단계 : 2차 투표'}
-                            {st === 'CLOSED' && '5단계 : 최종 결과'}
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-                </aside>
+                    );
+                    if (room.status === 'IDEA_SUBMISSION') {
+                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200/50">💡 아이디어 모집</span>;
+                    } else if (room.status === 'CLOSED') {
+                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-slate-900 text-white border border-slate-900">🎉 최종 선정</span>;
+                    } else {
+                      statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 평가 중</span>;
+                    }
 
-                {/* 2. MAIN WORKSPACE */}
-                <div className="flex-1 min-w-0 w-full space-y-6">
+                    const myRoleBadge = (room.isHost || room.hostId === userId)
+                      ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">👑 방장</span>
+                      : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
 
-                  {/* ROOM HEADER CARD */}
-                  <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">
-                            {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
-                            {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
-                            {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
-                            {roomDetails.room?.status === 'ELIMINATION' && '4단계 : 2차 투표'}
-                            {roomDetails.room?.status === 'CLOSED' && '5단계 : 최종 결과'}
-                          </span>
-                          {roomDetails.room?.hostId === userId && (
-                            <>
-                              <span className="text-xs font-semibold text-white bg-slate-900 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                                <Settings className="w-3 h-3" />
-                                방장
-                              </span>
-                              <button
-                                type="button"
-                                onClick={openRoomSettingsModal}
-                                className="text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs cursor-pointer"
-                                title="방 정보 및 설정 수정"
-                              >
-                                <Settings className="w-3 h-3 text-slate-600" />
-                                ⚙️ 방 설정 수정
-                              </button>
-                            </>
-                          )}
-                          <button
-                            onClick={() => setShowShareModal(true)}
-                            className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
-                          >
-                            <Copy className="w-3 h-3" />
-                            🔗 공유 링크 발급/관리
-                          </button>
-                        </div>
-
-                        <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
-                          {roomDetails.room?.title}
-                        </h1>
-                        <p className="text-slate-500 text-xs md:text-sm max-w-4xl">
-                          {roomDetails.room?.description || '이 방에 대한 추가 설명이 작성되지 않았습니다.'}
-                        </p>
-                      </div>
-
-                      {/* Refresh / Stats */}
-                      <div className="flex sm:flex-col items-end gap-2 justify-between">
-                        {/* Live progress indicator ("N/M명 아이디어 제출 완료") */}
-                        <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
-                          <span>📊 등록 완료 현황판:</span>
-                          <span className="text-indigo-600 font-extrabold">
-                            {roomDetails.completedParticipantsCount !== undefined
-                              ? roomDetails.completedParticipantsCount
-                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room?.maxParticipants || 6}명 완료
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => fetchRoomDetails(activeRoomId!, false)}
-                          className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-200 transition shrink-0"
-                        >
-                          <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
-                          새로고침
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* -----------------------------------------------------------
-                    VIEW 1: IDEA_SUBMISSION
-                    ----------------------------------------------------------- */}
-                  {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
-                    (showIdeaSubmissionGate || Boolean(activeRoomId && localStorage.getItem(`why_not_idea_step_gate_${activeRoomId}`) === 'true')) ? (
-                      /* ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 2 & 3 */
-                      <div className="space-y-6">
-
-                        {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
-                        {(() => {
-                          const ideaCompletedCount = roomDetails.completedParticipantsCount !== undefined
-                            ? roomDetails.completedParticipantsCount
-                            : (showIdeaSubmissionGate ? 1 : 0);
-
-                          const targetMinThreshold = Math.min(
-                            roomDetails.room.minResponseThreshold || 3,
-                            roomDetails.room.maxParticipants || 6
-                          );
-
-                          const targetTotalCount = Math.max(
-                            roomDetails.room.maxParticipants || 2,
-                            targetMinThreshold,
-                            ideaCompletedCount,
-                            (roomDetails.participants || []).length || 1
-                          );
-
-                          const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
-
-                          return (
-                            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
-                              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
-                                {isIdeaGateMinMet ? (
-                                  <Unlock className="w-5 h-5 text-indigo-600" />
-                                ) : (
-                                  <Lock className="w-5 h-5 text-indigo-600" />
-                                )}
-                              </div>
-
-                              <div className="space-y-2">
-                                <h3 className="text-lg font-bold text-slate-900">
-                                  {isIdeaGateMinMet
-                                    ? '팀 내 최소 응답 수 충족 완료!'
-                                    : '다른 구성원들의 참가를 기다리는 중'}
-                                </h3>
-                                <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
-                                  {isIdeaGateMinMet
-                                    ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
-                                </p>
-                              </div>
-
-                              {/* Gate details */}
-                              <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
-                                <span className="text-slate-500">현재 수집 상태 :</span>
-                                <span className={isIdeaGateMinMet ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
-                                  {ideaCompletedCount} / {targetTotalCount} 명 완료
-                                </span>
-                              </div>
-
-                              {/* Action Controls matching Images 1, 2, 3 */}
-                              <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
-                                <button
-                                  type="button"
-                                  onClick={handleExitIdeaGate}
-                                  className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
-                                >
-                                  이전 단계(아이디어 등록)로 되돌아가기
-                                </button>
-
-                                {isIdeaGateMinMet && roomDetails.room.hostId === userId && (
-                                  <button
-                                    type="button"
-                                    onClick={handleConfirmIdeaGateToStage2}
-                                    className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
-                                  >
-                                    <Sparkles className="w-4 h-4 text-slate-950" />
-                                    <span>2단계: 평가 기준 설정하러 가기</span>
-                                    <ArrowRight className="w-4 h-4" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-                      {/* Left: Ideas List (Anonymous Labels) */}
-                      <div className="lg:col-span-7 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                            제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
-                          </h2>
-                          <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
-                            🔒 100% 익명 보장
-                          </span>
-                        </div>
-
-                        {/* Empty State Prompt */}
-                        {(roomDetails.ideas || []).length === 0 ? (
-                          <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
-                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
-                              💡
-                            </div>
-                            <h3 className="text-base font-bold text-slate-900">아직 등록된 아이디어가 없습니다!</h3>
-                            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-                              우측의 등록 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. (참여자당 1개~최대 5개 등록 가능)
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                            {roomDetails.ideas.map((idea, idx) => {
-                              const isMyIdea = Boolean(idea.submitterId && userId && idea.submitterId === userId);
-                              const isEditingThis = editingIdeaId === idea.id;
-
-                              if (isEditingThis) {
-                                return (
-                                  <motion.div
-                                    key={idea.id}
-                                    className="bg-white p-5 rounded-xl border border-indigo-200 shadow-md space-y-4"
-                                  >
-                                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                                      <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-1.5">
-                                        <Edit className="w-4 h-4 text-indigo-600" />
-                                        아이디어 수정하기
-                                      </h3>
-                                      <button
-                                        type="button"
-                                        onClick={() => setEditingIdeaId(null)}
-                                        className="text-xs font-semibold text-slate-400 hover:text-slate-600"
-                                      >
-                                        취소
-                                      </button>
-                                    </div>
-
-                                    <div className="space-y-3">
-                                      <div className="space-y-1">
-                                        <label className="text-xs font-bold text-slate-700">아이디어 제목 <span className="text-rose-500">*</span></label>
-                                        <input
-                                          type="text"
-                                          value={editIdeaTitle}
-                                          onChange={e => setEditIdeaTitle(e.target.value)}
-                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                                        />
-                                      </div>
-
-                                      <div className="space-y-1">
-                                        <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
-                                        <textarea
-                                          value={editIdeaDesc}
-                                          onChange={e => setEditIdeaDesc(e.target.value)}
-                                          rows={4}
-                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                                        />
-                                      </div>
-
-                                      <div className="space-y-1">
-                                        <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
-                                        <input
-                                          type="url"
-                                          value={editIdeaLink}
-                                          onChange={e => setEditIdeaLink(e.target.value)}
-                                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                                        />
-                                      </div>
-
-                                      <div className="space-y-1">
-                                        <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
-                                        <input
-                                          type="file"
-                                          accept=".pdf,.png"
-                                          onChange={e => {
-                                            const file = e.target.files?.[0];
-                                            if (file) setEditIdeaPdfName(file.name);
-                                          }}
-                                          className="w-full text-xs text-slate-500 file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-                                        />
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
-                                      <button
-                                        type="button"
-                                        onClick={() => setEditingIdeaId(null)}
-                                        className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-200 transition"
-                                      >
-                                        취소
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleUpdateIdea(idea.id)}
-                                        className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
-                                      >
-                                        저장
-                                      </button>
-                                    </div>
-                                  </motion.div>
-                                );
-                              }
-
-                              return (
-                                <motion.div
-                                  key={idea.id}
-                                  className={`bg-white p-5 rounded-xl border transition shadow-sm space-y-3 ${isMyIdea ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200'
-                                    }`}
-                                >
-                                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-2">
-                                    <div className="flex items-center gap-2 flex-wrap min-w-0">
-                                      <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
-                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                        }`}>
-                                        <User className="w-3 h-3 text-indigo-400" />
-                                        {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (idx % 26))}`}
-                                      </span>
-                                      <h3 className="text-sm font-bold text-slate-900 truncate">{idea.title}</h3>
-                                    </div>
-
-                                    {isMyIdea && (
-                                      <div className="flex items-center gap-1 shrink-0">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setEditingIdeaId(idea.id);
-                                            setEditIdeaTitle(idea.title || '');
-                                            setEditIdeaDesc(idea.description || '');
-                                            setEditIdeaLink(idea.attachmentUrl || '');
-                                            setEditIdeaPdfName(idea.pdfAttachmentUrl || '');
-                                          }}
-                                          className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-lg border border-slate-200 flex items-center gap-1 transition"
-                                          title="수정"
-                                        >
-                                          <Edit2 className="w-3 h-3" />
-                                          수정
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleDeleteIdea(idea.id)}
-                                          className="px-2 py-1 text-xs font-medium text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-100 flex items-center gap-1 transition"
-                                          title="삭제"
-                                        >
-                                          <Trash2 className="w-3 h-3" />
-                                          삭제
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  {/* Idea description accordion toggle for stage 1 */}
-                                  {(() => {
-                                    const isDescExpanded = !!expandedIdeaIds[`stage1_${idea.id}`];
-                                    return (
-                                      <div className="pt-0.5">
-                                        {isDescExpanded ? (
-                                          <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line bg-slate-50 p-2.5 rounded-xl border border-slate-100 mt-1">
-                                            {idea.description}
-                                          </p>
-                                        ) : (
-                                          <p className="text-xs text-slate-500 line-clamp-1">
-                                            {idea.description}
-                                          </p>
-                                        )}
-                                        <button
-                                          type="button"
-                                          onClick={() => toggleIdeaExpanded(`stage1_${idea.id}`)}
-                                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5 mt-1 transition"
-                                        >
-                                          <span>{isDescExpanded ? '설명 접기' : '상세 설명 더보기'}</span>
-                                          {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                        </button>
-                                      </div>
-                                    );
-                                  })()}
-
-                                  {(idea.attachmentUrl || idea.pdfAttachmentUrl) && (
-                                    <div className="flex flex-wrap items-center gap-3 text-xs font-semibold text-slate-500 pt-1 border-t border-slate-100">
-                                      {idea.attachmentUrl && (
-                                        <div>
-                                          🔗 참고 링크: <a href={idea.attachmentUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline hover:text-indigo-800">{idea.attachmentUrl}</a>
-                                        </div>
-                                      )}
-                                      {idea.pdfAttachmentUrl && (
-                                        <div>
-                                          📄 참고 파일 (PDF/PNG): <span className="text-slate-800 underline font-bold">{idea.pdfAttachmentUrl}</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </motion.div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Right: Submission Form & Admin Gate */}
-                      <div className="lg:col-span-5 space-y-6">
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                            <h2 className="text-base font-bold text-slate-900">
-                              내 아이디어 등록하기 (익명)
-                            </h2>
-                            <span className="text-[11px] font-bold text-slate-500">
-                              (내 제출: {(roomDetails.ideas || []).filter(i => i.submitterId === userId).length}/5개)
-                            </span>
-                          </div>
-
-                          <form onSubmit={handleSubmitIdea} className="space-y-4">
-                            <div className="space-y-1">
-                              <label className="text-xs font-bold text-slate-700">아이디어 제목 <span className="text-rose-500">*</span></label>
-                              <input
-                                type="text"
-                                required
-                                value={ideaTitle}
-                                onChange={e => setIdeaTitle(e.target.value)}
-                                placeholder="예: 숏폼 영상 제작 가요 챌린지"
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                              />
-                            </div>
-
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between">
-                                <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    if (!ideaTitle.trim() || !ideaDesc.trim()) {
-                                      triggerToast('제목과 내용을 먼저 입력해 주세요.', 'error');
-                                      return;
-                                    }
-                                    try {
-                                      triggerToast('AI가 아이디어를 디벨롭하는 중입니다...');
-                                      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/develop`, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ title: ideaTitle, description: ideaDesc })
-                                      });
-                                      if (res.ok) {
-                                        const data = await res.json();
-                                        setIdeaDesc(data.enhancedDescription);
-                                        triggerToast('AI가 아이디어 디벨롭 보조 문안을 작성했습니다!');
-                                      }
-                                    } catch (e) {
-                                      console.error(e);
-                                    }
-                                  }}
-                                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full flex items-center gap-1 transition"
-                                >
-                                  <Sparkles className="w-3 h-3 text-indigo-500" />
-                                  AI 아이디어 디벨롭
-                                </button>
-                              </div>
-                              <textarea
-                                required
-                                value={ideaDesc}
-                                onChange={e => setIdeaDesc(e.target.value)}
-                                placeholder="아이디어의 핵심 프로세스, 기대 효과, 팀이 준비해야 하는 범위를 상세하게 작성하십시오."
-                                rows={4}
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                              />
-                            </div>
-
-                            <div className="space-y-1">
-                              <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
-                              <input
-                                type="url"
-                                value={ideaLink}
-                                onChange={e => setIdeaLink(e.target.value)}
-                                placeholder="https://example.com/reference-board"
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                              />
-                            </div>
-
-                            <div className="space-y-1">
-                              <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
-                              <input
-                                type="file"
-                                accept=".pdf,.png"
-                                onChange={e => {
-                                  const file = e.target.files?.[0];
-                                  if (file) setIdeaPdfName(file.name);
-                                }}
-                                className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
-                              />
-                            </div>
-
-                            <div className="bg-indigo-50/60 p-3 rounded-xl border border-indigo-100 text-xs text-indigo-900 leading-relaxed">
-                              🔒 **익명 정책**: 제출자 이름 대신 **'익명 아이디어 #N'**으로 등록되며 타인에게 닉네임이 노출되지 않습니다. (1인당 최소 1개 ~ 최대 5개)
-                            </div>
-
-                            <button
-                              type="submit"
-                              disabled={(roomDetails.ideas || []).filter(i => i.submitterId === userId).length >= 5}
-                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 transition shadow-sm"
-                            >
-                              아이디어 올리기 (익명)
-                            </button>
-
-                            {(roomDetails.ideas || []).length >= 1 && (
-                              <div className="pt-2 border-t border-slate-100 mt-2">
-                                <button
-                                  type="button"
-                                  onClick={handleEnterIdeaGate}
-                                  className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-                                >
-                                  <Sparkles className="w-4 h-4 text-slate-950" />
-                                  <span>아이디어 등록 완료 & 제출 목록/게이트 보기</span>
-                                  <ArrowRight className="w-4 h-4" />
-                                </button>
-                              </div>
-                            )}
-                          </form>
-                        </div>
-                      </div>
-
-                    </div>
-                  )
-                )}
-
-                  {/* -----------------------------------------------------------
-                    VIEW 2: CRITERIA_PROPOSAL
-                    ----------------------------------------------------------- */}
-                  {roomDetails.room?.status === 'CRITERIA_PROPOSAL' && (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-                      {/* Left: Input Proposal Form & AI Suggested Criteria */}
-                      <div className="lg:col-span-7 space-y-6">
-
-                        {/* AI Criteria Generator Card (Potens AI) */}
-                        <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
-                              <Sparkles className="w-4 h-4 text-amber-400" />
-                              AI 기반 평가 기준 3가지 제안
-                            </h3>
-                            <button
-                              type="button"
-                              onClick={handleFetchAiSuggestions}
-                              disabled={isGeneratingAiSuggestions}
-                              className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
-                            >
-                              {isGeneratingAiSuggestions ? (
-                                <>
-                                  <RefreshCw className="w-3 h-3 animate-spin" />
-                                  생성 중...
-                                </>
-                              ) : (
-                                <>
-                                  <Sparkles className="w-3 h-3" />
-                                  AI 기준 생성
-                                </>
-                              )}
-                            </button>
-                          </div>
-                          <p className="text-xs text-slate-300 leading-relaxed">
-                            등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 마음에 드는 기준을 선택하여 제안 목록에 추가할 수 있습니다.
-                          </p>
-
-                          {aiSuggestedCriteria.length > 0 && (
-                            <div className="space-y-2 pt-1">
-                              {aiSuggestedCriteria.map((item, idx) => {
-                                if (!item || !item.name) return null;
-                                const itemName = item.name || '';
-                                const itemDesc = item.description || '';
-                                const text = `${itemName}${itemDesc ? `: ${itemDesc}` : ''}`;
-                                const existingProposals = roomDetails?.proposals || [];
-                                const isAlreadyAdded = existingProposals.some(p => p?.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === itemName.trim()));
-                                const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6 || totalProposalsCount >= 21;
-
-                                return (
-                                  <div
-                                    key={idx}
-                                    className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left flex items-center justify-between gap-3"
-                                  >
-                                    <div className="space-y-0.5 min-w-0 flex-1">
-                                      <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
-                                        <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
-                                        {item.name}
-                                      </h4>
-                                      <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
-                                        {item.description}
-                                      </p>
-                                    </div>
-
-                                    <button
-                                      type="button"
-                                      disabled={isAlreadyAdded || isAiMaxLimitReached}
-                                      onClick={() => handleProposeCriterion(undefined, text)}
-                                      className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
-                                    >
-                                      {isAlreadyAdded ? (
-                                        <>
-                                          <Check className="w-3 h-3" />
-                                          제안 완료
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Plus className="w-3 h-3" />
-                                          제안하기
-                                        </>
-                                      )}
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Direct Criterion Proposal Form */}
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
-                            <div>
-                              <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
-                              <p className="text-xs text-slate-500 mt-0.5">
-                                "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
-                              </p>
-                            </div>
-                            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                              직접 제안 ({myDirectProposalsCount}/3개) · 회의실 전체 ({totalProposalsCount}/21개)
-                            </span>
-                          </div>
-
-                          {totalProposalsCount >= 21 ? (
-                            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs font-bold flex items-center gap-2">
-                              <span>⚠️</span>
-                              평가 기준은 최대 21개까지 등록할 수 있습니다.
-                            </div>
-                          ) : myDirectProposalsCount >= 3 && (
-                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
-                              <span>⚠️</span>
-                              직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 등록 가능)
-                            </div>
-                          )}
-
-                          <form onSubmit={handleProposeCriterion} className="space-y-4">
-                            <div className="space-y-1">
-                              <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
-                              <textarea
-                                required={myProposalsCount === 0}
-                                disabled={totalProposalsCount >= 21}
-                                value={proposalText}
-                                onChange={e => setProposalText(e.target.value)}
-                                placeholder={
-                                  totalProposalsCount >= 21
-                                    ? "평가 기준은 최대 21개까지 등록할 수 있습니다."
-                                    : myDirectProposalsCount >= 3
-                                      ? "직접 작성 3개 제안이 작성 완료되었습니다."
-                                      : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
-                                }
-                                rows={3}
-                                className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
-                              />
-                            </div>
-
-                            <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
-                              🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
-                            </div>
-
-                            <button
-                              type="submit"
-                              disabled={totalProposalsCount >= 21}
-                              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
-                            >
-                              익명 기준 제안 등록하기
-                            </button>
-                          </form>
-                        </div>
-                      </div>
-
-                      {/* Right: Progress Tracker & Submitted Proposals List */}
-                      <div className="lg:col-span-5 space-y-6">
-                        <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                            <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
-                            <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
-                              {totalProposalsCount} / 21개 제출됨
-                            </span>
-                          </div>
-
-                          {/* Submitted Proposals List */}
-                          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                            {(roomDetails.proposals || []).length === 0 ? (
-                              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
-                                <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
-                                <p className="text-[11px] text-slate-400">상단 'AI 기준 생성' 버튼을 누르거나 직접 입력해 주세요. (최소 1개 필수)</p>
-                              </div>
-                            ) : (
-                              (roomDetails.proposals || []).map((p: any, idx: number) => {
-                                const isHost = roomDetails.room.hostId === userId;
-                                const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai' || p.sourceType === 'ai');
-                                const isAuthor = p.proposerId === userId && !isAi;
-                                const canEditOrDelete = isHost || isAuthor;
-                                const isEditing = editingProposalId === p.id;
-
-                                return (
-                                  <div key={p.id || idx} className={`p-3 rounded-xl space-y-2 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
-                                    <div className="flex items-center justify-between">
-                                      <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
-                                        기준 #{idx + 1}
-                                      </span>
-                                      <div className="flex items-center gap-2">
-                                        <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
-                                          {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
-                                        </span>
-
-                                        {/* Edit / Delete Buttons (Host or Author only) */}
-                                        {canEditOrDelete && !isEditing && (
-                                          <div className="flex items-center gap-1">
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                setEditingProposalId(p.id);
-                                                setEditingProposalText(p.rawText);
-                                              }}
-                                              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition cursor-pointer"
-                                              title="수정"
-                                            >
-                                              <Edit2 className="w-3 h-3" />
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => setDeletingProposalId(p.id)}
-                                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
-                                              title="삭제"
-                                            >
-                                              <Trash2 className="w-3 h-3" />
-                                            </button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {isEditing ? (
-                                      <div className="space-y-2 pt-1">
-                                        <textarea
-                                          value={editingProposalText}
-                                          onChange={(e) => setEditingProposalText(e.target.value)}
-                                          className="w-full text-xs p-2.5 bg-white border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                                          rows={2}
-                                        />
-                                        <div className="flex items-center justify-end gap-1.5">
-                                          <button
-                                            onClick={() => {
-                                              setEditingProposalId(null);
-                                              setEditingProposalText('');
-                                            }}
-                                            className="px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 rounded-md transition"
-                                          >
-                                            취소
-                                          </button>
-                                          <button
-                                            onClick={() => handleSaveProposal(p.id)}
-                                            className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition"
-                                          >
-                                            저장
-                                          </button>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <p className="text-xs text-slate-800 font-medium leading-relaxed">
-                                        {p.rawText}
-                                      </p>
-                                    )}
-                                  </div>
-                                );
-                              })
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Host Control: Triggers Clustering (CRIT-02 AI 자동 정리) */}
-                        {roomDetails.room.hostId === userId && (
-                          <div className="bg-slate-900 text-white p-5 md:p-6 rounded-2xl space-y-4 shadow-md">
-                            <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-400">
-                              <Sparkles className="w-4 h-4 text-amber-400" />
-                              다음 단계로: AI 기준 자동 정리 (CRIT-02)
-                            </h3>
-                            <p className="text-xs text-slate-300 leading-relaxed">
-                              참여진들의 기준 제안이 완료되었다면 아래 버튼을 누르십시오. Potens AI가 제안된 기준들을 통합 분류 및 클러스터링하여 **핵심 3~5개 평가 기준 리스트**로 자동 정리합니다.
-                            </p>
-                            <button
-                              onClick={handleTriggerClustering}
-                              disabled={roomDetails.proposalsCount === 0 || isClusteringLoading}
-                              className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 transition rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              {isClusteringLoading ? (
-                                <>
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  AI 자동 정리 진행 중...
-                                </>
-                              ) : (
-                                <>
-                                  <Sparkles className="w-3.5 h-3.5" />
-                                  다음 단계로 (AI 자동 정리 개시)
-                                  <ArrowRight className="w-3.5 h-3.5" />
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* -----------------------------------------------------------
-                    VIEW 3: CRITERIA_REVIEW
-                    ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'CRITERIA_REVIEW' && (
-                    <div className="space-y-6">
-                      <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                        <div className="border-b border-slate-100 pb-2">
-                          <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                            <Sparkles className="w-4 h-4 text-amber-500" />
-                            총 취합된 핵심 평가 기준 목록 확인
-                          </h2>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            참여진들이 제안한 의견들을 바탕으로 AI가 정리한 최종 핵심 평가 기준 리스트입니다. 내용을 확인하신 후 익명 평가를 진행해 주세요.
-                          </p>
-                        </div>
-
-                        <div className="space-y-4">
-                          {editableCriteria.map((crit, idx) => (
-                            <div key={crit.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
-                              <div className="flex items-center justify-between gap-4">
-                                <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase tracking-wider">
-                                  기준 #{idx + 1}
-                                </span>
-                              </div>
-
-                              <div>
-                                <h4 className="text-sm font-bold text-slate-900">{crit.name}</h4>
-                                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{crit.description}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        {/* Confirmation actions */}
-                        {roomDetails.room.hostId === userId && (
-                          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-                            <button
-                              onClick={() => handleForceChangeStatus('CRITERIA_PROPOSAL')}
-                              className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
-                            >
-                              이전 단계(익명 기준 제안)로 되돌아가기
-                            </button>
-                            <button
-                              onClick={handleConfirmCriteria}
-                              className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
-                            >
-                              <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                              익명 평가 진행하기
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* -----------------------------------------------------------
-                    VIEW 4: EVALUATION
-                    ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'EVALUATION' && (() => {
-                    const currentEvaluatorsCount = Math.max(0, (roomDetails.evaluatorsCount || 0) - (isReEditingEvaluation ? 1 : 0));
-                    const minThreshold = roomDetails.room.minResponseThreshold || 1;
-                    const isMinMet = currentEvaluatorsCount >= minThreshold;
+                    const formattedDate = new Date(room.updatedAt || room.createdAt).toLocaleDateString('ko-KR', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    });
 
                     return (
-                      <div className="space-y-6">
+                      <motion.div
+                        key={room.id}
+                        whileHover={{ y: -2 }}
+                        onClick={() => handleSelectRoom(room.id)}
+                        className={`p-5 rounded-2xl border transition flex flex-col justify-between cursor-pointer group relative ${room.isPinned
+                          ? 'bg-amber-50/40 border-amber-300/80 shadow-md ring-1 ring-amber-200/60'
+                          : 'bg-white border-slate-200 hover:border-indigo-300 shadow-sm'
+                          }`}
+                      >
+                        <div className="space-y-2.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {myRoleBadge}
+                              {statusBadge}
+                            </div>
 
-                        {/* Progress Indicator Card */}
-                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                          <div>
-                            <h2 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
-                              {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
-                                <span className="text-emerald-600 flex items-center gap-1">
-                                  <Check className="w-4 h-4" />
-                                  내 익명 평가 완료됨
-                                </span>
+                            <div className="flex items-center gap-1">
+                              {/* Hide / Restore icon button */}
+                              {room.isHidden ? (
+                                <button
+                                  onClick={(e) => handleRestoreRoom(e, room.id)}
+                                  title="로비 목록으로 복원하기"
+                                  className="p-1.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 transition flex items-center text-[10px] font-bold border border-amber-300 gap-0.5 px-2"
+                                >
+                                  <span>👁️ 복원</span>
+                                </button>
                               ) : (
-                                <span className="text-slate-900 flex items-center gap-1">
-                                  <Lock className="w-4 h-4 text-slate-400" />
-                                  익명 스크리닝 평가 진행 중
-                                </span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (window.confirm('이 회의실을 내 목록에서 삭제하시겠습니까?\n(다른 참여자의 회의 내용 및 데이터는 보호됩니다)')) {
+                                      handleHideRoom(e, room.id);
+                                    }
+                                  }}
+                                  title="내 목록에서 삭제 (참여자 회의 내용 보존)"
+                                  className="p-1.5 rounded-full bg-slate-50 text-slate-400 border border-slate-200 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-rose-500 hover:text-rose-700" />
+                                </button>
                               )}
-                            </h2>
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.
+
+                              {/* Star Pin icon button */}
+                              <button
+                                onClick={(e) => handleTogglePin(e, room.id)}
+                                title={room.isPinned ? '상단 고정 해제' : '상단 고정'}
+                                className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
+                                  : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
+                                  }`}
+                              >
+                                <Star
+                                  className={`w-3.5 h-3.5 ${room.isPinned
+                                    ? 'fill-amber-400 text-amber-500'
+                                    : 'text-slate-400 fill-slate-200'
+                                    }`}
+                                />
+                              </button>
+                            </div>
+                          </div>
+
+                          <h3 className="text-base font-bold text-slate-900 group-hover:text-indigo-600 transition pt-1 leading-snug">
+                            {room.title}
+                          </h3>
+                          <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                            {room.description || '작성된 설명이 없습니다.'}
+                          </p>
+                        </div>
+
+                        <div className="border-t border-slate-100 mt-4 pt-3 space-y-3">
+                          <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                            <span className="font-bold text-slate-700">👥 {room.evaluatorsCount || 1}명 참여 중</span>
+                            <span className="text-[11px] text-slate-400">{formattedDate}</span>
+                          </div>
+
+                          <button
+                            onClick={() => handleSelectRoom(room.id)}
+                            className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${room.status === 'CLOSED'
+                              ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-xs'
+                              : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/60'
+                              }`}
+                          >
+                            <span>{room.status === 'CLOSED' ? '결과 보기' : '계속하기'}</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    ) : (
+      /* -----------------------------------------------------------
+          INSIDE ROOM SCREEN (STATE MACHINE)
+          ----------------------------------------------------------- */
+      <div>
+        {/* Loading Cover */}
+        {loading && !roomDetails && (
+          <div className="flex flex-col items-center justify-center py-20">
+            <RefreshCw className="w-8 h-8 text-slate-400 animate-spin mb-2" />
+            <p className="text-sm font-bold text-slate-500">회의 정보를 동기화하는 중...</p>
+          </div>
+        )}
+
+        {/* Error Fallback Box when fetch fails */}
+        {!loading && !roomDetails && fetchRoomError && (
+          <div className="bg-white p-8 rounded-3xl border border-rose-200 shadow-md max-w-md mx-auto text-center space-y-4 my-12">
+            <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-base font-extrabold text-slate-900">회의 정보를 불러오지 못했습니다.</h3>
+              <p className="text-xs text-slate-500">기존 데이터는 유지되어 있습니다. 다시 시도해 주세요.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => activeRoomId && fetchRoomDetails(activeRoomId)}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>다시 시도</span>
+            </button>
+          </div>
+        )}
+
+        {roomDetails && roomDetails.room && (
+          <div className="flex flex-col lg:flex-row gap-8 items-start">
+
+            {/* 1. SIDEBAR (SLEEK THEME DESIGN) */}
+            <aside className="w-full lg:w-64 bg-white border border-slate-200 rounded-2xl p-6 flex flex-col gap-6 shrink-0 shadow-sm lg:sticky lg:top-20">
+              {/* Section: Process Stages */}
+              <section className="space-y-4">
+                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  프로세스 단계
+                </h3>
+                <div className="space-y-4">
+                  {[
+                    { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
+                    { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
+                    { key: 'EVALUATION', label: '3단계 : 1차 투표 및 익명 평가' },
+                    { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
+                    { key: 'CLOSED', label: '5단계 : 최종 결과' }
+                  ].map((step, idx) => {
+                    const statusesOrder: RoomStatus[] = ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
+                    const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
+                    const currentIdx = statusesOrder.indexOf(roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomSt);
+                    const stepIdx = statusesOrder.indexOf(step.key as RoomStatus);
+                    const isCompleted = stepIdx < currentIdx;
+                    const isActive = stepIdx === currentIdx;
+
+                    return (
+                      <div key={step.key} className="flex items-center gap-3">
+                        <div className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs shrink-0 transition ${isCompleted
+                          ? 'bg-indigo-600 border-indigo-600 text-white'
+                          : isActive
+                            ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-bold'
+                            : 'border-slate-100 text-slate-300 bg-slate-50'
+                          }`}>
+                          {isCompleted ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                        </div>
+                        <span className={`text-sm font-medium transition ${isActive ? 'text-indigo-600 font-bold' : isCompleted ? 'text-slate-700' : 'text-slate-400'
+                          }`}>
+                          {step.label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* Section: Confirmed Evaluation Criteria (Mockup-style!) */}
+              {roomDetails.criteria && roomDetails.criteria.length > 0 && (
+                <section className="space-y-3 pt-4 border-t border-slate-100">
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    확정된 평가 기준 (AI)
+                  </h3>
+                  <div className="space-y-2.5">
+                    {(roomDetails.criteria || []).map((crit) => (
+                      <div key={crit.id} className="p-3 bg-indigo-50/60 rounded-lg border border-indigo-100">
+                        <div className="text-xs font-bold text-indigo-950">{crit.name}</div>
+                        <p className="text-[10px] text-indigo-700 leading-relaxed mt-0.5">{crit.description}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+            </aside>
+
+            {/* 2. MAIN WORKSPACE */}
+            <div className="flex-1 min-w-0 w-full space-y-6">
+
+              {/* ROOM HEADER CARD */}
+              <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">
+                        {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
+                        {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
+                        {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
+                        {roomDetails.room?.status === 'ELIMINATION' && '4단계 : 2차 투표'}
+                        {roomDetails.room?.status === 'CLOSED' && '5단계 : 최종 결과'}
+                      </span>
+                      {roomDetails.room?.hostId === userId && (
+                        <>
+                          <span className="text-xs font-semibold text-white bg-slate-900 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <Settings className="w-3 h-3" />
+                            방장
+                          </span>
+                          <button
+                            type="button"
+                            onClick={openRoomSettingsModal}
+                            className="text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                            title="방 정보 및 설정 수정"
+                          >
+                            <Settings className="w-3 h-3 text-slate-600" />
+                            ⚙️ 방 설정 수정
+                          </button>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setShowShareModal(true)}
+                        className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
+                      >
+                        <Copy className="w-3 h-3" />
+                        🔗 공유 링크 발급/관리
+                      </button>
+                    </div>
+
+                    <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
+                      {roomDetails.room?.title}
+                    </h1>
+                    <p className="text-slate-500 text-xs md:text-sm max-w-4xl">
+                      {roomDetails.room?.description || '이 방에 대한 추가 설명이 작성되지 않았습니다.'}
+                    </p>
+                  </div>
+
+                  {/* Refresh / Stats */}
+                  <div className="flex sm:flex-col items-end gap-2 justify-between">
+                    {/* Live progress indicator ("N/M명 아이디어 제출 완료") */}
+                    <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
+                      <span>📊 등록 완료 현황판:</span>
+                      <span className="text-indigo-600 font-extrabold">
+                        {roomDetails.completedParticipantsCount !== undefined
+                          ? roomDetails.completedParticipantsCount
+                          : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room?.maxParticipants || 6}명 완료
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => fetchRoomDetails(activeRoomId!, false)}
+                      className="flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-200 transition shrink-0"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+                      새로고침
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* -----------------------------------------------------------
+                VIEW 1: IDEA_SUBMISSION
+                ----------------------------------------------------------- */}
+              {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
+                (showIdeaSubmissionGate || Boolean(activeRoomId && localStorage.getItem(`why_not_idea_step_gate_${activeRoomId}`) === 'true')) ? (
+                  /* ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 2 & 3 */
+                  <div className="space-y-6">
+
+                    {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
+                    {(() => {
+                      const ideaCompletedCount = roomDetails.completedParticipantsCount !== undefined
+                        ? roomDetails.completedParticipantsCount
+                        : (showIdeaSubmissionGate ? 1 : 0);
+
+                      const targetMinThreshold = Math.min(
+                        roomDetails.room.minResponseThreshold || 3,
+                        roomDetails.room.maxParticipants || 6
+                      );
+
+                      const targetTotalCount = Math.max(
+                        roomDetails.room.maxParticipants || 2,
+                        targetMinThreshold,
+                        ideaCompletedCount,
+                        (roomDetails.participants || []).length || 1
+                      );
+
+                      const isIdeaGateMinMet = (roomDetails.ideas || []).length >= 2 && ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
+
+                      return (
+                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
+                          <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                            {isIdeaGateMinMet ? (
+                              <Unlock className="w-5 h-5 text-indigo-600" />
+                            ) : (
+                              <Lock className="w-5 h-5 text-indigo-600" />
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <h3 className="text-lg font-bold text-slate-900">
+                              {isIdeaGateMinMet
+                                ? '팀 내 최소 응답 수 충족 완료!'
+                                : '다른 구성원들의 참가를 기다리는 중'}
+                            </h3>
+                            <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+                              {isIdeaGateMinMet
+                                ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
+                                : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
                             </p>
                           </div>
 
-                          <div className="flex items-center gap-3">
-                            <div className="text-xs font-semibold text-slate-600 bg-slate-50 py-2 px-3.5 border border-slate-100 rounded-xl">
-                              현재 평가인원 : {currentEvaluatorsCount}명 / 최소 {minThreshold}명
-                            </div>
+                          {/* Gate details */}
+                          <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
+                            <span className="text-slate-500">현재 수집 상태 :</span>
+                            <span className={isIdeaGateMinMet ? 'text-emerald-600 font-extrabold' : 'text-amber-600 font-extrabold'}>
+                              {ideaCompletedCount} / {targetTotalCount} 명 완료
+                            </span>
                           </div>
-                        </div>
 
-                        {/* Check if User already evaluated */}
-                        {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
-                          /* WAITING SCREEN AND GATE SHOWCASE */
-                          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
-                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
-                              {isMinMet ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
-                            </div>
-
-                            <div className="space-y-2">
-                              <h3 className="text-lg font-bold text-slate-900">
-                                {isMinMet
-                                  ? '팀 내 최소 응답 수 충족 완료!'
-                                  : '다른 구성원들의 평가를 기다리는 중'}
-                              </h3>
-                              <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
-                                {isMinMet
-                                  ? '최소 응답 정족수가 달성되어, 안전하게 익명 처리된 집계 결과가 활성화되었습니다. 방장 권한으로 소거를 시작할 수 있습니다.'
-                                  : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + minThreshold + '명)가 찬 이후에만 집계 결과를 서버로부터 전송합니다.'}
-                              </p>
-                            </div>
-
-                            {/* Gate details */}
-                            <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
-                              <span className="text-slate-500">현재 수집 상태 :</span>
-                              <span className={isMinMet ? 'text-emerald-600' : 'text-amber-600'}>
-                                {currentEvaluatorsCount} / {minThreshold} 명 완료
-                              </span>
-                            </div>
-
-                          {/* Controls for evaluation re-editing and host transition matching Image 1 */}
+                          {/* Action Controls matching Images 1, 2, 3 */}
                           <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
                             <button
                               type="button"
-                              onClick={handleStartReEditingEvaluation}
+                              onClick={handleExitIdeaGate}
                               className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
                             >
-                              이전 단계(익명 평가)로 되돌아가기
+                              이전 단계(아이디어 등록)로 되돌아가기
                             </button>
 
-                            {roomDetails.room.hostId === userId && (
+                            {isIdeaGateMinMet && roomDetails.room.hostId === userId && (
                               <button
                                 type="button"
-                                onClick={() => handleForceChangeStatus('ELIMINATION')}
+                                onClick={handleConfirmIdeaGateToStage2}
                                 className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
                               >
                                 <Sparkles className="w-4 h-4 text-slate-950" />
-                                <span>피드백 보러가기 & 2차 투표 하러가기</span>
+                                <span>2단계: 평가 기준 설정하러 가기</span>
                                 <ArrowRight className="w-4 h-4" />
                               </button>
                             )}
                           </div>
                         </div>
-                      ) : (
-                        /* ACTIVE SCREENING VOTING CARDS */
-                        <div className="space-y-6">
-                          {isReEditingEvaluation && (
-                            <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-left shadow-xs">
-                              <div className="space-y-0.5">
-                                <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
-                                  <Edit2 className="w-3.5 h-3.5 text-amber-600" />
-                                  이전 평가 내용 재작성 및 수정 모드
-                                </span>
-                                <p className="text-[11px] text-amber-800 font-medium">
-                                  이전에 제출했던 평가 내용이 입력창에 복원되었습니다. 수정 완료 후 하단의 [4단계 2차 투표로 이동] 버튼을 클릭해 주세요.
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleCancelReEditingEvaluation}
-                                className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
-                              >
-                                수정 취소
-                              </button>
-                            </div>
-                          )}
+                      );
+                    })()}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-                          <div className="border-b border-slate-200 pb-2">
-                            <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
-                          </div>
+                  {/* Left: Ideas List (Anonymous Labels) */}
+                  <div className="lg:col-span-7 space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                      <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                        제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
+                      </h2>
+                      <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                        🔒 100% 익명 보장
+                      </span>
+                    </div>
 
-                          {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
-                            const userVote = evalSubmissions[idea.id] || {
-                              decision: undefined,
-                              excludedCriterionIds: [],
-                              reasonText: '',
-                              reasonType: 'PREFERENCE'
-                            };
+                    {/* Empty State Prompt */}
+                    {(roomDetails.ideas || []).length === 0 ? (
+                      <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
+                        <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
+                          💡
+                        </div>
+                        <h3 className="text-base font-bold text-slate-900">아직 등록된 아이디어가 없습니다!</h3>
+                        <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                          우측의 등록 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. (참여자당 1개~최대 5개 등록 가능)
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {roomDetails.ideas.map((idea, idx) => {
+                          const isMyIdea = Boolean(idea.submitterId && userId && idea.submitterId === userId);
+                          const isEditingThis = editingIdeaId === idea.id;
 
+                          if (isEditingThis) {
                             return (
                               <motion.div
                                 key={idea.id}
-                                className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4"
+                                className="bg-white p-5 rounded-xl border border-indigo-200 shadow-md space-y-4"
                               >
-                                {/* Idea Overview Header */}
-                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
-                                  <div className="space-y-1 flex-1 min-w-0">
-                                    <span className="text-[10px] font-black text-slate-400">후보 #{ideaIdx + 1}</span>
-                                    <h4 className="text-base font-bold text-slate-900">{idea.title}</h4>
-
-                                    {/* Idea description accordion toggle for stage 3 */}
-                                    {(() => {
-                                      const isDescExpanded = !!expandedIdeaIds[`stage3_${idea.id}`];
-                                      return (
-                                        <div className="pt-0.5">
-                                          {isDescExpanded ? (
-                                            <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line bg-slate-50 p-2.5 rounded-xl border border-slate-100 mt-1">
-                                              {idea.description}
-                                            </p>
-                                          ) : (
-                                            <p className="text-xs text-slate-500 line-clamp-1">
-                                              {idea.description}
-                                            </p>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => toggleIdeaExpanded(`stage3_${idea.id}`)}
-                                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5 mt-1 transition"
-                                          >
-                                            <span>{isDescExpanded ? '설명 접기' : '상세 설명 더보기'}</span>
-                                            {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                          </button>
-                                        </div>
-                                      );
-                                    })()}
-                                  </div>
-                                  {(() => {
-                                    const isMyIdea = idea.submitterId === userId;
-                                    return (
-                                      <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${isMyIdea
-                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                        }`}>
-                                        <User className="w-3 h-3 text-indigo-400" />
-                                        {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (ideaIdx % 26))}`}
-                                      </span>
-                                    );
-                                  })()}
-                                </div>
-
-                                {/* Voting Selector Button Group ([유지 찬성] / [제외 희망]) */}
-                                <div className="space-y-3">
-                                  <label className="text-xs font-extrabold text-slate-700">이 아이디어에 대한 익명 스탠스 선택 <span className="text-rose-500">*</span></label>
-                                  <div className="grid grid-cols-2 gap-3">
-                                    {[
-                                      { key: 'KEEP', label: '유지 찬성', desc: '기준에 부합하며 채택 추천', activeClass: 'bg-emerald-50 text-emerald-800 border-emerald-400 font-extrabold ring-2 ring-emerald-500/20' },
-                                      { key: 'EXCLUDE', label: '제외 희망', desc: '치명적 리스크/우려 존재', activeClass: 'bg-rose-50 text-rose-800 border-rose-400 font-extrabold ring-2 ring-rose-500/20' }
-                                    ].map(opt => {
-                                      const isSelected = userVote.decision === opt.key;
-                                      return (
-                                        <button
-                                          key={opt.key}
-                                          type="button"
-                                          onClick={() => handleVoteChange(idea.id, opt.key as any)}
-                                          className={`p-3.5 rounded-xl border text-center transition flex flex-col items-center justify-center gap-1 ${isSelected
-                                            ? opt.activeClass
-                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                                            }`}
-                                        >
-                                          <span className="text-sm font-bold">{opt.label}</span>
-                                          <span className="text-[10px] font-normal opacity-80">{opt.desc}</span>
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-
-                                {/* Criteria Checklist & Dynamic Reason Inputs (Required when KEEP or EXCLUDE is selected) */}
-                                {(userVote.decision === 'KEEP' || userVote.decision === 'EXCLUDE') && (
-                                  <motion.div
-                                    initial={{ opacity: 0, height: 0 }}
-                                    animate={{ opacity: 1, height: 'auto' }}
-                                    className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
+                                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                  <h3 className="text-sm font-bold text-indigo-900 flex items-center gap-1.5">
+                                    <Edit className="w-4 h-4 text-indigo-600" />
+                                    아이디어 수정하기
+                                  </h3>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingIdeaId(null)}
+                                    className="text-xs font-semibold text-slate-400 hover:text-slate-600"
                                   >
-                                    {/* 1. Which criteria apply? (Min 1 required) */}
-                                    <div className="space-y-2">
-                                      <label className="text-xs font-bold text-slate-800 block">
-                                        근거 평가 기준 선택 (2단계 제안된 평가 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
-                                      </label>
-                                      <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
-                                        {(() => {
-                                          const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
-                                            ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
-                                            : (roomDetails.proposals || []).map((p, idx) => {
-                                              const rawText = p?.rawText || '';
-                                              const parts = rawText.split(': ');
-                                              return {
-                                                id: p?.id || `prop-${idx}`,
-                                                name: parts[0] || `기준 #${idx + 1}`,
-                                                description: parts.length > 1 ? parts.slice(1).join(': ') : rawText
-                                              };
-                                            });
+                                    취소
+                                  </button>
+                                </div>
 
-                                          if (availableCriteria.length === 0) {
-                                            return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
-                                          }
+                                <div className="space-y-3">
+                                  <div className="space-y-1">
+                                    <label className="text-xs font-bold text-slate-700">아이디어 제목 <span className="text-rose-500">*</span></label>
+                                    <input
+                                      type="text"
+                                      value={editIdeaTitle}
+                                      onChange={e => setEditIdeaTitle(e.target.value)}
+                                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                    />
+                                  </div>
 
-                                          return availableCriteria.map(crit => {
-                                            const isChecked = userVote.excludedCriterionIds.includes(crit.id);
-                                            return (
-                                              <label key={crit.id} className="flex items-start gap-2.5 text-xs font-semibold text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded-lg transition">
-                                                <input
-                                                  type="checkbox"
-                                                  checked={isChecked}
-                                                  onChange={e => handleCriteriaCheckboxChange(idea.id, crit.id, e.target.checked)}
-                                                  className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                                />
-                                                <div className="space-y-0.5">
-                                                  <span className="font-bold text-slate-900 block">{crit.name}</span>
-                                                  <span className="text-[11px] text-slate-500 font-normal block">{crit.description}</span>
-                                                </div>
-                                              </label>
-                                            );
-                                          });
-                                        })()}
-                                      </div>
-                                    </div>
+                                  <div className="space-y-1">
+                                    <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
+                                    <textarea
+                                      value={editIdeaDesc}
+                                      onChange={e => setEditIdeaDesc(e.target.value)}
+                                      rows={4}
+                                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                    />
+                                  </div>
 
-                                    {/* 2. Dynamic Reason Textarea */}
-                                    <div className="space-y-1.5">
-                                      <label className="text-xs font-bold text-slate-800 block">
-                                        {userVote.decision === 'KEEP' ? '유지를 지지하는 세부 사유' : '제외를 요청하는 세부 사유'} <span className="text-rose-500">*</span>
-                                      </label>
-                                      <textarea
-                                        required
-                                        value={userVote.reasonText}
-                                        onChange={e => handleReasonTextChange(idea.id, e.target.value)}
-                                        placeholder={userVote.decision === 'KEEP' ? "이 아이디어의 유지를 지지하는 솔직한 근거를 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)" : "이 아이디어의 제외를 지지하는 솔직한 우려사항을 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)"}
-                                        rows={3}
-                                        className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-medium bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                      />
-                                      <p className="text-[10px] text-emerald-700 font-medium">
-                                        🔒 **익명 보호**: 입력하신 의견 원문은 건조하고 기계적인 AI 문체로 재구성되어 팀에 공유됩니다.
-                                      </p>
-                                    </div>
-                                  </motion.div>
-                                )}
+                                  <div className="space-y-1">
+                                    <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
+                                    <input
+                                      type="url"
+                                      value={editIdeaLink}
+                                      onChange={e => setEditIdeaLink(e.target.value)}
+                                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                                    />
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
+                                    <input
+                                      type="file"
+                                      accept=".pdf,.png"
+                                      onChange={e => {
+                                        const file = e.target.files?.[0];
+                                        if (file) setEditIdeaPdfName(file.name);
+                                      }}
+                                      className="w-full text-xs text-slate-500 file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingIdeaId(null)}
+                                    className="px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-200 transition"
+                                  >
+                                    취소
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateIdea(idea.id)}
+                                    className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition shadow-sm"
+                                  >
+                                    저장
+                                  </button>
+                                </div>
                               </motion.div>
                             );
-                          })}
+                          }
 
-                          {/* Centered Voting Transition Button under the last candidate idea */}
-                          {(() => {
-                            const activeIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE');
-                            const isAllEvaluated = activeIdeas.length > 0 && activeIdeas.every(idea => {
-                              const vote = evalSubmissions[idea.id];
-                              if (!vote || !vote.decision) return false;
-                              if (!vote.reasonText || !vote.reasonText.trim()) return false;
-                              const hasCriteria = ((roomDetails.criteria || []).length > 0) || ((roomDetails.proposals || []).length > 0);
-                              if (hasCriteria && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
-                              return true;
-                            });
+                          return (
+                            <motion.div
+                              key={idea.id}
+                              className={`bg-white p-5 rounded-xl border transition shadow-sm space-y-3 ${isMyIdea ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200'
+                                }`}
+                            >
+                              <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-2">
+                                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                                  <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
+                                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                    }`}>
+                                    <User className="w-3 h-3 text-indigo-400" />
+                                    {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (idx % 26))}`}
+                                  </span>
+                                  <h3 className="text-sm font-bold text-slate-900 truncate">{idea.title}</h3>
+                                </div>
+
+                                {isMyIdea && (
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingIdeaId(idea.id);
+                                        setEditIdeaTitle(idea.title || '');
+                                        setEditIdeaDesc(idea.description || '');
+                                        setEditIdeaLink(idea.attachmentUrl || '');
+                                        setEditIdeaPdfName(idea.pdfAttachmentUrl || '');
+                                      }}
+                                      className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-lg border border-slate-200 flex items-center gap-1 transition"
+                                      title="수정"
+                                    >
+                                      <Edit2 className="w-3 h-3" />
+                                      수정
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteIdea(idea.id)}
+                                      className="px-2 py-1 text-xs font-medium text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-100 flex items-center gap-1 transition"
+                                      title="삭제"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                      삭제
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="space-y-2">
+                                <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line">
+                                  {idea.description}
+                                </p>
+
+                                {(idea.attachmentUrl || idea.pdfAttachmentUrl) && (
+                                  <div className="flex items-center gap-3 pt-1 border-t border-slate-100 text-xs">
+                                    {idea.attachmentUrl && (
+                                      <a
+                                        href={idea.attachmentUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-indigo-600 hover:underline font-semibold flex items-center gap-1"
+                                      >
+                                        📎 참고 링크
+                                      </a>
+                                    )}
+                                    {idea.pdfAttachmentUrl && (
+                                      <span className="text-slate-500 font-medium flex items-center gap-1">
+                                        📄 {idea.pdfAttachmentUrl}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Submit New Idea Form */}
+                  <div className="lg:col-span-5 space-y-4">
+                    <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                      <div className="border-b border-slate-100 pb-2">
+                        <h2 className="text-base font-bold text-slate-900">새 아이디어 등록 (익명)</h2>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          1인당 최소 1개 ~ 최대 5개까지 등록할 수 있습니다.
+                        </p>
+                      </div>
+
+                      <form onSubmit={handleSubmitIdea} className="space-y-4">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">아이디어 제목 <span className="text-rose-500">*</span></label>
+                          <input
+                            type="text"
+                            required
+                            value={ideaTitle}
+                            onChange={e => setIdeaTitle(e.target.value)}
+                            placeholder="예: AI 회의록 자동 요약 서비스"
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">아이디어 상세 설명 <span className="text-rose-500">*</span></label>
+                          <textarea
+                            required
+                            value={ideaDesc}
+                            onChange={e => setIdeaDesc(e.target.value)}
+                            placeholder="1. 서비스 정의: ...&#10;2. 타겟 사용자: ...&#10;3. 핵심 기능: ..."
+                            rows={6}
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">참고 링크 (선택)</label>
+                          <input
+                            type="url"
+                            value={ideaLink}
+                            onChange={e => setIdeaLink(e.target.value)}
+                            placeholder="https://example.com/reference-board"
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">참고 파일 (PDF / PNG 첨부)</label>
+                          <input
+                            type="file"
+                            accept=".pdf,.png"
+                            onChange={e => {
+                              const file = e.target.files?.[0];
+                              if (file) setIdeaPdfName(file.name);
+                            }}
+                            className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                          />
+                        </div>
+
+                        <div className="bg-indigo-50/60 p-3 rounded-xl border border-indigo-100 text-xs text-indigo-900 leading-relaxed">
+                          🔒 **익명 정책**: 제출자 이름 대신 **'익명 아이디어 #N'**으로 등록되며 타인에게 닉네임이 노출되지 않습니다. (1인당 최소 1개 ~ 최대 5개)
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={(roomDetails.ideas || []).filter(i => i.submitterId === userId).length >= 5}
+                          className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 transition shadow-sm"
+                        >
+                          아이디어 올리기 (익명)
+                        </button>
+
+                        {(roomDetails.ideas || []).length >= 1 && (
+                          <div className="pt-2 border-t border-slate-100 mt-2">
+                            <button
+                              type="button"
+                              onClick={handleEnterIdeaGate}
+                              className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <Sparkles className="w-4 h-4 text-slate-950" />
+                              <span>아이디어 등록 완료 & 제출 목록/게이트 보기</span>
+                              <ArrowRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </form>
+                    </div>
+                  </div>
+
+                </div>
+              )
+            )}
+
+              {/* -----------------------------------------------------------
+                VIEW 2: CRITERIA_PROPOSAL
+                ----------------------------------------------------------- */}
+              {roomDetails.room?.status === 'CRITERIA_PROPOSAL' && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                  {/* Left: Input Proposal Form & AI Suggested Criteria */}
+                  <div className="lg:col-span-7 space-y-6">
+
+                    {/* AI Criteria Generator Card (Potens AI) */}
+                    <div className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white p-5 md:p-6 rounded-2xl shadow-md space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-bold flex items-center gap-2 text-amber-400">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          AI 기반 평가 기준 3가지 제안
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={handleFetchAiSuggestions}
+                          disabled={isGeneratingAiSuggestions}
+                          className="px-3 py-1 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 text-xs font-black rounded-lg transition flex items-center gap-1 shadow-xs"
+                        >
+                          {isGeneratingAiSuggestions ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              생성 중...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3 h-3" />
+                              AI 기준 생성
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        등록된 아이디어들의 특성을 분석하여 적합한 평가 기준 3가지를 AI가 추천합니다. 마음에 드는 기준을 선택하여 제안 목록에 추가할 수 있습니다.
+                      </p>
+
+                      {aiSuggestedCriteria.length > 0 && (
+                        <div className="space-y-2 pt-1">
+                          {aiSuggestedCriteria.map((item, idx) => {
+                            if (!item || !item.name) return null;
+                            const itemName = item.name || '';
+                            const itemDesc = item.description || '';
+                            const text = `${itemName}${itemDesc ? `: ${itemDesc}` : ''}`;
+                            const existingProposals = roomDetails?.proposals || [];
+                            const isAlreadyAdded = existingProposals.some(p => p?.rawText && (p.rawText.trim() === text.trim() || p.rawText.trim() === itemName.trim()));
+                            const isAiMaxLimitReached = myAiProposalsCount >= 3 || myProposalsCount >= 6 || totalProposalsCount >= 21;
 
                             return (
-                              <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
-                                {!isAllEvaluated && (
-                                  <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
-                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [근거 평가 기준], [세부 사유]를 모두 작성하셔야 4단계 2차 투표로 이동할 수 있습니다.
+                              <div
+                                key={idx}
+                                className="p-3 bg-white/10 hover:bg-white/15 border border-white/10 rounded-xl transition text-left flex items-center justify-between gap-3"
+                              >
+                                <div className="space-y-0.5 min-w-0 flex-1">
+                                  <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1">
+                                    <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                    {item.name}
+                                  </h4>
+                                  <p className="text-[11px] text-slate-300 leading-normal line-clamp-2">
+                                    {item.description}
                                   </p>
-                                )}
+                                </div>
+
                                 <button
                                   type="button"
-                                  onClick={handleSubmitAllEvaluations}
-                                  disabled={!isAllEvaluated}
-                                  className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${isAllEvaluated
-                                    ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
-                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
-                                    }`}
+                                  disabled={isAlreadyAdded || isAiMaxLimitReached}
+                                  onClick={() => handleProposeCriterion(undefined, text)}
+                                  className="shrink-0 px-3 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:bg-slate-700 disabled:text-slate-400 text-xs font-bold rounded-lg transition shadow-xs flex items-center gap-1"
                                 >
-                                  <Sparkles className="w-4 h-4" />
-                                  {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
-                                  <ArrowRight className="w-4 h-4" />
+                                  {isAlreadyAdded ? (
+                                    <>
+                                      <Check className="w-3 h-3" />
+                                      제안 완료
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="w-3 h-3" />
+                                      제안하기
+                                    </>
+                                  )}
                                 </button>
                               </div>
                             );
-                          })()}
+                          })}
                         </div>
                       )}
                     </div>
-                  );
-                })()}
 
-                  {/* -----------------------------------------------------------
-                    VIEW 5: ELIMINATION (SCREENING DASHBOARD)
-                    ----------------------------------------------------------- */}
-                  {(roomDetails.room.status === 'ELIMINATION' || roomDetails.room.status === 'FINAL_VOTE') && (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    {/* Direct Criterion Proposal Form */}
+                    <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                      <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+                        <div>
+                          <h2 className="text-base font-bold text-slate-900">직접 기준 작성 및 제안</h2>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            "이 아이디어들을 평가할 때 어떤 점을 중요하게 봐야 하는가?" 의견을 입력해 주세요.
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
+                          직접 제안 ({myDirectProposalsCount}/3개) · 회의실 전체 ({totalProposalsCount}/21개)
+                        </span>
+                      </div>
 
-                      {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
-                      {roomDetails.room.status === 'FINAL_VOTE' && (
-                        <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
-                          <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
-                            <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
-                            <span>방장이 2차 별 스티커 투표를 개시하였습니다! 생존 후보 중 최종 결과로 채택할 아이디어에 별 스티커를 붙여주세요.</span>
+                      {totalProposalsCount >= 21 ? (
+                        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs font-bold flex items-center gap-2">
+                          <span>⚠️</span>
+                          평가 기준은 최대 21개까지 등록할 수 있습니다.
+                        </div>
+                      ) : myDirectProposalsCount >= 3 && (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-center gap-2">
+                          <span>⚠️</span>
+                          직접 작성 제안이 최대 제한인 3개까지 제출되었습니다. (AI 추천 제안으로 등록 가능)
+                        </div>
+                      )}
+
+                      <form onSubmit={handleProposeCriterion} className="space-y-4">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">제안할 기준 내용 <span className="text-rose-500">*</span></label>
+                          <textarea
+                            required={myProposalsCount === 0}
+                            disabled={totalProposalsCount >= 21}
+                            value={proposalText}
+                            onChange={e => setProposalText(e.target.value)}
+                            placeholder={
+                              totalProposalsCount >= 21
+                                ? "평가 기준은 최대 21개까지 등록할 수 있습니다."
+                                : myDirectProposalsCount >= 3
+                                  ? "직접 작성 3개 제안이 작성 완료되었습니다."
+                                  : "예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지"
+                            }
+                            rows={3}
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400 font-medium"
+                          />
+                        </div>
+
+                        <div className="bg-emerald-50 text-emerald-800 p-3.5 rounded-xl text-xs leading-relaxed border border-emerald-100">
+                          🔒 **익명 보장 (식별 정보 비노출)**: 방장이나 다른 팀원을 포함해 누구도 작성자를 추적할 수 없습니다.
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={totalProposalsCount >= 21}
+                          className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+                        >
+                          익명 기준 제안 등록하기
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+
+                  {/* Right: Progress Tracker & Submitted Proposals List */}
+                  <div className="lg:col-span-5 space-y-6">
+                    <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <h2 className="text-base font-bold text-slate-900">제안된 평가 기준 목록</h2>
+                        <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100">
+                          {totalProposalsCount} / 21개 제출됨
+                        </span>
+                      </div>
+
+                      {/* Submitted Proposals List */}
+                      <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                        {(roomDetails.proposals || []).length === 0 ? (
+                          <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-1">
+                            <p className="text-xs font-bold text-slate-600">아직 제출된 제안이 없습니다.</p>
+                            <p className="text-[11px] text-slate-400">상단 'AI 기준 생성' 버튼을 누르거나 직접 입력해 주세요. (최소 1개 필수)</p>
+                          </div>
+                        ) : (
+                          (roomDetails.proposals || []).map((p: any, idx: number) => {
+                            const isHost = roomDetails.room.hostId === userId;
+                            const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai' || p.sourceType === 'ai');
+                            const isAuthor = p.proposerId === userId && !isAi;
+                            const canEditOrDelete = isHost || isAuthor;
+                            const isEditing = editingProposalId === p.id;
+
+                            return (
+                              <div key={p.id || idx} className={`p-3 rounded-xl space-y-2 text-left transition ${isAi ? 'bg-amber-50/90 border border-amber-300' : 'bg-slate-50 border border-slate-200'}`}>
+                                <div className="flex items-center justify-between">
+                                  <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-md font-mono ${isAi ? 'text-amber-900 bg-amber-100/90 border border-amber-300/80' : 'text-indigo-600 bg-indigo-50 border border-indigo-100'}`}>
+                                    기준 #{idx + 1}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] ${isAi ? 'text-amber-800/80 font-bold' : 'text-slate-400'}`}>
+                                      {isAi ? '✨ AI 추천' : '🔒 작성자 익명 보장'}
+                                    </span>
+
+                                    {/* Edit / Delete Buttons (Host or Author only) */}
+                                    {canEditOrDelete && !isEditing && (
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingProposalId(p.id);
+                                            setEditingProposalText(p.rawText);
+                                          }}
+                                          className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition cursor-pointer"
+                                          title="수정"
+                                        >
+                                          <Edit2 className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setDeletingProposalId(p.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-md transition cursor-pointer"
+                                          title="삭제"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {isEditing ? (
+                                  <div className="space-y-2 pt-1">
+                                    <textarea
+                                      value={editingProposalText}
+                                      onChange={(e) => setEditingProposalText(e.target.value)}
+                                      className="w-full text-xs p-2.5 bg-white border border-indigo-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                                      rows={2}
+                                    />
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      <button
+                                        onClick={() => {
+                                          setEditingProposalId(null);
+                                          setEditingProposalText('');
+                                        }}
+                                        className="px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-200 hover:bg-slate-300 rounded-md transition"
+                                      >
+                                        취소
+                                      </button>
+                                      <button
+                                        onClick={() => handleSaveProposal(p.id)}
+                                        className="px-2.5 py-1 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition"
+                                      >
+                                        저장
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-slate-800 font-medium leading-relaxed">
+                                    {p.rawText}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Host Control: Triggers Clustering (CRIT-02 AI 자동 정리) */}
+                    {roomDetails.room.hostId === userId && (
+                      <div className="bg-slate-900 text-white p-5 md:p-6 rounded-2xl space-y-4 shadow-md">
+                        <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-400">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          다음 단계로: AI 기준 자동 정리 (CRIT-02)
+                        </h3>
+                        <p className="text-xs text-slate-300 leading-relaxed">
+                          참여진들의 기준 제안이 완료되었다면 아래 버튼을 누르십시오. Potens AI가 제안된 기준들을 통합 분류 및 클러스터링하여 **핵심 3~5개 평가 기준 리스트**로 자동 정리합니다.
+                        </p>
+                        <button
+                          onClick={handleTriggerClustering}
+                          disabled={roomDetails.proposalsCount === 0 || isClusteringLoading}
+                          className="w-full py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-40 transition rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          {isClusteringLoading ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              AI 자동 정리 진행 중...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5" />
+                              다음 단계로 (AI 자동 정리 개시)
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* -----------------------------------------------------------
+                VIEW 3: CRITERIA_REVIEW
+                ----------------------------------------------------------- */}
+              {roomDetails.room.status === 'CRITERIA_REVIEW' && (
+                <div className="space-y-6">
+                  <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                    <div className="border-b border-slate-100 pb-2">
+                      <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-amber-500" />
+                        총 취합된 핵심 평가 기준 목록 확인
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        참여진들이 제안한 의견들을 바탕으로 AI가 정리한 최종 핵심 평가 기준 리스트입니다. 내용을 확인하신 후 익명 평가를 진행해 주세요.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      {editableCriteria.map((crit, idx) => (
+                        <div key={crit.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase tracking-wider">
+                              기준 #{idx + 1}
+                            </span>
+                          </div>
+
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-900">{crit.name}</h4>
+                            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{crit.description}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Confirmation actions */}
+                    {roomDetails.room.hostId === userId && (
+                      <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
+                        <button
+                          onClick={() => handleForceChangeStatus('CRITERIA_PROPOSAL')}
+                          className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
+                        >
+                          이전 단계(익명 기준 제안)로 되돌아가기
+                        </button>
+                        <button
+                          onClick={handleConfirmCriteria}
+                          className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+                          익명 평가 진행하기
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* -----------------------------------------------------------
+                VIEW 4: EVALUATION
+                ----------------------------------------------------------- */}
+              {roomDetails.room.status === 'EVALUATION' && (() => {
+                const currentEvaluatorsCount = Math.max(0, (roomDetails.evaluatorsCount || 0) - (isReEditingEvaluation ? 1 : 0));
+                const minThreshold = roomDetails.room.minResponseThreshold || 1;
+                const isMinMet = currentEvaluatorsCount >= minThreshold;
+
+                return (
+                  <div className="space-y-6">
+
+                    {/* Progress Indicator Card */}
+                    <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <h2 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
+                          {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
+                            <span className="text-emerald-600 flex items-center gap-1">
+                              <Check className="w-4 h-4" />
+                              내 익명 평가 완료됨
+                            </span>
+                          ) : (
+                            <span className="text-slate-900 flex items-center gap-1">
+                              <Lock className="w-4 h-4 text-slate-400" />
+                              익명 스크리닝 평가 진행 중
+                            </span>
+                          )}
+                        </h2>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-xs font-semibold text-slate-600 bg-slate-50 py-2 px-3.5 border border-slate-100 rounded-xl">
+                          현재 평가인원 : {currentEvaluatorsCount}명 / 최소 {minThreshold}명
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Check if User already evaluated */}
+                    {(roomDetails.hasEvaluated && !isReEditingEvaluation) ? (
+                      /* WAITING SCREEN AND GATE SHOWCASE */
+                      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-10">
+                        <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto border border-indigo-100">
+                          {isMinMet ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                        </div>
+
+                        <div className="space-y-2">
+                          <h3 className="text-lg font-bold text-slate-900">
+                            {isMinMet
+                              ? '팀 내 최소 응답 수 충족 완료!'
+                              : '다른 구성원들의 평가를 기다리는 중'}
+                          </h3>
+                          <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
+                            {isMinMet
+                              ? '최소 응답 정족수가 달성되어, 안전하게 익명 처리된 집계 결과가 활성화되었습니다. 방장 권한으로 소거를 시작할 수 있습니다.'
+                              : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + minThreshold + '명)가 찬 이후에만 집계 결과를 서버로부터 전송합니다.'}
+                          </p>
+                        </div>
+
+                        {/* Gate details */}
+                        <div className="flex items-center justify-center gap-1.5 text-xs font-bold">
+                          <span className="text-slate-500">현재 수집 상태 :</span>
+                          <span className={isMinMet ? 'text-emerald-600' : 'text-amber-600'}>
+                            {currentEvaluatorsCount} / {minThreshold} 명 완료
+                          </span>
+                        </div>
+
+                      {/* Controls for evaluation re-editing and host transition matching Image 1 */}
+                      <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={handleStartReEditingEvaluation}
+                          className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
+                        >
+                          이전 단계(익명 평가)로 되돌아가기
+                        </button>
+
+                        {roomDetails.room.hostId === userId && (
+                          <button
+                            type="button"
+                            onClick={() => handleForceChangeStatus('ELIMINATION')}
+                            className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Sparkles className="w-4 h-4 text-slate-950" />
+                            <span>피드백 보러가기 & 2차 투표 하러가기</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    /* ACTIVE SCREENING VOTING CARDS */
+                    <div className="space-y-6">
+                      {isReEditingEvaluation && (
+                        <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-left shadow-xs">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
+                              <Edit2 className="w-3.5 h-3.5 text-amber-600" />
+                              이전 평가 내용 재작성 및 수정 모드
+                            </span>
+                            <p className="text-[11px] text-amber-800 font-medium">
+                              이전에 제출했던 평가 내용이 입력창에 복원되었습니다. 수정 완료 후 하단의 [4단계 2차 투표로 이동] 버튼을 클릭해 주세요.
+                            </p>
                           </div>
                           <button
                             type="button"
-                            onClick={() => setShowFinalVoteModal(true)}
-                            className="px-4.5 py-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-xl text-xs font-black transition shrink-0 cursor-pointer shadow-sm flex items-center gap-1.5"
+                            onClick={handleCancelReEditingEvaluation}
+                            className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
                           >
-                            <span>⭐ 4단계 2차 별 스티커 투표하기</span>
+                            수정 취소
                           </button>
                         </div>
                       )}
 
-                      {/* Left: Active Candidates & Scoring statistics */}
-                      <div className="lg:col-span-8 space-y-6">
+                      <div className="border-b border-slate-200 pb-2">
+                        <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
+                      </div>
 
-                        {/* Active Candidates list */}
-                        <div className="space-y-4">
-                          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                            <h2 className="text-base font-extrabold text-slate-900">현재 생존해 있는 활성 후보 ({activeIdeasCount}개)</h2>
-                            <span className="text-xs text-slate-400 font-semibold">투표 결과: 유지 찬성 / 제외 희망</span>
-                          </div>
+                      {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
+                        const userVote = evalSubmissions[idea.id] || {
+                          decision: undefined,
+                          excludedCriterionIds: [],
+                          reasonText: '',
+                          reasonType: 'PREFERENCE'
+                        };
 
-                          {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map(idea => {
-                            const stats = roomDetails.aggregatedScores?.[idea.id] || { score: 0, keepCount: 0, neutralCount: 0, excludeCount: 0, objectiveExcludeCount: 0 };
-                            const commentSummaries = roomDetails.aiSummarizedComments?.[idea.id] || { objectiveComments: [], preferenceComments: [] };
-                            const isDescExpanded = !!expandedIdeaIds[`stage4_${idea.id}`];
+                        return (
+                          <motion.div
+                            key={idea.id}
+                            className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4"
+                          >
+                            {/* Idea Overview Header */}
+                            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                              <div className="space-y-1 flex-1 min-w-0">
+                                <span className="text-[10px] font-black text-slate-400">후보 #{ideaIdx + 1}</span>
+                                <h4 className="text-base font-bold text-slate-900">{idea.title}</h4>
 
-                            return (
-                              <div key={idea.id} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                                  <div className="space-y-1 flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      {(() => {
-                                        const isMyIdea = idea.submitterId === userId;
-                                        return (
-                                          <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
-                                            ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                                            : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                            }`}>
-                                            <User className="w-3 h-3 text-indigo-400" />
-                                            {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + ((roomDetails.ideas || []).findIndex(i => i.id === idea.id) % 26))}`}
-                                          </span>
-                                        );
-                                      })()}
-                                      <h3 className="text-base font-bold text-slate-900">{idea.title}</h3>
-                                    </div>
-
-                                    {/* Idea description accordion toggle */}
+                                {/* Idea description accordion toggle for stage 3 */}
+                                {(() => {
+                                  const isDescExpanded = !!expandedIdeaIds[`stage3_${idea.id}`];
+                                  return (
                                     <div className="pt-0.5">
                                       {isDescExpanded ? (
                                         <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line bg-slate-50 p-2.5 rounded-xl border border-slate-100 mt-1">
@@ -5751,1554 +4495,1733 @@ export default function App() {
                                       )}
                                       <button
                                         type="button"
-                                        onClick={() => toggleIdeaExpanded(`stage4_${idea.id}`)}
+                                        onClick={() => toggleIdeaExpanded(`stage3_${idea.id}`)}
                                         className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5 mt-1 transition"
                                       >
                                         <span>{isDescExpanded ? '설명 접기' : '상세 설명 더보기'}</span>
                                         {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                       </button>
                                     </div>
-                                  </div>
-
-                                  <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
-                                    <span className="text-[10px] text-slate-400 font-bold block leading-none">종합점수</span>
-                                    <span className="text-lg font-black text-slate-900">{stats.score}점</span>
-                                  </div>
-                                </div>
-
-                                {/* Aggregate vote counters (2 options: 유지 찬성 / 제외 희망) */}
-                                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl text-center text-xs font-extrabold text-slate-500">
-                                  <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-100/80 flex items-center justify-between px-4">
-                                    <span className="text-emerald-700 font-bold">유지 찬성</span>
-                                    <span className="text-sm font-black text-emerald-800">{stats.keepCount}표</span>
-                                  </div>
-                                  <div className="bg-rose-50/70 p-2.5 rounded-xl border border-rose-100/80 flex items-center justify-between px-4">
-                                    <span className="text-rose-700 font-bold">제외 희망</span>
-                                    <span className="text-sm font-black text-rose-800">{stats.excludeCount}표</span>
-                                  </div>
-                                </div>
-
-                                {/* AI summarized anonymous comments (Security checked) */}
-                                {(commentSummaries.objectiveComments.length > 0 || commentSummaries.preferenceComments.length > 0) && (
-                                  <div className="bg-slate-50/50 p-3 rounded-xl border border-slate-100 space-y-3">
-                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">🗣️ 재구성된 익명 피드백 (어투 익명화)</span>
-
-                                    {commentSummaries.objectiveComments.length > 0 && (
-                                      <div className="space-y-1">
-                                        <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded">핵심 실행 제약 우려</span>
-                                        <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
-                                          {commentSummaries.objectiveComments.map((comment, i) => (
-                                            <li key={i}>{comment}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {commentSummaries.preferenceComments.length > 0 && (
-                                      <div className="space-y-1 pt-1.5 border-t border-slate-100">
-                                        <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">선호 및 피드백 보완 사항</span>
-                                        <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
-                                          {commentSummaries.preferenceComments.map((comment, i) => (
-                                            <li key={i}>{comment}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Manual Elimination for Host (Targeting specific objective exclusions) */}
-                                {roomDetails.room.hostId === userId && (
-                                  <div className="flex justify-end pt-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => setPendingEliminationIdea(idea)}
-                                      className="text-[10px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 py-1.5 px-3.5 rounded-lg border border-rose-100 transition"
-                                    >
-                                      이 후보 수동 소거 실행
-                                    </button>
-                                  </div>
-                                )}
+                                  );
+                                })()}
                               </div>
-                            );
-                          })}
-
-                         </div>
-                      </div>
-
-                      {/* Right: Step Control & Timeline of Elimination Rounds */}
-                      <div className="lg:col-span-4 space-y-6">
-
-                        {/* Step Control Box for Host & Invited Participants */}
-                        {roomDetails.room.hostId === userId ? (
-                          <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4 shadow-md">
-                            <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
-                              <Settings className="w-4 h-4" />
-                              소거 집행 통제판
-                            </h3>
-                            {(() => {
-                              const targetWinners = roomDetails.room.targetWinnerCount || 1;
-                              const isFinalTwoChoice = activeIdeasCount === 2;
-
-                              if (isFinalTwoChoice) {
+                              {(() => {
+                                const isMyIdea = idea.submitterId === userId;
                                 return (
-                                  <div className="space-y-2">
-                                    <p className="text-xs text-amber-300 font-bold leading-relaxed">
-                                      ✨ 최종 {targetWinners}개 결과 선정을 위해 남은 2개 후보 아이디어 중 우승작을 직접 투표해 주십시오.
-                                    </p>
-                                    <button
-                                      type="button"
-                                      onClick={handleStartFinalVote}
-                                      className="w-full py-3 bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95"
-                                    >
-                                      <Sparkles className="w-4 h-4 text-slate-950" />
-                                      <span>최종 후보 투표하기</span>
-                                    </button>
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <>
-                                  <p className="text-xs text-slate-300 leading-relaxed">
-                                    팀원들의 평가가 완료되었습니다. [유지 찬성] 및 [제외 희망] 투표 결과 기반으로 <strong>상위 60% 후보를 보존하고 하위 후보 소거</strong>를 진행합니다.
-                                  </p>
-
-                                  <button
-                                    onClick={() => handleProceedElimination()}
-                                    disabled={activeIdeasCount <= 1 || loading}
-                                    className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 transition rounded-xl text-xs font-black flex items-center justify-center gap-1"
-                                  >
-                                    {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
-                                    {(roomDetails.rounds?.length || 0) + 1}라운드 하위 후보 소거 진행
-                                  </button>
-
-                                  <button
-                                    onClick={handleStartFinalVote}
-                                    className="w-full py-2 border border-dashed border-slate-600 text-slate-300 hover:text-white hover:bg-slate-800 transition rounded-xl text-xs font-bold cursor-pointer"
-                                  >
-                                    소거 중단하고 현시점 최상위 생존 후보 확정
-                                  </button>
-                                </>
-                              );
-                            })()}
-                          </div>
-                        ) : (
-                          /* Participant (Invited User) Voting Action Box */
-                          <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-amber-600 text-slate-950 p-5 rounded-2xl space-y-3 shadow-md border border-amber-300">
-                            <h3 className="text-sm font-extrabold text-slate-950 flex items-center gap-1.5">
-                              <Sparkles className="w-4 h-4 text-slate-950" />
-                              4단계 2차 별 스티커 투표
-                            </h3>
-                            <p className="text-xs font-bold text-slate-950 leading-relaxed">
-                              생존 후보 중 최종 우승작으로 채택할 아이디어에 별 스티커를 붙여주세요.
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => setShowFinalVoteModal(true)}
-                              className="w-full py-3 bg-slate-950 text-amber-300 hover:bg-slate-900 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-400 active:scale-95"
-                            >
-                              <Sparkles className="w-4 h-4 text-amber-400" />
-                              <span>⭐ 4단계 2차 별 스티커 투표하기</span>
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Objective Constraints Alert Box */}
-                        {objectiveCandidates.length > 0 && (
-                          <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-200 text-slate-800 space-y-2">
-                            <h4 className="text-xs font-bold text-amber-800 flex items-center gap-1">
-                              <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                              필수 제약 (Objective) 위반 제거 후보
-                            </h4>
-                            <p className="text-[10px] text-slate-600 leading-normal">
-                              아래의 아이디어들은 구성원들에 의해 '현실 불가능한 실행 불허 제약 조건'이 최소 1건 이상 접수되었습니다. 방장은 우선적으로 검토하여 수동 삭제를 고려해 보십시오.
-                            </p>
-                            <ul className="text-[11px] font-extrabold text-slate-700 list-disc pl-4 space-y-1">
-                              {objectiveCandidates.map(c => (
-                                <li key={c.id}>{c.title}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {/* Host Option: Restart Stage 2 with Surviving Ideas */}
-                        {roomDetails.room.hostId === userId && (
-                          <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 shadow-md border border-slate-800">
-                            <div className="flex items-center justify-between gap-2">
-                              <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
-                                <Sparkles className="w-4 h-4 text-amber-400" />
-                                생존 아이디어 2단계 재설정
-                              </h3>
-                              <span className="text-[10px] font-extrabold bg-slate-800 text-indigo-200 px-2.5 py-0.5 rounded-full border border-slate-700">
-                                생존 {activeIdeasCount}개
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-300 leading-relaxed">
-                              현재 소거되지 않은 <strong>생존 아이디어들만 보존한 채 2단계(평가 기준 설정)로 돌아가 3, 4, 5단계를 재진행</strong>할 수 있습니다.
-                            </p>
-                            <button
-                              type="button"
-                              onClick={handleRestartStage2WithSurvivingIdeas}
-                              disabled={activeIdeasCount < 2}
-                              className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                            >
-                              <RefreshCw className="w-3.5 h-3.5 text-slate-950" />
-                              <span>생존 아이디어만으로 2단계부터 재진행</span>
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Rounds timeline */}
-                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                          <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">소거 타임라인</h3>
-
-                          {(!roomDetails.rounds || roomDetails.rounds.length === 0) ? (
-                            <p className="text-xs font-semibold text-slate-400">진행된 소거 라운드가 없습니다.</p>
-                          ) : (
-                            <div className="space-y-4 border-l-2 border-slate-100 pl-3.5">
-                              {(roomDetails.rounds || []).map(round => (
-                                <div key={round.id} className="space-y-1 relative">
-                                  <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-slate-900" />
-                                  <span className="text-[10px] font-black text-slate-400">{round.roundNumber}라운드 소거 완료</span>
-                                  <h4 className="text-xs font-bold text-slate-900">
-                                    {round.eliminatedIdeaIds.map(id => (roomDetails.ideas || []).find(i => i.id === id)?.title).join(', ')} 소거
-                                  </h4>
-                                  <p className="text-[10px] text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
-                                    {round.aiSummaryText}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                    </div>
-                  )}
-
-                  {/* -----------------------------------------------------------
-                    VIEW 6: CLOSED (FINAL REPORT SHOWCASE - UX IMPROVED)
-                    ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'CLOSED' && (
-                    <div className="space-y-6 max-w-4xl mx-auto text-left">
-
-                      {/* ① 최종 결과 헤더 & PDF 저장 버튼 */}
-                      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 md:p-8 rounded-3xl text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
-                        <div className="space-y-1.5">
-                          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-400/30 px-2.5 py-0.5 rounded-full">
-                            최종 결과 보고서
-                          </span>
-                          <h1 className="text-xl md:text-2xl font-black tracking-tight text-white">
-                            {roomDetails.room.title}
-                          </h1>
-                          <p className="text-xs text-slate-300 font-medium">
-                            익명 아이디어 제안, 1차 심층 평가 및 2차 별 스티커 투표 집계 결과입니다.
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleDownloadPDF}
-                          className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black transition shadow-md flex items-center gap-2 cursor-pointer shrink-0 border border-amber-500 active:scale-95"
-                        >
-                          <Download className="w-4 h-4 text-slate-950" />
-                          <span>최종 결과 리포트 PDF 저장</span>
-                        </button>
-                      </div>
-
-                      {/* ② 동률 여부 확인 & 룰렛 섹션 (운영 정책: 동률 발생 시만 표시) */}
-                      {roomDetails.starVoteStatus === 'tie_pending' && (
-                        <div className="bg-amber-50 border-2 border-amber-400 p-6 rounded-3xl text-center space-y-4 shadow-md">
-                          <div className="inline-flex items-center gap-1.5 bg-amber-200 text-amber-950 font-black text-xs px-3.5 py-1 rounded-full border border-amber-300">
-                            <AlertCircle className="w-4 h-4 text-amber-800" />
-                            <span>⚠️ 최종 후보가 동률입니다</span>
-                          </div>
-                          <p className="text-xs text-amber-900 font-bold max-w-lg mx-auto">
-                            최종 채택 경계에서 동점이 발생했습니다. 운명의 룰렛을 돌려 우승 아이디어를 확정해주십시오!
-                          </p>
-                          <button
-                            type="button"
-                            onClick={handleSpinRoulette}
-                            disabled={isSpinningRoulette}
-                            className="py-3 px-6 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg transition border border-amber-600 inline-flex items-center gap-2 cursor-pointer active:scale-95"
-                          >
-                            <Sparkles className="w-4 h-4 text-slate-950" />
-                            <span>[ 운명의 룰렛 돌리기 ]</span>
-                          </button>
-                        </div>
-                      )}
-
-                      {/* 테스트 환경 전용 룰렛 미리보기 카드 */}
-                      <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
-                        <div className="space-y-1 text-center sm:text-left">
-                          <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 justify-center sm:justify-start">
-                            <Sparkles className="w-4 h-4 text-amber-500" />
-                            🧪 테스트용 룰렛 미리보기
-                          </span>
-                          <p className="text-[11px] text-slate-500 font-medium">
-                            실제 최종 결과 및 DB 데이터에 영향을 주지 않으며, 룰렛 UI 및 회전 기능을 시연할 수 있습니다.
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRouletteWinnerResult(null);
-                            setShowRouletteModal(true);
-                          }}
-                          className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs shrink-0 border border-amber-500 flex items-center gap-1.5 cursor-pointer active:scale-95"
-                        >
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>룰렛 돌리기 (미리보기)</span>
-                        </button>
-                      </div>
-
-                      {/* ③ 최종 선정 아이디어 카드 (Spotlight) */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg space-y-5 relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-600 via-amber-400 to-indigo-600" />
-
-                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
-                            <Award className="w-5 h-5 text-amber-500" />
-                            🏆 최종 선정 아이디어
-                          </h2>
-                          <button
-                            type="button"
-                            onClick={() => setShowWinnerModal(true)}
-                            className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-xl hover:bg-indigo-100 transition"
-                          >
-                            축하 팝업 열기
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-4 pt-1">
-                          {(!roomDetails?.ideas || roomDetails.ideas.filter(i => i && i.status === 'WINNER').length === 0) ? (
-                            <div className="text-center py-6 text-slate-500 text-xs font-medium bg-slate-50 rounded-2xl border border-slate-100">
-                              최종 확정된 우승 아이디어를 불러오는 중입니다.
-                            </div>
-                          ) : (
-                            roomDetails.ideas.filter(i => i && i.status === 'WINNER').map(winner => (
-                              <div key={winner.id} className="p-5 bg-gradient-to-br from-indigo-50/50 to-amber-50/30 rounded-2xl border border-indigo-100 space-y-2.5">
-                                <div className="flex items-center justify-between gap-2">
-                                  <h3 className="text-lg font-black text-indigo-950 tracking-tight">
-                                    {winner.title}
-                                  </h3>
-                                  <span className="text-[11px] font-extrabold text-amber-900 bg-amber-200/90 border border-amber-300 px-2.5 py-0.5 rounded-full shrink-0">
-                                    최종 채택
+                                  <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${isMyIdea
+                                    ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                    }`}>
+                                    <User className="w-3 h-3 text-indigo-400" />
+                                    {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (ideaIdx % 26))}`}
                                   </span>
-                                </div>
-                                <p className="text-xs md:text-sm text-slate-600 leading-relaxed font-medium">
-                                  {winner.description}
-                                </p>
-                                <div className="pt-2 border-t border-indigo-100/60 flex items-center justify-between text-xs font-bold text-indigo-600">
-                                  <span>제안자 : {winner.submitterName}</span>
-                                  <span>⭐ 최종 득표: {roomDetails.starVotes?.[winner.id] || 0}표</span>
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-
-                      {/* ④ 최종 선정 이유 (AI 요약 리포트 및 근처 평가 근거) */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                          <Sparkles className="w-5 h-5 text-amber-500" />
-                          <h3 className="text-base font-black text-slate-900">최종 선정 이유 및 AI 리포트</h3>
-                        </div>
-
-                        {roomDetails.aiFinalSummary ? (
-                          <div className="space-y-4">
-                            <SafeMarkdown content={roomDetails.aiFinalSummary} />
-                          </div>
-                        ) : (
-                          <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200/80 text-center space-y-2">
-                            <p className="text-xs text-slate-600 font-bold">
-                              💡 평가 데이터 및 투표 근거를 종합하여 세부 리포트를 도출하는 중입니다.
-                            </p>
-                            <p className="text-[11px] text-slate-400">
-                              (참여자의 평가 데이터가 충분하지 않을 경우 기본 평가 점수 및 별 스티커 집계 결과를 기준으로 표출됩니다)
-                            </p>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* ⑤ 라운드별 의사결정 과정 타임라인 */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-5">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                          <FileText className="w-5 h-5 text-indigo-600" />
-                          <h3 className="text-base font-black text-slate-900">라운드별 의사결정 및 소거 과정</h3>
-                        </div>
-
-                        {/* Process Step Progression Bar */}
-                        <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
-                          <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
-                        </div>
-
-                        <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
-                          {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
-                            <div className="space-y-1 relative">
-                              <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-600" />
-                              <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
-                              <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
-                              <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
-                              </p>
+                                );
+                              })()}
                             </div>
-                          ) : (
-                            (roomDetails.rounds || []).map(round => (
-                              <div key={round.id} className="space-y-1 relative">
-                                <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-rose-500" />
-                                <span className="text-[10px] font-black text-rose-500">{round.roundNumber}라운드 탈락 및 소거 이력</span>
-                                <h4 className="text-xs md:text-sm font-bold text-slate-900">
-                                  {(round.eliminatedIdeaIds || []).map(id => roomDetails?.ideas?.find(i => i.id === id)?.title || '아이디어').join(', ')} 소거
-                                </h4>
-                                <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                  {round.aiSummaryText}
-                                </p>
+
+                            {/* Voting Selector Button Group ([유지 찬성] / [제외 희망]) */}
+                            <div className="space-y-3">
+                              <label className="text-xs font-extrabold text-slate-700">이 아이디어에 대한 익명 스탠스 선택 <span className="text-rose-500">*</span></label>
+                              <div className="grid grid-cols-2 gap-3">
+                                {[
+                                  { key: 'KEEP', label: '유지 찬성', desc: '기준에 부합하며 채택 추천', activeClass: 'bg-emerald-50 text-emerald-800 border-emerald-400 font-extrabold ring-2 ring-emerald-500/20' },
+                                  { key: 'EXCLUDE', label: '제외 희망', desc: '치명적 리스크/우려 존재', activeClass: 'bg-rose-50 text-rose-800 border-rose-400 font-extrabold ring-2 ring-rose-500/20' }
+                                ].map(opt => {
+                                  const isSelected = userVote.decision === opt.key;
+                                  return (
+                                    <button
+                                      key={opt.key}
+                                      type="button"
+                                      onClick={() => handleVoteChange(idea.id, opt.key as any)}
+                                      className={`p-3.5 rounded-xl border text-center transition flex flex-col items-center justify-center gap-1 ${isSelected
+                                        ? opt.activeClass
+                                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                        }`}
+                                    >
+                                      <span className="text-sm font-bold">{opt.label}</span>
+                                      <span className="text-[10px] font-normal opacity-80">{opt.desc}</span>
+                                    </button>
+                                  );
+                                })}
                               </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
+                            </div>
 
-                      {/* ⑥ 의견이 갈린 아이디어 (Controversial Ideas) */}
-                      {controversialIdeas.length > 0 && (
-                        <div className="bg-white p-6 md:p-8 rounded-3xl border border-amber-200 shadow-sm space-y-4">
-                          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                            <AlertCircle className="w-5 h-5 text-amber-600" />
-                            <h3 className="text-base font-black text-slate-900">의견이 팽팽했던 쟁점 아이디어</h3>
-                          </div>
-                          <p className="text-xs text-slate-500 leading-relaxed">
-                            유지 의견과 제외 의견이 동시에 높았거나, 4단계 별 스티커 투표 치열한 경합으로 인상 깊었던 쟁점 후보입니다.
-                          </p>
+                            {/* Criteria Checklist & Dynamic Reason Inputs (Required when KEEP or EXCLUDE is selected) */}
+                            {(userVote.decision === 'KEEP' || userVote.decision === 'EXCLUDE') && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
+                              >
+                                {/* 1. Which criteria apply? (Min 1 required) */}
+                                <div className="space-y-2">
+                                  <label className="text-xs font-bold text-slate-800 block">
+                                    근거 평가 기준 선택 (2단계 제안된 평가 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
+                                  </label>
+                                  <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
+                                    {(() => {
+                                      const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
+                                        ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
+                                        : (roomDetails.proposals || []).map((p, idx) => {
+                                          const rawText = p?.rawText || '';
+                                          const parts = rawText.split(': ');
+                                          return {
+                                            id: p?.id || `prop-${idx}`,
+                                            name: parts[0] || `기준 #${idx + 1}`,
+                                            description: parts.length > 1 ? parts.slice(1).join(': ') : rawText
+                                          };
+                                        });
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {controversialIdeas.map(idea => {
-                              const stats = roomDetails.aggregatedScores?.[idea.id];
-                              const stars = roomDetails.starVotes?.[idea.id] || 0;
+                                      if (availableCriteria.length === 0) {
+                                        return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
+                                      }
 
-                              return (
-                                <div key={idea.id} className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/80 space-y-1.5">
-                                  <h4 className="text-xs font-extrabold text-slate-900">{idea.title}</h4>
-                                  <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-2">{idea.description}</p>
-                                  <div className="flex items-center gap-3 pt-1 text-[10px] font-bold text-amber-900">
-                                    {stats && (
-                                      <>
-                                        <span>👍 찬성: {stats.keepCount}표</span>
-                                        <span>👎 제외희망: {stats.excludeCount}표</span>
-                                      </>
-                                    )}
-                                    <span>⭐ 별스티커: {stars}표</span>
+                                      return availableCriteria.map(crit => {
+                                        const isChecked = userVote.excludedCriterionIds.includes(crit.id);
+                                        return (
+                                          <label key={crit.id} className="flex items-start gap-2.5 text-xs font-semibold text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded-lg transition">
+                                            <input
+                                              type="checkbox"
+                                              checked={isChecked}
+                                              onChange={e => handleCriteriaCheckboxChange(idea.id, crit.id, e.target.checked)}
+                                              className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                            />
+                                            <div>
+                                              <span className="font-bold text-slate-900 block">{crit.name}</span>
+                                              <span className="text-[10px] text-slate-500 font-normal">{crit.description}</span>
+                                            </div>
+                                          </label>
+                                        );
+                                      });
+                                    })()}
                                   </div>
                                 </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
 
-                      {/* 로비 홈으로 이동 버튼 */}
-                      <div className="text-center pt-4">
+                                {/* 2. Detailed Reason Input */}
+                                <div className="space-y-2">
+                                  <label className="text-xs font-bold text-slate-800 block">
+                                    {userVote.decision === 'KEEP' ? '유지 찬성 세부 사유' : '제외 희망 세부 사유'} <span className="text-rose-500">*</span>
+                                  </label>
+                                  <textarea
+                                    required
+                                    value={userVote.reasonText}
+                                    onChange={e => handleReasonTextChange(idea.id, e.target.value)}
+                                    placeholder={
+                                      userVote.decision === 'KEEP'
+                                        ? "예: 핵심 기능이 명확하고 기존 유사 서비스 대비 경쟁력 및 구현 가능성이 높습니다."
+                                        : "예: 마감 기한 내 기술 구현 난이도가 너무 높고 초기 마케팅 예산 범위를 초과합니다."
+                                    }
+                                    rows={3}
+                                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
+                                  />
+                                </div>
+
+                                {/* 3. Reason Type Option (OBJECTIVE_CONSTRAINT vs PREFERENCE) */}
+                                {userVote.decision === 'EXCLUDE' && (
+                                  <div className="space-y-1.5 pt-1">
+                                    <label className="text-xs font-bold text-slate-800 block">제외 사유 성격 선택</label>
+                                    <div className="grid grid-cols-2 gap-2 text-xs">
+                                      <label className={`p-2.5 rounded-xl border cursor-pointer transition text-left flex items-start gap-2 ${userVote.reasonType === 'OBJECTIVE_CONSTRAINT' ? 'bg-amber-50 border-amber-300 font-bold text-amber-900' : 'bg-white border-slate-200 text-slate-600'}`}>
+                                        <input
+                                          type="radio"
+                                          name={`reasonType_${idea.id}`}
+                                          checked={userVote.reasonType === 'OBJECTIVE_CONSTRAINT'}
+                                          onChange={() => handleReasonTypeChange(idea.id, 'OBJECTIVE_CONSTRAINT')}
+                                          className="mt-0.5 text-amber-600 focus:ring-amber-500"
+                                        />
+                                        <div>
+                                          <span className="block text-xs font-bold">⚠️ 현실적 실행 불허 제약</span>
+                                          <span className="text-[10px] text-slate-500 font-normal">법적/예산/기술적 불가사유</span>
+                                        </div>
+                                      </label>
+                                      <label className={`p-2.5 rounded-xl border cursor-pointer transition text-left flex items-start gap-2 ${userVote.reasonType === 'PREFERENCE' ? 'bg-indigo-50 border-indigo-300 font-bold text-indigo-900' : 'bg-white border-slate-200 text-slate-600'}`}>
+                                        <input
+                                          type="radio"
+                                          name={`reasonType_${idea.id}`}
+                                          checked={userVote.reasonType === 'PREFERENCE'}
+                                          onChange={() => handleReasonTypeChange(idea.id, 'PREFERENCE')}
+                                          className="mt-0.5 text-indigo-600 focus:ring-indigo-500"
+                                        />
+                                        <div>
+                                          <span className="block text-xs font-bold">💭 개인 주관 선호/피드백</span>
+                                          <span className="text-[10px] text-slate-500 font-normal">우선순위 및 기대효율 관점</span>
+                                        </div>
+                                      </label>
+                                    </div>
+                                  </div>
+                                )}
+                              </motion.div>
+                            )}
+
+                          </motion.div>
+                        );
+                      })}
+
+                      {/* Submit All Button */}
+                      <div className="pt-4 flex justify-end">
                         <button
                           type="button"
-                          onClick={handleLeaveRoom}
-                          className="px-7 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
+                          onClick={handleSubmitAllEvaluations}
+                          className="w-full md:w-auto px-8 py-3.5 bg-indigo-600 text-white rounded-2xl text-xs font-extrabold hover:bg-indigo-700 transition shadow-md flex items-center justify-center gap-2 cursor-pointer"
                         >
-                          로비 홈화면으로 이동하기
+                          <Check className="w-4 h-4 text-emerald-300" />
+                          <span>익명 평가 및 1차 투표 제출하기</span>
                         </button>
                       </div>
-
                     </div>
                   )}
 
                 </div>
+              );
+            })()}
+
+            {/* -----------------------------------------------------------
+              VIEW 5: ELIMINATION (4단계 : 2차 투표 및 소거 진행)
+              ----------------------------------------------------------- */}
+            {roomDetails.room.status === 'ELIMINATION' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                {/* Left: Surviving Candidate Rankings and Aggregated Anonymized Scores */}
+                <div className="lg:col-span-8 space-y-6">
+
+                  {/* Header Showcase */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between gap-4">
+                    <div>
+                      <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                        <Award className="w-5 h-5 text-indigo-600" />
+                        익명 1차 평가 집계 & 4단계 2차 별 스티커 투표
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        득표수 및 개인 식별 정보를 배제하고, 수집된 근거 기준 충족 비율을 정제하여 표출합니다.
+                      </p>
+                    </div>
+                    <span className="text-xs font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full shrink-0">
+                      생존 후보 {activeIdeasCount}개
+                    </span>
+                  </div>
+
+                  {/* Dynamic Candidate Cards matching Screenshots 1, 2, 3 */}
+                  <div className="space-y-4">
+                    {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, idx) => {
+                      const stats = roomDetails.aggregatedScores?.[idea.id] || {
+                        score: 0,
+                        keepCount: 0,
+                        neutralCount: 0,
+                        excludeCount: 0,
+                        objectiveExcludeCount: 0,
+                        avgCriteriaComplianceRatio: 0,
+                        criteriaMatchCounts: {},
+                      };
+
+                      // Get AI sanitized anonymous comments for this idea
+                      const commentSummaries = roomDetails.sanitizedComments?.[idea.id] || {
+                        objectiveComments: [],
+                        preferenceComments: []
+                      };
+
+                      return (
+                        <div key={idea.id} className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 text-left">
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                            <div className="space-y-1 flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full">
+                                  후보 #{idx + 1}
+                                </span>
+                                <h3 className="text-base font-bold text-slate-900">{idea.title}</h3>
+                              </div>
+                              <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                                {idea.description}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1.5 shrink-0">
+                              <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-xl border border-indigo-100">
+                                1차 종합점수 {stats.score}점
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-400">
+                                기준 충족 비율 {stats.avgCriteriaComplianceRatio}%
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Stat breakdown bars (Keep vs Exclude) */}
+                          <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl text-center text-xs font-extrabold text-slate-500">
+                            <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-100/80 flex items-center justify-between px-4">
+                              <span className="text-emerald-700 font-bold">유지 찬성</span>
+                              <span className="text-sm font-black text-emerald-800">{stats.keepCount}표</span>
+                            </div>
+                            <div className="bg-rose-50/70 p-2.5 rounded-xl border border-rose-100/80 flex items-center justify-between px-4">
+                              <span className="text-rose-700 font-bold">제외 희망</span>
+                              <span className="text-sm font-black text-rose-800">{stats.excludeCount}표</span>
+                            </div>
+                          </div>
+
+                          {/* AI summarized anonymous comments (Security checked) */}
+                          {(commentSummaries.objectiveComments.length > 0 || commentSummaries.preferenceComments.length > 0) && (
+                            <div className="bg-slate-50/50 p-3 rounded-xl border border-slate-100 space-y-3">
+                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">🗣️ 재구성된 익명 피드백 (어투 익명화)</span>
+
+                              {commentSummaries.objectiveComments.length > 0 && (
+                                <div className="space-y-1">
+                                  <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded">핵심 실행 제약 우려</span>
+                                  <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
+                                    {commentSummaries.objectiveComments.map((comment, i) => (
+                                      <li key={i}>{comment}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {commentSummaries.preferenceComments.length > 0 && (
+                                <div className="space-y-1 pt-1.5 border-t border-slate-100">
+                                  <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">선호 및 피드백 보완 사항</span>
+                                  <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
+                                    {commentSummaries.preferenceComments.map((comment, i) => (
+                                      <li key={i}>{comment}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Manual Elimination for Host (Targeting specific objective exclusions) */}
+                          {roomDetails.room.hostId === userId && (
+                            <div className="flex justify-end pt-1">
+                              <button
+                                type="button"
+                                onClick={() => setPendingEliminationIdea(idea)}
+                                className="text-[10px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 py-1.5 px-3.5 rounded-lg border border-rose-100 transition"
+                              >
+                                이 후보 수동 소거 실행
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                   </div>
+                </div>
+
+                {/* Right: Step Control & Timeline of Elimination Rounds */}
+                <div className="lg:col-span-4 space-y-6">
+
+                  {/* Step Control Box for Host & Invited Participants */}
+                  {roomDetails.room.hostId === userId ? (
+                    <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4 shadow-md">
+                      <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
+                        <Settings className="w-4 h-4" />
+                        소거 집행 통제판
+                      </h3>
+                      {(() => {
+                        const targetWinners = roomDetails.room.targetWinnerCount || 1;
+                        const isFinalTwoChoice = activeIdeasCount === 2;
+
+                        if (isFinalTwoChoice) {
+                          return (
+                            <div className="space-y-2">
+                              <p className="text-xs text-amber-300 font-bold leading-relaxed">
+                                ✨ 최종 {targetWinners}개 결과 선정을 위해 남은 2개 후보 아이디어 중 우승작을 직접 투표해 주십시오.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={handleStartFinalVote}
+                                className="w-full py-3 bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-300 ring-2 ring-amber-400/20 active:scale-95"
+                              >
+                                <Sparkles className="w-4 h-4 text-slate-950" />
+                                <span>최종 후보 투표하기</span>
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              팀원들의 평가가 완료되었습니다. [유지 찬성] 및 [제외 희망] 투표 결과 기반으로 <strong>상위 60% 후보를 보존하고 하위 후보 소거</strong>를 진행합니다.
+                            </p>
+
+                            <button
+                              onClick={() => handleProceedElimination()}
+                              disabled={activeIdeasCount <= 1 || loading}
+                              className="w-full py-2.5 bg-white text-slate-900 hover:bg-slate-100 transition rounded-xl text-xs font-black flex items-center justify-center gap-1"
+                            >
+                              {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <PlusCircle className="w-3.5 h-3.5" />}
+                              {(roomDetails.rounds?.length || 0) + 1}라운드 하위 후보 소거 진행
+                            </button>
+
+                            <button
+                              onClick={handleStartFinalVote}
+                              className="w-full py-2 border border-dashed border-slate-600 text-slate-300 hover:text-white hover:bg-slate-800 transition rounded-xl text-xs font-bold cursor-pointer"
+                            >
+                              소거 중단하고 현시점 최상위 생존 후보 확정
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    /* Participant (Invited User) Voting Action Box */
+                    <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-amber-600 text-slate-950 p-5 rounded-2xl space-y-3 shadow-md border border-amber-300">
+                      <h3 className="text-sm font-extrabold text-slate-950 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-slate-950" />
+                        4단계 2차 별 스티커 투표
+                      </h3>
+                      <p className="text-xs font-bold text-slate-950 leading-relaxed">
+                        생존 후보 중 최종 우승작으로 채택할 아이디어에 별 스티커를 붙여주세요.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowFinalVoteModal(true)}
+                        className="w-full py-3 bg-slate-950 text-amber-300 hover:bg-slate-900 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-400 active:scale-95"
+                      >
+                        <Sparkles className="w-4 h-4 text-amber-400" />
+                        <span>⭐ 4단계 2차 별 스티커 투표하기</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Objective Constraints Alert Box */}
+                  {objectiveCandidates.length > 0 && (
+                    <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-200 text-slate-800 space-y-2">
+                      <h4 className="text-xs font-bold text-amber-800 flex items-center gap-1">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                        필수 제약 (Objective) 위반 제거 후보
+                      </h4>
+                      <p className="text-[10px] text-slate-600 leading-normal">
+                        아래의 아이디어들은 구성원들에 의해 '현실 불가능한 실행 불허 제약 조건'이 최소 1건 이상 접수되었습니다. 방장은 우선적으로 검토하여 수동 삭제를 고려해 보십시오.
+                      </p>
+                      <ul className="text-[11px] font-extrabold text-slate-700 list-disc pl-4 space-y-1">
+                        {objectiveCandidates.map(c => (
+                          <li key={c.id}>{c.title}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Host Option: Restart Stage 2 with Surviving Ideas */}
+                  {roomDetails.room.hostId === userId && (
+                    <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 shadow-md border border-slate-800">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          생존 아이디어 2단계 재설정
+                        </h3>
+                        <span className="text-[10px] font-extrabold bg-slate-800 text-indigo-200 px-2.5 py-0.5 rounded-full border border-slate-700">
+                          생존 {activeIdeasCount}개
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        현재 소거되지 않은 <strong>생존 아이디어들만 보존한 채 2단계(평가 기준 설정)로 돌아가 3, 4, 5단계를 재진행</strong>할 수 있습니다.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleRestartStage2WithSurvivingIdeas}
+                        disabled={activeIdeasCount < 2}
+                        className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-slate-950" />
+                        <span>생존 아이디어만으로 2단계부터 재진행</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Rounds timeline */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">소거 타임라인</h3>
+
+                    {(!roomDetails.rounds || roomDetails.rounds.length === 0) ? (
+                      <p className="text-xs font-semibold text-slate-400">진행된 소거 라운드가 없습니다.</p>
+                    ) : (
+                      <div className="space-y-4 border-l-2 border-slate-100 pl-3.5">
+                        {(roomDetails.rounds || []).map(round => (
+                          <div key={round.id} className="space-y-1 relative">
+                            <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-slate-900" />
+                            <span className="text-[10px] font-black text-slate-400">{round.roundNumber}라운드 소거 완료</span>
+                            <h4 className="text-xs font-bold text-slate-900">
+                              {round.eliminatedIdeaIds.map(id => (roomDetails.ideas || []).find(i => i.id === id)?.title).join(', ')} 소거
+                            </h4>
+                            <p className="text-[10px] text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
+                              {round.aiSummaryText}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
               </div>
             )}
-          </div>
-        )}
-      </main>
 
-      {/* Email Authentication & Account Recovery Modal (user_accounts) */}
-      <AnimatePresence>
-        {showLoginModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-xl space-y-5 text-left"
-            >
-              {/* 1. Show newly generated Recovery Code right after Sign Up */}
-              {recoveryCodeOutput ? (
-                <div className="space-y-4 text-center py-2">
-                  <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto border border-amber-200">
-                    <Lock className="w-6 h-6 text-amber-600" />
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-extrabold text-slate-900">계정 복구 코드가 발급되었습니다!</h3>
-                    <p className="text-xs text-slate-500 leading-relaxed px-1">
-                      비밀번호를 잊으셨을 때 계정을 찾고 재설정할 수 있는 **유일한 복구 수단**입니다. 단방향 해시로 안전하게 관리되므로 복사하여 안전한 곳에 보관하세요.
+            {/* -----------------------------------------------------------
+              VIEW 6: CLOSED (FINAL REPORT SHOWCASE - UX IMPROVED)
+              ----------------------------------------------------------- */}
+            {roomDetails.room.status === 'CLOSED' && (
+              <div className="space-y-6 max-w-4xl mx-auto text-left">
+
+                {/* ① 최종 결과 헤더 & PDF 저장 버튼 */}
+                <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 md:p-8 rounded-3xl text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-400/30 px-2.5 py-0.5 rounded-full">
+                      최종 결과 보고서
+                    </span>
+                    <h1 className="text-xl md:text-2xl font-black tracking-tight text-white">
+                      {roomDetails.room.title}
+                    </h1>
+                    <p className="text-xs text-slate-300 font-medium">
+                      익명 아이디어 제안, 1차 심층 평가 및 2차 별 스티커 투표 집계 결과입니다.
                     </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleDownloadPDF}
+                    className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black transition shadow-md flex items-center gap-2 cursor-pointer shrink-0 border border-amber-500 active:scale-95"
+                  >
+                    <Download className="w-4 h-4 text-slate-950" />
+                    <span>최종 결과 리포트 PDF 저장</span>
+                  </button>
+                </div>
 
-                  <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center justify-between gap-2 shadow-xs">
-                    <span className="font-mono font-extrabold text-sm text-slate-900 tracking-wider">
-                      {recoveryCodeOutput}
-                    </span>
+                {/* ② 동률 여부 확인 & 룰렛 섹션 (운영 정책: 동률 발생 시만 표시) */}
+                {roomDetails.starVoteStatus === 'tie_pending' && (
+                  <div className="bg-amber-50 border-2 border-amber-400 p-6 rounded-3xl text-center space-y-4 shadow-md">
+                    <div className="inline-flex items-center gap-1.5 bg-amber-200 text-amber-950 font-black text-xs px-3.5 py-1 rounded-full border border-amber-300">
+                      <AlertCircle className="w-4 h-4 text-amber-800" />
+                      <span>⚠️ 최종 후보가 동률입니다</span>
+                    </div>
+                    <p className="text-xs text-amber-900 font-bold max-w-lg mx-auto">
+                      최종 채택 경계에서 동점이 발생했습니다. 운명의 룰렛을 돌려 우승 아이디어를 확정해주십시오!
+                    </p>
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(recoveryCodeOutput);
-                        triggerToast('복구 코드가 클립보드에 복사되었습니다!', 'success');
-                      }}
-                      className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs cursor-pointer"
+                      type="button"
+                      onClick={handleSpinRoulette}
+                      disabled={isSpinningRoulette}
+                      className="py-3 px-6 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg transition border border-amber-600 inline-flex items-center gap-2 cursor-pointer active:scale-95"
                     >
-                      복사
+                      <Sparkles className="w-4 h-4 text-slate-950" />
+                      <span>[ 운명의 룰렛 돌리기 ]</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* 테스트 환경 전용 룰렛 미리보기 카드 */}
+                <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
+                  <div className="space-y-1 text-center sm:text-left">
+                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 justify-center sm:justify-start">
+                      <Sparkles className="w-4 h-4 text-amber-500" />
+                      🧪 테스트용 룰렛 미리보기
+                    </span>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      실제 최종 결과 및 DB 데이터에 영향을 주지 않으며, 룰렛 UI 및 회전 기능을 시연할 수 있습니다.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRouletteWinnerResult(null);
+                      setShowRouletteModal(true);
+                    }}
+                    className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs shrink-0 border border-amber-500 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>룰렛 돌리기 (미리보기)</span>
+                  </button>
+                </div>
+
+                {/* ③ 최종 선정 아이디어 카드 (Spotlight) */}
+                <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg space-y-5 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-600 via-amber-400 to-indigo-600" />
+
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                      <Award className="w-5 h-5 text-amber-500" />
+                      🏆 최종 선정 아이디어
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={() => setShowWinnerModal(true)}
+                      className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-xl hover:bg-indigo-100 transition"
+                    >
+                      축하 팝업 열기
                     </button>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setRecoveryCodeOutput(null);
-                      setShowLoginModal(false);
-                    }}
-                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
-                  >
-                    확인 완료 및 시작하기
-                  </button>
-                </div>
-              ) : recoveredAccountResult ? (
-                /* 2. Show Recovered Account & New Password Result */
-                <div className="space-y-4 text-center py-2">
-                  <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto border border-emerald-200">
-                    <CheckCircle className="w-6 h-6 text-emerald-600" />
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="text-lg font-extrabold text-slate-900">계정 복구 성공!</h3>
-                    <p className="text-xs text-slate-500 leading-relaxed">
-                      로그인 아이디가 확인되었으며, 비밀번호가 안전하게 재설정되었습니다.
-                    </p>
-                  </div>
-
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-left text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 font-bold">🔑 로그인 아이디:</span>
-                      <span className="font-mono font-extrabold text-indigo-600">{recoveredAccountResult.loginId}</span>
-                    </div>
-                    <div className="flex justify-between items-center pt-1 border-t border-slate-200/80">
-                      <span className="text-slate-500 font-bold">🔐 새 복구 코드:</span>
-                      <span className="font-mono font-extrabold text-amber-600">{recoveredAccountResult.newRecoveryCode}</span>
-                    </div>
-                  </div>
-
-                  <p className="text-[11px] text-amber-700 font-medium bg-amber-50 p-2.5 rounded-xl border border-amber-200 text-left">
-                    ⚠️ 이전 복구 코드는 즉시 폐기되었습니다. 새로 발급된 복구 코드를 안전하게 보관하세요!
-                  </p>
-
-                  <button
-                    onClick={() => {
-                      setRecoveredAccountResult(null);
-                      setShowLoginModal(false);
-                    }}
-                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
-                  >
-                    로그인 상태로 서비스 이용하기
-                  </button>
-                </div>
-              ) : (
-                /* 3. Standard 3-Tab Form (Login / Signup / Recover) */
-                <>
-                  <div className="flex items-center justify-between">
-                    <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
-                      <Lock className="w-5 h-5" />
-                    </div>
-                    <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
-                        className={`px-2.5 py-1 rounded-lg transition ${authMode === 'LOGIN' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                      >
-                        로그인
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setAuthMode('SIGNUP'); setAuthError(null); }}
-                        className={`px-2.5 py-1 rounded-lg transition ${authMode === 'SIGNUP' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                      >
-                        회원가입
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setAuthMode('RECOVER'); setAuthError(null); }}
-                        className={`px-2 py-1 rounded-lg transition ${authMode === 'RECOVER' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                      >
-                        🔑 계정 복구
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900">
-                      {authMode === 'LOGIN' && '로그인'}
-                      {authMode === 'SIGNUP' && '회원가입 (계정 생성)'}
-                      {authMode === 'RECOVER' && '복구 코드로 계정 찾기'}
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-1">
-                      {authMode === 'LOGIN' && '아이디와 비밀번호를 입력하여 로그인하십시오.'}
-                      {authMode === 'SIGNUP' && '아이디와 비밀번호, 이름을 설정하여 계정을 생성하십시오.'}
-                      {authMode === 'RECOVER' && '발급받으셨던 복구 코드로 아이디를 확인하고 비밀번호를 재설정합니다.'}
-                    </p>
-                  </div>
-
-                  {authError && (
-                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-medium">
-                      <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-                      <span>{authError}</span>
-                    </div>
-                  )}
-
-                  {authMode === 'RECOVER' ? (
-                    /* Recover Form */
-                    <form onSubmit={handleAccountRecovery} className="space-y-3">
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">복구 코드 <span className="text-rose-500">*</span></label>
-                        <input
-                          type="text"
-                          required
-                          value={recoveryCodeInput}
-                          onChange={e => setRecoveryCodeInput(e.target.value)}
-                          placeholder="예: RC-A8F2-7K9M"
-                          className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
-                        />
+                  <div className="grid grid-cols-1 gap-4 pt-1">
+                    {(!roomDetails?.ideas || roomDetails.ideas.filter(i => i && i.status === 'WINNER').length === 0) ? (
+                      <div className="text-center py-6 text-slate-500 text-xs font-medium bg-slate-50 rounded-2xl border border-slate-100">
+                        최종 확정된 우승 아이디어를 불러오는 중입니다.
                       </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">새 비밀번호 설정 <span className="text-rose-500">*</span></label>
-                        <input
-                          type="password"
-                          required
-                          maxLength={15}
-                          value={recoveryNewPassword}
-                          onChange={e => setRecoveryNewPassword(e.target.value)}
-                          placeholder="영문 소문자 및 숫자 조합"
-                          className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                        />
-                      </div>
-
-                      <div className="pt-2 space-y-2">
-                        <button
-                          type="submit"
-                          disabled={isRecoveringAccount || !recoveryCodeInput.trim() || !recoveryNewPassword}
-                          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
-                        >
-                          {isRecoveringAccount ? '복구 및 검증 중...' : '계정 찾기 & 비밀번호 재설정'}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => { setShowLoginModal(false); setAuthError(null); }}
-                          className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
-                        >
-                          닫기
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    /* Login / Signup Form */
-                    <form onSubmit={authMode === 'LOGIN' ? handleEmailLogin : handleEmailSignUp} className="space-y-3">
-                      {authMode === 'SIGNUP' && (
-                        <div className="space-y-1">
-                          <label className="text-xs font-bold text-slate-700">이름 (닉네임) <span className="text-rose-500">*</span></label>
-                          <input
-                            type="text"
-                            required
-                            value={authName}
-                            onChange={e => setAuthName(e.target.value)}
-                            placeholder="예: 홍길동"
-                            className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
-                          />
-                        </div>
-                      )}
-
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">로그인 ID (이메일) <span className="text-rose-500">*</span></label>
-                        <input
-                          type="text"
-                          required
-                          value={authEmail}
-                          onChange={e => { setAuthEmail(e.target.value); setAuthError(null); }}
-                          placeholder="GOMINHAJO 또는 user@example.com"
-                          className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authEmail && !isEmailValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
-                            }`}
-                        />
-                        {authEmail && !isEmailValid && (
-                          <p className="text-[10px] text-rose-500 font-medium">⚠️ 올바른 이메일/ID 형식이 아닙니다.</p>
-                        )}
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs font-bold text-slate-700">비밀번호 <span className="text-rose-500">*</span></label>
-                          {authMode === 'SIGNUP' && (
-                            <span className="text-[10px] text-slate-400 font-normal">소문자+숫자 (최대 15자)</span>
-                          )}
-                        </div>
-                        <input
-                          type="password"
-                          required
-                          maxLength={15}
-                          value={authPassword}
-                          onChange={e => { setAuthPassword(e.target.value); setAuthError(null); }}
-                          placeholder="영문 소문자 및 숫자 조합"
-                          className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authMode === 'SIGNUP' && authPassword && !isPasswordValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
-                            }`}
-                        />
-                        {authMode === 'SIGNUP' && (
-                          <div className="pt-0.5">
-                            {authPassword ? (
-                              isPasswordValid ? (
-                                <p className="text-[10px] text-emerald-600 font-bold">✓ 사용 가능한 비밀번호입니다.</p>
-                              ) : (
-                                <p className="text-[10px] text-rose-500 font-medium">⚠️ 영문 소문자와 숫자를 포함하여 15자 이내로 입력해주세요.</p>
-                              )
-                            ) : null}
+                    ) : (
+                      roomDetails.ideas.filter(i => i && i.status === 'WINNER').map(winner => (
+                        <div key={winner.id} className="p-5 bg-gradient-to-br from-indigo-50/50 to-amber-50/30 rounded-2xl border border-indigo-100 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <h3 className="text-lg font-black text-indigo-950 tracking-tight">
+                              {winner.title}
+                            </h3>
+                            <span className="text-[11px] font-extrabold text-amber-900 bg-amber-200/90 border border-amber-300 px-2.5 py-0.5 rounded-full shrink-0">
+                              최종 채택
+                            </span>
                           </div>
-                        )}
-                      </div>
-
-                      <div className="pt-2 space-y-2">
-                        <button
-                          type="submit"
-                          disabled={authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim())}
-                          className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
-                        >
-                          {authMode === 'LOGIN' ? '로그인' : '회원가입 완료 및 복구코드 발급'}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => { setShowLoginModal(false); setAuthError(null); }}
-                          className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
-                        >
-                          닫기
-                        </button>
-                      </div>
-                    </form>
-                  )}
-                </>
-              )}
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Roulette Preview Modal (Test & Demo mode) */}
-      <AnimatePresence>
-        {showRouletteModal && (
-          <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-md w-full shadow-2xl space-y-5 text-center border border-indigo-100 relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-amber-500" />
-
-              <button
-                type="button"
-                onClick={() => setShowRouletteModal(false)}
-                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-
-              <div className="space-y-1">
-                <div className="inline-flex items-center gap-1 bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-black px-3 py-0.5 rounded-full mb-1">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                  <span>🧪 테스트용 룰렛 미리보기</span>
+                          <p className="text-xs md:text-sm text-slate-600 leading-relaxed font-medium">
+                            {winner.description}
+                          </p>
+                          <div className="pt-2 border-t border-indigo-100/60 flex items-center justify-between text-xs font-bold text-indigo-600">
+                            <span>제안자 : {winner.submitterName}</span>
+                            <span>⭐ 최종 득표: {roomDetails.starVotes?.[winner.id] || 0}표</span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-                <h3 className="text-lg font-black text-slate-900">🎲 운명의 룰렛 돌리기</h3>
-                <p className="text-xs text-rose-600 font-bold bg-rose-50 border border-rose-100 p-2 rounded-xl">
-                  ⚠️ 이 결과는 실제 최종 선정 결과에 반영되지 않는 미리보기 테스트입니다.
-                </p>
-              </div>
 
-              {/* Roulette Graphical Wheel */}
-              <div className="relative w-60 h-60 mx-auto my-4 flex items-center justify-center">
-                {/* Top Pointer Arrow (Points to 12 o'clock = 0 deg) */}
-                <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-30 w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[22px] border-t-rose-600 drop-shadow-lg" />
+                {/* ④ 최종 선정 이유 (AI 요약 리포트 및 근처 평가 근거) */}
+                <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                    <Sparkles className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-base font-black text-slate-900">최종 선정 이유 및 AI 리포트</h3>
+                  </div>
 
-                {/* Spinning Wheel Disk */}
-                <div
-                  className="w-full h-full rounded-full border-4 border-slate-900 shadow-xl overflow-hidden relative transition-transform ease-out"
-                  style={{
-                    transform: `rotate(${rouletteRotation}deg)`,
-                    transitionDuration: isSpinningRoulette ? '3.5s' : '0s'
-                  }}
-                >
-                  <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-                    {(() => {
-                      const total = rouletteCandidateIdeas.length;
-                      const sliceAngle = 360 / total;
-                      const colorPalette = [
-                        '#4f46e5', // indigo-600
-                        '#fbbf24', // amber-400
-                        '#059669', // emerald-600
-                        '#e11d48', // rose-600
-                        '#8b5cf6', // violet-600
-                        '#0284c7'  // sky-600
-                      ];
+                  {roomDetails.aiFinalSummary ? (
+                    <div className="space-y-4">
+                      <SafeMarkdown content={roomDetails.aiFinalSummary} />
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200/80 text-center space-y-2">
+                      <p className="text-xs text-slate-600 font-bold">
+                        💡 평가 데이터 및 투표 근거를 종합하여 세부 리포트를 도출하는 중입니다.
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        (참여자의 평가 데이터가 충분하지 않을 경우 기본 평가 점수 및 별 스티커 집계 결과를 기준으로 표출됩니다)
+                      </p>
+                    </div>
+                  )}
+                </div>
 
-                      return rouletteCandidateIdeas.map((candidate, idx) => {
-                        const startAngle = idx * sliceAngle;
-                        const endAngle = (idx + 1) * sliceAngle;
-                        const midAngle = startAngle + sliceAngle / 2;
+                {/* ⑤ 라운드별 의사결정 과정 타임라인 */}
+                <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-5">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                    <FileText className="w-5 h-5 text-indigo-600" />
+                    <h3 className="text-base font-black text-slate-900">라운드별 의사결정 및 소거 과정</h3>
+                  </div>
 
-                        // Calculate SVG Arc coordinates (radius = 50, center = 50, 50)
-                        const startRad = (Math.PI * startAngle) / 180;
-                        const endRad = (Math.PI * endAngle) / 180;
-                        const midRad = (Math.PI * midAngle) / 180;
+                  {/* Process Step Progression Bar */}
+                  <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                    <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
+                    <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
+                    <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
+                    <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
+                    <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
+                  </div>
 
-                        const x1 = 50 + 50 * Math.cos(startRad);
-                        const y1 = 50 + 50 * Math.sin(startRad);
-                        const x2 = 50 + 50 * Math.cos(endRad);
-                        const y2 = 50 + 50 * Math.sin(endRad);
+                  <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
+                    {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
+                      <div className="space-y-1 relative">
+                        <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-600" />
+                        <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
+                        <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
+                        <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
+                          전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
+                        </p>
+                      </div>
+                    ) : (
+                      (roomDetails.rounds || []).map(round => (
+                        <div key={round.id} className="space-y-1 relative">
+                          <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-rose-500" />
+                          <span className="text-[10px] font-black text-rose-500">{round.roundNumber}라운드 탈락 및 소거 이력</span>
+                          <h4 className="text-xs md:text-sm font-bold text-slate-900">
+                            {(round.eliminatedIdeaIds || []).map(id => roomDetails?.ideas?.find(i => i.id === id)?.title || '아이디어').join(', ')} 소거
+                          </h4>
+                          <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
+                            {round.aiSummaryText}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
 
-                        const largeArcFlag = sliceAngle > 180 ? 1 : 0;
-                        const pathData = total === 1
-                          ? 'M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0'
-                          : `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+                {/* ⑥ 의견이 갈린 아이디어 (Controversial Ideas) */}
+                {controversialIdeas.length > 0 && (
+                  <div className="bg-white p-6 md:p-8 rounded-3xl border border-amber-200 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                      <AlertCircle className="w-5 h-5 text-amber-600" />
+                      <h3 className="text-base font-black text-slate-900">의견이 팽팽했던 쟁점 아이디어</h3>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      유지 의견과 제외 의견이 동시에 높았거나, 4단계 별 스티커 투표 치열한 경합으로 인상 깊었던 쟁점 후보입니다.
+                    </p>
 
-                        // Text position at 68% radius
-                        const textX = 50 + 32 * Math.cos(midRad);
-                        const textY = 50 + 32 * Math.sin(midRad);
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {controversialIdeas.map(idea => {
+                        const stats = roomDetails.aggregatedScores?.[idea.id];
+                        const stars = roomDetails.starVotes?.[idea.id] || 0;
 
                         return (
-                          <g key={candidate.id || idx}>
-                            <path
-                              d={pathData}
-                              fill={colorPalette[idx % colorPalette.length]}
-                              stroke="#ffffff"
-                              strokeWidth="1.5"
-                            />
-                            <text
-                              x={textX}
-                              y={textY}
-                              fill="#ffffff"
-                              fontSize={total > 4 ? "4.5" : "5.5"}
-                              fontWeight="900"
-                              textAnchor="middle"
-                              dominantBaseline="central"
-                              transform={`rotate(${midAngle + 90}, ${textX}, ${textY})`}
-                              className="select-none font-sans drop-shadow-xs"
-                            >
-                              {candidate.title.length > 8 ? candidate.title.slice(0, 7) + '..' : candidate.title}
-                            </text>
-                          </g>
-                        );
-                      });
-                    })()}
-                  </svg>
-                </div>
-
-                {/* Center Hub Button */}
-                <div className="absolute w-12 h-12 bg-slate-900 text-white rounded-full border-2 border-white shadow-md flex items-center justify-center font-black text-xs z-20 pointer-events-none">
-                  🎯
-                </div>
-              </div>
-
-              {/* Result Indicator */}
-              {rouletteWinnerResult && (
-                <div className="bg-amber-50 border border-amber-300 p-3 rounded-2xl space-y-1 animate-fade-in">
-                  <span className="text-[10px] font-bold text-amber-800">🎉 룰렛 미리보기 당첨 후보</span>
-                  <p className="text-sm font-black text-indigo-950">[{rouletteWinnerResult}]</p>
-                </div>
-              )}
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowRouletteModal(false)}
-                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                >
-                  닫기
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSpinRoulette}
-                  disabled={isSpinningRoulette}
-                  className="flex-1 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                >
-                  {isSpinningRoulette ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      회전 중...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                      <span>{rouletteWinnerResult ? '다시 돌리기' : '룰렛 돌리기'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Dual Link & Invitation Modal (① 참여자 전용 링크 vs ② 투표자 공개 링크) */}
-      <AnimatePresence>
-        {showShareModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-6 text-left"
-            >
-              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-2xl flex items-center justify-center font-bold shrink-0">
-                    🔗
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-900 leading-snug">회의실 전용 링크 공유 및 관리</h3>
-                    <p className="text-xs text-slate-400">참여자용 링크 및 2차 투표자 전용 공개 링크를 구분 발급합니다.</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowShareModal(false)}
-                  className="text-slate-400 hover:text-slate-600 transition"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Card 1: ① 참여자 전용 링크 */}
-              <div className="p-5 bg-indigo-50/50 rounded-3xl border border-indigo-100/80 space-y-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-indigo-600 text-white">
-                    ① 참여자 전용 링크
-                  </span>
-                  <span className="text-xs font-bold text-indigo-900">최대 6명 (의견 및 아이디어 제출 가능)</span>
-                </div>
-
-                <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  회의에 직접 동참하여 아이디어를 발제하고 익명 평가 기준을 제출하는 핵심 참여자 링크입니다. (입장 시 닉네임 최대 6자 설정)
-                </p>
-
-                {/* Email invitation form */}
-                <form onSubmit={handleSendEmailInvite} className="flex gap-2.5">
-                  <input
-                    type="email"
-                    value={inviteEmailInput}
-                    onChange={e => setInviteEmailInput(e.target.value)}
-                    placeholder="참여자 이메일 입력 (예: member@company.com)"
-                    className="flex-1 px-4 py-3 border border-indigo-200/80 rounded-2xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
-                  />
-                  <button
-                    type="submit"
-                    className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-xs shrink-0"
-                  >
-                    이메일 초대
-                  </button>
-                </form>
-
-                {/* Copy Link Button */}
-                <button
-                  type="button"
-                  onClick={async () => {
-                    let tokenToUse = activeInviteToken;
-                    if (!tokenToUse || inviteSecondsLeft <= 0) {
-                      if (activeRoomId) {
-                        tokenToUse = await handleGenerateNewInviteToken(activeRoomId);
-                      }
-                    }
-                    if (tokenToUse) {
-                      const inviteUrl = `${window.location.origin}/invite/${tokenToUse}`;
-                      navigator.clipboard.writeText(inviteUrl);
-                      triggerToast('참여자 전용 초대 링크가 클립보드에 복사되었습니다!');
-                    } else {
-                      copyParticipantLink();
-                    }
-                  }}
-                  className="w-full py-3.5 bg-white hover:bg-indigo-50/50 border border-indigo-200 text-indigo-900 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-                >
-                  <Copy className="w-4 h-4 text-indigo-600" />
-                  <span>참여자 전용 복사 링크</span>
-                </button>
-              </div>
-
-              {/* Card 2: ② 투표자 공개 링크 */}
-              <div className="p-5 bg-slate-50 rounded-3xl border border-slate-200/80 space-y-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-900 text-white">
-                    ② 투표자 공개 링크
-                  </span>
-                  <span className="text-xs font-bold text-slate-700">MVP 기본 30명 (2차 익명 투표 전용)</span>
-                </div>
-
-                <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  인원 제한이 완화되어 제출된 아이디어에 대해 소신 투표만 익명으로 진행하는 외부/동료 전용 공개 링크입니다.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={copyVoterLink}
-                  className="w-full py-3.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-                >
-                  <Copy className="w-4 h-4 text-slate-600" />
-                  <span>투표자 전용 복사 링크</span>
-                </button>
-              </div>
-
-              {/* Footer close button */}
-              <div className="pt-1 text-right">
-                <button
-                  type="button"
-                  onClick={() => setShowShareModal(false)}
-                  className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-2xl transition"
-                >
-                  닫기
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Winner Announcement Popup Modal ("최종 아이디어가 선정되었습니다") */}
-      <AnimatePresence>
-        {showWinnerModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-xl w-full shadow-2xl space-y-6 text-center border border-indigo-100 relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-emerald-500" />
-
-              <button
-                type="button"
-                onClick={() => setShowWinnerModal(false)}
-                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-
-              <div className="w-16 h-16 bg-amber-50 border border-amber-200 text-amber-500 rounded-full flex items-center justify-center mx-auto shadow-md">
-                <Award className="w-8 h-8 animate-bounce text-amber-500" />
-              </div>
-
-              <div className="space-y-1.5">
-                <h2 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">
-                  🎉 최종 아이디어가 선정되었습니다
-                </h2>
-                <p className="text-xs text-slate-500 font-medium">
-                  방 개설 설정 기준 (최종 {roomDetails?.room.targetWinnerCount || 1}개 결과 선정)에 따른 최종 우승작 목록입니다.
-                </p>
-              </div>
-
-              <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1 text-left">
-                {(() => {
-                  const allIdeas = roomDetails?.ideas || [];
-                  const winners = allIdeas.filter(i => i.status === 'WINNER' || (roomDetails?.room.status === 'CLOSED' && i.status === 'ACTIVE'));
-                  const targetCount = roomDetails?.room.targetWinnerCount || 1;
-                  const displayWinners = winners.length > 0
-                    ? winners
-                    : allIdeas.filter(i => i.status === 'ACTIVE').slice(0, targetCount);
-
-                  if (displayWinners.length === 0) {
-                    return <p className="text-xs text-slate-400 text-center py-4">선정된 최종 아이디어가 없습니다.</p>;
-                  }
-
-                  return displayWinners.map((winner, idx) => {
-                    const stats = roomDetails?.aggregatedScores?.[winner.id];
-                    return (
-                      <div key={winner.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-3 shadow-xs">
-                        <div className="flex items-start justify-between gap-2 border-b border-slate-200/60 pb-2">
-                          <div>
-                            <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100 mb-1 inline-block">
-                              최종 선정 아이디어 #{idx + 1}
-                            </span>
-                            <h3 className="text-base font-bold text-slate-900">{winner.title}</h3>
+                          <div key={idea.id} className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/80 space-y-1.5">
+                            <h4 className="text-xs font-extrabold text-slate-900">{idea.title}</h4>
+                            <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-2">{idea.description}</p>
+                            <div className="flex items-center gap-3 pt-1 text-[10px] font-bold text-amber-900">
+                              {stats && (
+                                <>
+                                  <span>👍 찬성: {stats.keepCount}표</span>
+                                  <span>👎 제외희망: {stats.excludeCount}표</span>
+                                </>
+                              )}
+                              <span>⭐ 별스티커: {stars}표</span>
+                            </div>
                           </div>
-                          {stats && (
-                            <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-100 shrink-0">
-                              {stats.score}점 ({stats.keepCount}표 찬성)
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line">
-                          {winner.description}
-                        </p>
-
-                        <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
-                          <span className="font-semibold bg-white px-2.5 py-1 rounded-lg border border-slate-200">
-                            제안자: {winner.submitterName}
-                          </span>
-                          {winner.attachmentUrl && (
-                            <a
-                              href={winner.attachmentUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-indigo-600 hover:underline font-bold text-[11px]"
-                            >
-                              📎 첨부파일 보기
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-
-              <div className="pt-2 flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowWinnerModal(false)}
-                  className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                >
-                  닫기
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowWinnerModal(false)}
-                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1"
-                >
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>최종 결과 확인하기</span>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Proposal Delete Confirmation Modal */}
-      <AnimatePresence>
-        {deletingProposalId && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white p-6 rounded-3xl max-w-sm w-full shadow-2xl space-y-5 text-center border border-slate-100"
-            >
-              <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto shadow-xs">
-                <Trash2 className="w-6 h-6" />
-              </div>
-              <div className="space-y-1.5">
-                <h3 className="text-base font-bold text-slate-900">평가 기준 삭제</h3>
-                <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                  이 평가 기준을 삭제하시겠습니까? 삭제한 내용은 복구할 수 없습니다.
-                </p>
-              </div>
-              <div className="flex gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setDeletingProposalId(null)}
-                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmDeleteProposal}
-                  className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition shadow-xs"
-                >
-                  삭제하기
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Final Candidate Vote Modal ("최종 후보 투표하기") */}
-      {/* Final Candidate Vote Modal ("2차 별 스티커 투표하기 모달") */}
-      <AnimatePresence>
-        {showFinalVoteModal && (
-          <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6 overflow-hidden">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl w-full max-w-2xl max-h-[85vh] md:max-h-[80vh] shadow-2xl flex flex-col border border-indigo-100 relative overflow-hidden text-left"
-            >
-              {/* Top Accent Line */}
-              <div className="h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-indigo-700 shrink-0" />
-
-              {/* Fixed Header */}
-              <div className="p-5 md:px-6 md:pt-5 md:pb-4 border-b border-slate-100 shrink-0 space-y-3 bg-white">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold border border-amber-200 shrink-0">
-                      ⭐
-                    </div>
-                    <div>
-                      <h3 className="text-base font-extrabold text-slate-900">4단계 2차 별 스티커 투표</h3>
-                      <p className="text-xs text-slate-500 font-medium">생존한 후보 아이디어 중 최종 결과로 채택할 후보에 별 스티커를 붙여주세요.</p>
+                        );
+                      })}
                     </div>
                   </div>
+                )}
+
+                {/* 로비 홈으로 이동 버튼 */}
+                <div className="text-center pt-4">
                   <button
                     type="button"
-                    onClick={() => setShowFinalVoteModal(false)}
-                    className="text-slate-400 hover:text-slate-600 transition p-1 rounded-lg hover:bg-slate-100 shrink-0"
+                    onClick={handleLeaveRoom}
+                    className="px-7 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
                   >
-                    <X className="w-5 h-5" />
+                    로비 홈화면으로 이동하기
                   </button>
                 </div>
 
-                {/* Star Status Display Header Banner */}
-                {(() => {
-                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
-                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                  const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
-                  const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
-                  const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
-                  const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
-
-                  return (
-                    <div className="bg-slate-900 text-white p-3 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-300">최종 결과 목표: <strong className="text-white">{targetWinners}개</strong></span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-amber-300 font-bold">내 별 스티커: ⭐ {targetWinners}개</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="bg-amber-400/20 text-amber-300 px-2.5 py-0.5 rounded-md font-bold border border-amber-400/30">
-                          사용한 별: <span className="text-white">{currentSelectedCount}개</span>
-                        </span>
-                        <span className="bg-white/10 text-slate-200 px-2.5 py-0.5 rounded-md font-bold border border-white/20">
-                          남은 별: <span className="text-amber-400">{remainingStars}개</span>
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
               </div>
+            )}
 
-              {/* Scrollable Middle Candidates List */}
-              <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
-                {(() => {
-                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
-                  const activeIdeaIds = activeIdeas.map(i => i.id);
-                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                  const isSubmittedByMe = Boolean(
-                    (roomDetails?.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
-                    validMyStarVotes.length >= targetWinners
-                  );
-
-                  if (activeIdeas.length === 0) {
-                    return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
-                  }
-
-                  return activeIdeas.map(idea => {
-                    const isSelectedByMe = isSubmittedByMe
-                      ? validMyStarVotes.includes(idea.id)
-                      : mySelectedStarIdeaIds.includes(idea.id);
-                    const stats = roomDetails?.aggregatedScores?.[idea.id];
-                    const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
-
-                    return (
-                      <div
-                        key={idea.id}
-                        onClick={() => handleToggleStarIdea(idea.id)}
-                        className={`p-4 md:p-4.5 rounded-2xl border transition cursor-pointer flex flex-col space-y-2.5 ${isSelectedByMe
-                          ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30 shadow-xs'
-                          : 'bg-white border-slate-200 hover:bg-slate-50/80 hover:border-slate-300'
-                          }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="space-y-1 flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">{idea.title}</h4>
-                              {isSelectedByMe ? (
-                                <span className="text-[10px] font-black text-amber-950 bg-amber-200/90 border border-amber-300/80 px-2 py-0.5 rounded-md flex items-center gap-1">
-                                  ★ 내가 선택한 후보
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
-                                  ☆ 선택 전
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-slate-600 leading-normal line-clamp-3 whitespace-pre-line">
-                              {idea.description}
-                            </p>
-                          </div>
-
-                          {/* Star Toggle Display Button */}
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleStarIdea(idea.id);
-                              }}
-                              disabled={isSubmittedByMe}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${isSelectedByMe
-                                ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
-                                } disabled:opacity-80 disabled:cursor-not-allowed`}
-                            >
-                              <span className="text-sm">{isSelectedByMe ? '★' : '☆'}</span>
-                              <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
-                            </button>
-
-                            {roomDetails?.room.hostId === userId && totalStarVotes > 0 && (
-                              <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
-                                ⭐ {totalStarVotes}표 득표
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-100/80">
-                          <span>제안자: {idea.submitterName}</span>
-                          {stats && (
-                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
-                              1차 종합점수 {stats.score}점 ({stats.keepCount}표 유지)
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-
-              {/* Fixed Footer with Submission Controls */}
-              {(() => {
-                const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
-                const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
-                const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
-                const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
-                const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
-
-                return (
-                  <div className="p-4 md:px-6 border-t border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between gap-3">
-                    <div className="text-xs font-bold text-slate-600 hidden sm:block">
-                      {isSubmitted ? (
-                        <span className="text-emerald-600 flex items-center gap-1">
-                          <Check className="w-4 h-4" />
-                          이미 투표가 제출되었습니다
-                        </span>
-                      ) : remainingStars > 0 ? (
-                        <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
-                          ⚠️ 평가 기준을 확인한 뒤 최종 후보로 선택할 아이디어 {targetWinners}개에 1위부터 {targetWinners}위까지 순위를 모두 지정해 주세요.
-                        </span>
-                      ) : (
-                        <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                          ✓ 별 스티커 순위 지정 완료! 투표를 제출할 수 있습니다.
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2.5 w-full sm:w-auto">
-                      <button
-                        type="button"
-                        onClick={() => setShowFinalVoteModal(false)}
-                        className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex-1 sm:flex-none"
-                      >
-                        닫기
-                      </button>
-
-                      {!isSubmitted ? (
-                        <button
-                          type="button"
-                          onClick={handleSubmitStarVote}
-                          disabled={remainingStars > 0 || isSubmittingStarVote}
-                          className={`px-5 py-2.5 rounded-xl text-xs font-extrabold transition flex-1 sm:flex-none flex items-center justify-center gap-1.5 shadow-md ${remainingStars === 0 && !isSubmittingStarVote
-                            ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 cursor-pointer active:scale-95'
-                            : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
-                            }`}
-                        >
-                          {isSubmittingStarVote ? (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              제출 중...
-                            </>
-                          ) : (
-                            <>
-                              <Sparkles className="w-3.5 h-3.5" />
-                              <span>{remainingStars === 0 ? '별 스티커 투표 제출' : `별 ${remainingStars}개 추가 선택 필요`}</span>
-                            </>
-                          )}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setShowFinalVoteModal(false)}
-                          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1 flex-1 sm:flex-none"
-                        >
-                          <Check className="w-4 h-4" />
-                          <span>투표 제출 완료됨</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </motion.div>
           </div>
-        )}
-      </AnimatePresence>
+        </div>
+      )}
+    </div>
+  )}
+</main>
 
-      {/* Room Settings Edit Modal (Host Only) */}
-      <AnimatePresence>
-        {showRoomSettingsModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-5 text-left"
+{/* Email Authentication & Account Recovery Modal (user_accounts) */}
+<AnimatePresence>
+  {showLoginModal && (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-xl space-y-5 text-left"
+      >
+        {/* 1. Show newly generated Recovery Code right after Sign Up */}
+        {recoveryCodeOutput ? (
+          <div className="space-y-4 text-center py-2">
+            <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto border border-amber-200">
+              <Lock className="w-6 h-6 text-amber-600" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-extrabold text-slate-900">계정 복구 코드가 발급되었습니다!</h3>
+              <p className="text-xs text-slate-500 leading-relaxed px-1">
+                비밀번호를 잊으셨을 때 계정을 찾고 재설정할 수 있는 **유일한 복구 수단**입니다. 단방향 해시로 안전하게 관리되므로 복사하여 안전한 곳에 보관하세요.
+              </p>
+            </div>
+
+            <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center justify-between gap-2 shadow-xs">
+              <span className="font-mono font-extrabold text-sm text-slate-900 tracking-wider">
+                {recoveryCodeOutput}
+              </span>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(recoveryCodeOutput);
+                  triggerToast('복구 코드가 클립보드에 복사되었습니다!', 'success');
+                }}
+                className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs cursor-pointer"
+              >
+                복사
+              </button>
+            </div>
+
+            <button
+              onClick={() => {
+                setRecoveryCodeOutput(null);
+                setShowLoginModal(false);
+              }}
+              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
             >
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 bg-slate-900 text-amber-400 rounded-xl flex items-center justify-center font-bold">
-                    <Settings className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-extrabold text-slate-900">⚙️ 방 설정 및 정보 수정 (방장 전용)</h3>
-                    <p className="text-xs text-slate-400">회의 주제, 참여 인원, 최소 정족수 등 방 정보를 변경합니다.</p>
-                  </div>
-                </div>
+              확인 완료 및 시작하기
+            </button>
+          </div>
+        ) : recoveredAccountResult ? (
+          /* 2. Show Recovered Account & New Password Result */
+          <div className="space-y-4 text-center py-2">
+            <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto border border-emerald-200">
+              <CheckCircle className="w-6 h-6 text-emerald-600" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-extrabold text-slate-900">계정 복구 성공!</h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                로그인 아이디가 확인되었으며, 비밀번호가 안전하게 재설정되었습니다.
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-left text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-bold">🔑 로그인 아이디:</span>
+                <span className="font-mono font-extrabold text-indigo-600">{recoveredAccountResult.loginId}</span>
+              </div>
+              <div className="flex justify-between items-center pt-1 border-t border-slate-200/80">
+                <span className="text-slate-500 font-bold">🔐 새 복구 코드:</span>
+                <span className="font-mono font-extrabold text-amber-600">{recoveredAccountResult.newRecoveryCode}</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-amber-700 font-medium bg-amber-50 p-2.5 rounded-xl border border-amber-200 text-left">
+              ⚠️ 이전 복구 코드는 즉시 폐기되었습니다. 새로 발급된 복구 코드를 안전하게 보관하세요!
+            </p>
+
+            <button
+              onClick={() => {
+                setRecoveredAccountResult(null);
+                setShowLoginModal(false);
+              }}
+              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
+            >
+              로그인 상태로 서비스 이용하기
+            </button>
+          </div>
+        ) : (
+          /* 3. Standard 3-Tab Form (Login / Signup / Recover) */
+          <>
+            <div className="flex items-center justify-between">
+              <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-bold gap-0.5">
                 <button
                   type="button"
-                  onClick={() => setShowRoomSettingsModal(false)}
-                  className="text-slate-400 hover:text-slate-600 transition"
+                  onClick={() => { setAuthMode('LOGIN'); setAuthError(null); }}
+                  className={`px-2.5 py-1 rounded-lg transition ${authMode === 'LOGIN' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                 >
-                  <X className="w-5 h-5" />
+                  로그인
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode('SIGNUP'); setAuthError(null); }}
+                  className={`px-2.5 py-1 rounded-lg transition ${authMode === 'SIGNUP' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  회원가입
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode('RECOVER'); setAuthError(null); }}
+                  className={`px-2 py-1 rounded-lg transition ${authMode === 'RECOVER' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  🔑 계정 복구
                 </button>
               </div>
+            </div>
 
-              <form onSubmit={handleUpdateRoomSettings} className="space-y-4">
+            <div>
+              <h3 className="text-xl font-bold text-slate-900">
+                {authMode === 'LOGIN' && '로그인'}
+                {authMode === 'SIGNUP' && '회원가입 (계정 생성)'}
+                {authMode === 'RECOVER' && '복구 코드로 계정 찾기'}
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                {authMode === 'LOGIN' && '아이디와 비밀번호를 입력하여 로그인하십시오.'}
+                {authMode === 'SIGNUP' && '아이디와 비밀번호, 이름을 설정하여 계정을 생성하십시오.'}
+                {authMode === 'RECOVER' && '발급받으셨던 복구 코드로 아이디를 확인하고 비밀번호를 재설정합니다.'}
+              </p>
+            </div>
+
+            {authError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-medium">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            {authMode === 'RECOVER' ? (
+              /* Recover Form */
+              <form onSubmit={handleAccountRecovery} className="space-y-3">
                 <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700">회의 주제 (방 제목) <span className="text-rose-500">*</span></label>
+                  <label className="text-xs font-bold text-slate-700">복구 코드 <span className="text-rose-500">*</span></label>
                   <input
                     type="text"
                     required
-                    value={editRoomTitle}
-                    onChange={e => setEditRoomTitle(e.target.value)}
-                    placeholder="예: 2026 하반기 신규 서비스 기획 아이디어 선정"
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={recoveryCodeInput}
+                    onChange={e => setRecoveryCodeInput(e.target.value)}
+                    placeholder="예: RC-A8F2-7K9M"
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700">방 상세 설명 & 핵심 목표</label>
-                  <textarea
-                    value={editRoomDesc}
-                    onChange={e => setEditRoomDesc(e.target.value)}
-                    rows={3}
-                    placeholder="회의 목적, 제약 사항 및 고려 조건을 입력해 주십시오."
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  <label className="text-xs font-bold text-slate-700">새 비밀번호 설정 <span className="text-rose-500">*</span></label>
+                  <input
+                    type="password"
+                    required
+                    maxLength={15}
+                    value={recoveryNewPassword}
+                    onChange={e => setRecoveryNewPassword(e.target.value)}
+                    placeholder="영문 소문자 및 숫자 조합"
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-700">아이디어 카테고리</label>
-                    <select
-                      value={editRoomCategory}
-                      onChange={e => setEditRoomCategory(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                    >
-                      <option value="기획">💡 기획 / 신규 비즈니스</option>
-                      <option value="디자인">🎨 디자인 / UX·UI</option>
-                      <option value="개발">💻 개발 / IT 파이프라인</option>
-                      <option value="마케팅">📢 마케팅 / 바이럴</option>
-                      <option value="기타">📂 기타</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-700">최종 우승작 선정 개수</label>
-                    <select
-                      value={editRoomTargetWinnerCount}
-                      onChange={e => setEditRoomTargetWinnerCount(Number(e.target.value))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                    >
-                      <option value={1}>🏆 1개 아이디어 확정</option>
-                      <option value={2}>🏆 2개 아이디어 확정</option>
-                      <option value={3}>🏆 3개 아이디어 확정</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-700">최대 정원 (최대 6명)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={6}
-                      value={editRoomMaxParticipants}
-                      onChange={e => setEditRoomMaxParticipants(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-700">익명 안심 최소 정족수</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={6}
-                      value={editRoomMinThreshold}
-                      onChange={e => setEditRoomMinThreshold(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setShowRoomSettingsModal(false)}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition"
-                  >
-                    취소
-                  </button>
+                <div className="pt-2 space-y-2">
                   <button
                     type="submit"
-                    disabled={isUpdatingRoomSettings}
-                    className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-extrabold transition shadow-md flex items-center gap-1.5"
+                    disabled={isRecoveringAccount || !recoveryCodeInput.trim() || !recoveryNewPassword}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
                   >
-                    {isUpdatingRoomSettings ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        저장 중...
-                      </>
-                    ) : (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-amber-400" />
-                        방 정보 변경 사항 저장
-                      </>
-                    )}
+                    {isRecoveringAccount ? '복구 및 검증 중...' : '계정 찾기 & 비밀번호 재설정'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => { setShowLoginModal(false); setAuthError(null); }}
+                    className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
+                  >
+                    닫기
                   </button>
                 </div>
               </form>
-            </motion.div>
+            ) : (
+              /* Login / Signup Form */
+              <form onSubmit={authMode === 'LOGIN' ? handleEmailLogin : handleEmailSignUp} className="space-y-3">
+                {authMode === 'SIGNUP' && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700">이름 (닉네임) <span className="text-rose-500">*</span></label>
+                    <input
+                      type="text"
+                      required
+                      value={authName}
+                      onChange={e => setAuthName(e.target.value)}
+                      placeholder="예: 홍길동"
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                    />
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700">로그인 ID (이메일) <span className="text-rose-500">*</span></label>
+                  <input
+                    type="text"
+                    required
+                    value={authEmail}
+                    onChange={e => setAuthEmail(e.target.value)}
+                    placeholder="example@company.com 또는 아이디어ID"
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700">비밀번호 <span className="text-rose-500">*</span></label>
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={e => setAuthPassword(e.target.value)}
+                    placeholder="8~64자 영문, 숫자 조합"
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                  />
+                </div>
+
+                <div className="pt-2 space-y-2">
+                  <button
+                    type="submit"
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
+                  >
+                    {authMode === 'LOGIN' ? '로그인' : '회원가입 및 복구 코드 발급'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => { setShowLoginModal(false); setAuthError(null); }}
+                    className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center cursor-pointer"
+                  >
+                    닫기
+                  </button>
+                </div>
+              </form>
+            )}
+          </>
+        )}
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+
+{/* Roulette Modal Preview */}
+<AnimatePresence>
+  {showRouletteModal && (
+    <div className="fixed inset-0 z-[65] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        className="bg-white p-6 md:p-8 rounded-3xl max-w-sm w-full shadow-2xl space-y-5 text-center border border-indigo-100 relative overflow-hidden"
+      >
+        <button
+          type="button"
+          onClick={() => setShowRouletteModal(false)}
+          className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        <div className="space-y-1">
+          <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
+            🎲 미니 게임
+          </span>
+          <h3 className="text-lg font-black text-slate-900">운명의 룰렛 추첨</h3>
+          <p className="text-xs text-slate-500 font-medium">동점 또는 결정 난항 시 룰렛을 돌려 무작위 추첨을 시연합니다.</p>
+        </div>
+
+        {/* SVG Roulette Graphic */}
+        <div className="relative w-56 h-56 mx-auto flex items-center justify-center py-2">
+          {/* Top Pointer Indicator */}
+          <div className="absolute -top-1 left-1/2 -translate-x-1/2 z-30 w-0 h-0 border-l-8 border-l-transparent border-r-8 border-r-transparent border-t-[14px] border-t-rose-600 filter drop-shadow-md" />
+
+          {/* Rotating Wheel Container */}
+          <div
+            style={{
+              transform: `rotate(${rouletteRotation}deg)`,
+              transition: isSpinningRoulette ? 'transform 3.5s cubic-bezier(0.15, 0.85, 0.35, 1.0)' : 'none',
+            }}
+            className="w-full h-full rounded-full shadow-xl overflow-hidden border-4 border-slate-900 bg-slate-900 relative"
+          >
+            <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+              {(() => {
+                const candidates = rouletteCandidateIdeas;
+                const total = candidates.length;
+                if (total === 0) return null;
+                const sliceAngle = 360 / total;
+
+                const colorPalette = ['#6366f1', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4'];
+
+                return candidates.map((candidate, idx) => {
+                  const startAngle = idx * sliceAngle;
+                  const endAngle = (idx + 1) * sliceAngle;
+                  const midAngle = startAngle + sliceAngle / 2;
+
+                  const rad1 = (startAngle * Math.PI) / 180;
+                  const rad2 = (endAngle * Math.PI) / 180;
+                  const midRad = (midAngle * Math.PI) / 180;
+
+                  const x1 = 50 + 50 * Math.cos(rad1);
+                  const y1 = 50 + 50 * Math.sin(rad1);
+                  const x2 = 50 + 50 * Math.cos(rad2);
+                  const y2 = 50 + 50 * Math.sin(rad2);
+
+                  const largeArcFlag = sliceAngle > 180 ? 1 : 0;
+                  const pathData = total === 1
+                    ? 'M 50,50 m -50,0 a 50,50 0 1,0 100,0 a 50,50 0 1,0 -100,0'
+                    : `M 50 50 L ${x1} ${y1} A 50 50 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+
+                  // Text position at 68% radius
+                  const textX = 50 + 32 * Math.cos(midRad);
+                  const textY = 50 + 32 * Math.sin(midRad);
+
+                  return (
+                    <g key={candidate.id || idx}>
+                      <path
+                        d={pathData}
+                        fill={colorPalette[idx % colorPalette.length]}
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                      />
+                      <text
+                        x={textX}
+                        y={textY}
+                        fill="#ffffff"
+                        fontSize={total > 4 ? "4.5" : "5.5"}
+                        fontWeight="900"
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        transform={`rotate(${midAngle + 90}, ${textX}, ${textY})`}
+                        className="select-none font-sans drop-shadow-xs"
+                      >
+                        {candidate.title.length > 8 ? candidate.title.slice(0, 7) + '..' : candidate.title}
+                      </text>
+                    </g>
+                  );
+                });
+              })()}
+            </svg>
+          </div>
+
+          {/* Center Hub Button */}
+          <div className="absolute w-12 h-12 bg-slate-900 text-white rounded-full border-2 border-white shadow-md flex items-center justify-center font-black text-xs z-20 pointer-events-none">
+            🎯
+          </div>
+        </div>
+
+        {/* Result Indicator */}
+        {rouletteWinnerResult && (
+          <div className="bg-amber-50 border border-amber-300 p-3 rounded-2xl space-y-1 animate-fade-in">
+            <span className="text-[10px] font-bold text-amber-800">🎉 룰렛 미리보기 당첨 후보</span>
+            <p className="text-sm font-black text-indigo-950">[{rouletteWinnerResult}]</p>
           </div>
         )}
-      </AnimatePresence>
+
+        <div className="flex gap-2 pt-2">
+          <button
+            type="button"
+            onClick={() => setShowRouletteModal(false)}
+            className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+          >
+            닫기
+          </button>
+          <button
+            type="button"
+            onClick={handleSpinRoulette}
+            disabled={isSpinningRoulette}
+            className="flex-1 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+          >
+            {isSpinningRoulette ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                회전 중...
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+                <span>{rouletteWinnerResult ? '다시 돌리기' : '룰렛 돌리기'}</span>
+              </>
+            )}
+          </button>
+        </div>
+      </motion.div>
     </div>
-  );
+  )}
+</AnimatePresence>
+
+{/* Private participant invitation modal */}
+<AnimatePresence>
+  {showShareModal && (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-6 text-left"
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-2xl flex items-center justify-center font-bold shrink-0">
+              🔗
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-slate-900 leading-snug">회의실 전용 링크 공유 및 관리</h3>
+              <p className="text-xs text-slate-400">초대받은 로그인 팀원만 회의실에 참여할 수 있습니다.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowShareModal(false)}
+            className="text-slate-400 hover:text-slate-600 transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Card 1: ① 참여자 전용 링크 */}
+        <div className="p-5 bg-indigo-50/50 rounded-3xl border border-indigo-100/80 space-y-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold px-3 py-1 rounded-full bg-indigo-600 text-white">
+              ① 참여자 전용 링크
+            </span>
+            <span className="text-xs font-bold text-indigo-900">최대 6명 (의견 및 아이디어 제출 가능)</span>
+          </div>
+
+          <p className="text-xs text-slate-600 leading-relaxed font-medium">
+            회의에 직접 동참하여 아이디어를 발제하고 익명 평가 기준을 제출하는 핵심 참여자 링크입니다. (입장 시 닉네임 최대 6자 설정)
+          </p>
+
+          {/* Email invitation form */}
+          <form onSubmit={handleSendEmailInvite} className="flex gap-2.5">
+            <input
+              type="email"
+              value={inviteEmailInput}
+              onChange={e => setInviteEmailInput(e.target.value)}
+              placeholder="참여자 이메일 입력 (예: member@company.com)"
+              className="flex-1 px-4 py-3 border border-indigo-200/80 rounded-2xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
+            />
+            <button
+              type="submit"
+              className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-xs shrink-0"
+            >
+              이메일 초대
+            </button>
+          </form>
+
+          {/* Copy Link Button */}
+          <button
+            type="button"
+            onClick={async () => {
+              let tokenToUse = activeInviteToken;
+              if (!tokenToUse || inviteSecondsLeft <= 0) {
+                if (activeRoomId) {
+                  tokenToUse = await handleGenerateNewInviteToken(activeRoomId);
+                }
+              }
+              if (tokenToUse) {
+                const inviteUrl = `${window.location.origin}/invite/${tokenToUse}`;
+                navigator.clipboard.writeText(inviteUrl);
+                triggerToast('참여자 전용 초대 링크가 클립보드에 복사되었습니다!');
+              } else {
+                copyParticipantLink();
+              }
+            }}
+            className="w-full py-3.5 bg-white hover:bg-indigo-50/50 border border-indigo-200 text-indigo-900 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
+          >
+            <Copy className="w-4 h-4 text-indigo-600" />
+            <span>참여자 전용 복사 링크</span>
+          </button>
+        </div>
+
+        {/* Footer close button */}
+        <div className="pt-1 text-right">
+          <button
+            type="button"
+            onClick={() => setShowShareModal(false)}
+            className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-2xl transition"
+          >
+            닫기
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+
+{/* Winner Announcement Popup Modal ("최종 아이디어가 선정되었습니다") */}
+<AnimatePresence>
+  {showWinnerModal && (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        className="bg-white p-6 md:p-8 rounded-3xl max-w-xl w-full shadow-2xl space-y-6 text-center border border-indigo-100 relative overflow-hidden"
+      >
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-emerald-500" />
+
+        <button
+          type="button"
+          onClick={() => setShowWinnerModal(false)}
+          className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        <div className="w-16 h-16 bg-amber-50 border border-amber-200 text-amber-500 rounded-full flex items-center justify-center mx-auto shadow-md">
+          <Award className="w-8 h-8 animate-bounce text-amber-500" />
+        </div>
+
+        <div className="space-y-1.5">
+          <h2 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">
+            🎉 최종 아이디어가 선정되었습니다
+          </h2>
+          <p className="text-xs text-slate-500 font-medium">
+            방 개설 설정 기준 (최종 {roomDetails?.room.targetWinnerCount || 1}개 결과 선정)에 따른 최종 우승작 목록입니다.
+          </p>
+        </div>
+
+        <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1 text-left">
+          {(() => {
+            const allIdeas = roomDetails?.ideas || [];
+            const winners = allIdeas.filter(i => i.status === 'WINNER' || (roomDetails?.room.status === 'CLOSED' && i.status === 'ACTIVE'));
+            const targetCount = roomDetails?.room.targetWinnerCount || 1;
+            const displayWinners = winners.length > 0
+              ? winners
+              : allIdeas.filter(i => i.status === 'ACTIVE').slice(0, targetCount);
+
+            if (displayWinners.length === 0) {
+              return <p className="text-xs text-slate-400 text-center py-4">선정된 최종 아이디어가 없습니다.</p>;
+            }
+
+            return displayWinners.map((winner, idx) => {
+              const stats = roomDetails?.aggregatedScores?.[winner.id];
+              return (
+                <div key={winner.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-3 shadow-xs">
+                  <div className="flex items-start justify-between gap-2 border-b border-slate-200/60 pb-2">
+                    <div>
+                      <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100 mb-1 inline-block">
+                        최종 선정 아이디어 #{idx + 1}
+                      </span>
+                      <h3 className="text-base font-bold text-slate-900">{winner.title}</h3>
+                    </div>
+                    {stats && (
+                      <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-100 shrink-0">
+                        {stats.score}점 ({stats.keepCount}표 찬성)
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line">
+                    {winner.description}
+                  </p>
+
+                  <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+                    <span className="font-semibold bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                      제안자: {winner.submitterName}
+                    </span>
+                    {winner.attachmentUrl && (
+                      <a
+                        href={winner.attachmentUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-indigo-600 hover:underline font-bold text-[11px]"
+                      >
+                        📎 첨부파일 보기
+                      </a>
+                    )}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
+
+        <div className="pt-2 flex gap-3">
+          <button
+            type="button"
+            onClick={() => setShowWinnerModal(false)}
+            className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+          >
+            닫기
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowWinnerModal(false)}
+            className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1"
+          >
+            <Sparkles className="w-4 h-4 text-amber-300" />
+            <span>최종 결과 확인하기</span>
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+
+{/* Proposal Delete Confirmation Modal */}
+<AnimatePresence>
+  {deletingProposalId && (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white p-6 rounded-3xl max-w-sm w-full shadow-2xl space-y-5 text-center border border-slate-100"
+      >
+        <div className="w-12 h-12 bg-rose-50 border border-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto shadow-xs">
+          <Trash2 className="w-6 h-6" />
+        </div>
+        <div className="space-y-1.5">
+          <h3 className="text-base font-bold text-slate-900">평가 기준 삭제</h3>
+          <p className="text-xs text-slate-500 font-medium leading-relaxed">
+            이 평가 기준을 삭제하시겠습니까? 삭제한 내용은 복구할 수 없습니다.
+          </p>
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setDeletingProposalId(null)}
+            className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition"
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirmDeleteProposal}
+            className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition shadow-xs"
+          >
+            삭제하기
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+
+{/* Final Candidate Vote Modal ("최종 후보 투표하기") */}
+{/* Final Candidate Vote Modal ("2차 별 스티커 투표하기 모달") */}
+<AnimatePresence>
+  {showFinalVoteModal && (
+    <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6 overflow-hidden">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white rounded-3xl w-full max-w-2xl max-h-[85vh] md:max-h-[80vh] shadow-2xl flex flex-col border border-indigo-100 relative overflow-hidden text-left"
+      >
+        {/* Top Accent Line */}
+        <div className="h-2 bg-gradient-to-r from-amber-400 via-indigo-600 to-indigo-700 shrink-0" />
+
+        {/* Fixed Header */}
+        <div className="p-5 md:px-6 md:pt-5 md:pb-4 border-b border-slate-100 shrink-0 space-y-3 bg-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center font-bold border border-amber-200 shrink-0">
+                ⭐
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">4단계 2차 별 스티커 투표</h3>
+                <p className="text-xs text-slate-500 font-medium">생존한 후보 아이디어 중 최종 결과로 채택할 후보에 별 스티커를 붙여주세요.</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowFinalVoteModal(false)}
+              className="text-slate-400 hover:text-slate-600 transition p-1 rounded-lg hover:bg-slate-100 shrink-0"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Star Status Display Header Banner */}
+          {(() => {
+            const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+            const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+            const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+            const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+            const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+            const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
+            const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
+
+            return (
+              <div className="bg-slate-900 text-white p-3 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-300">최종 결과 목표: <strong className="text-white">{targetWinners}개</strong></span>
+                  <span className="text-slate-600">|</span>
+                  <span className="text-amber-300 font-bold">내 별 스티커: ⭐ {targetWinners}개</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="bg-amber-400/20 text-amber-300 px-2.5 py-0.5 rounded-md font-bold border border-amber-400/30">
+                    사용한 별: <span className="text-white">{currentSelectedCount}개</span>
+                  </span>
+                  <span className="bg-white/10 text-slate-200 px-2.5 py-0.5 rounded-md font-bold border border-white/20">
+                    남은 별: <span className="text-amber-400">{remainingStars}개</span>
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Scrollable Middle Candidates List */}
+        <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
+          {(() => {
+            const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+            const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
+            const activeIdeaIds = activeIdeas.map(i => i.id);
+            const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+            const isSubmittedByMe = Boolean(
+              (roomDetails?.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
+              validMyStarVotes.length >= targetWinners
+            );
+
+            if (activeIdeas.length === 0) {
+              return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
+            }
+
+            return activeIdeas.map(idea => {
+              const isSelectedByMe = isSubmittedByMe
+                ? validMyStarVotes.includes(idea.id)
+                : mySelectedStarIdeaIds.includes(idea.id);
+              const stats = roomDetails?.aggregatedScores?.[idea.id];
+              const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
+
+              return (
+                <div
+                  key={idea.id}
+                  onClick={() => handleToggleStarIdea(idea.id)}
+                  className={`p-4 md:p-4.5 rounded-2xl border transition cursor-pointer flex flex-col space-y-2.5 ${isSelectedByMe
+                    ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-400/30 shadow-xs'
+                    : 'bg-white border-slate-200 hover:bg-slate-50/80 hover:border-slate-300'
+                    }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1 flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">{idea.title}</h4>
+                        {isSelectedByMe ? (
+                          <span className="text-[10px] font-black text-amber-950 bg-amber-200/90 border border-amber-300/80 px-2 py-0.5 rounded-md flex items-center gap-1">
+                            ★ 내가 선택한 후보
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
+                            ☆ 선택 전
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-600 leading-normal line-clamp-3 whitespace-pre-line">
+                        {idea.description}
+                      </p>
+                    </div>
+
+                    {/* Star Toggle Display Button */}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleStarIdea(idea.id);
+                        }}
+                        disabled={isSubmittedByMe}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition flex items-center gap-1 ${isSelectedByMe
+                          ? 'bg-amber-400 text-slate-950 border border-amber-500 shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200'
+                          } disabled:opacity-80 disabled:cursor-not-allowed`}
+                      >
+                        <span className="text-sm">{isSelectedByMe ? '★' : '☆'}</span>
+                        <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
+                      </button>
+
+                      {roomDetails?.room.hostId === userId && totalStarVotes > 0 && (
+                        <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                          ⭐ {totalStarVotes}표 득표
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-100/80">
+                    <span>제안자: {idea.submitterName}</span>
+                    {stats && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
+                        1차 종합점수 {stats.score}점 ({stats.keepCount}표 유지)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
+
+        {/* Fixed Footer with Submission Controls */}
+        {(() => {
+          const targetWinners = roomDetails?.room.targetWinnerCount || 1;
+          const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+          const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+          const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+          const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+          const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
+          const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
+
+          return (
+            <div className="p-4 md:px-6 border-t border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between gap-3">
+              <div className="text-xs font-bold text-slate-600 hidden sm:block">
+                {isSubmitted ? (
+                  <span className="text-emerald-600 flex items-center gap-1">
+                    <Check className="w-4 h-4" />
+                    이미 투표가 제출되었습니다
+                  </span>
+                ) : remainingStars > 0 ? (
+                  <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
+                    ⚠️ 평가 기준을 확인한 뒤 최종 후보로 선택할 아이디어 {targetWinners}개에 1위부터 {targetWinners}위까지 순위를 모두 지정해 주세요.
+                  </span>
+                ) : (
+                  <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                    ✓ 별 스티커 순위 지정 완료! 투표를 제출할 수 있습니다.
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowFinalVoteModal(false)}
+                  className="px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex-1 sm:flex-none"
+                >
+                  닫기
+                </button>
+
+                {!isSubmitted ? (
+                  <button
+                    type="button"
+                    onClick={handleSubmitStarVote}
+                    disabled={remainingStars > 0 || isSubmittingStarVote}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-extrabold transition flex-1 sm:flex-none flex items-center justify-center gap-1.5 shadow-md ${remainingStars === 0 && !isSubmittingStarVote
+                      ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 cursor-pointer active:scale-95'
+                      : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed'
+                      }`}
+                  >
+                    {isSubmittingStarVote ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        제출 중...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>{remainingStars === 0 ? '별 스티커 투표 제출' : `별 ${remainingStars}개 추가 선택 필요`}</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowFinalVoteModal(false)}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-md flex items-center justify-center gap-1 flex-1 sm:flex-none"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>투표 제출 완료됨</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+
+{/* Room Settings Edit Modal (Host Only) */}
+<AnimatePresence>
+  {showRoomSettingsModal && (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-5 text-left"
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 bg-slate-900 text-amber-400 rounded-xl flex items-center justify-center font-bold">
+              <Settings className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900">⚙️ 방 설정 및 정보 수정 (방장 전용)</h3>
+              <p className="text-xs text-slate-400">회의 주제, 참여 인원, 최소 정족수 등 방 정보를 변경합니다.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowRoomSettingsModal(false)}
+            className="text-slate-400 hover:text-slate-600 transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleUpdateRoomSettings} className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-700">회의 주제 (방 제목) <span className="text-rose-500">*</span></label>
+            <input
+              type="text"
+              required
+              value={editRoomTitle}
+              onChange={e => setEditRoomTitle(e.target.value)}
+              placeholder="예: 2026 하반기 신규 서비스 기획 아이디어 선정"
+              className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-700">방 상세 설명 & 핵심 목표</label>
+            <textarea
+              value={editRoomDesc}
+              onChange={e => setEditRoomDesc(e.target.value)}
+              rows={3}
+              placeholder="회의 목적, 제약 사항 및 고려 조건을 입력해 주십시오."
+              className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">아이디어 카테고리</label>
+              <select
+                value={editRoomCategory}
+                onChange={e => setEditRoomCategory(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+              >
+                <option value="기획">💡 기획 / 신규 비즈니스</option>
+                <option value="디자인">🎨 디자인 / UX·UI</option>
+                <option value="개발">💻 개발 / IT 파이프라인</option>
+                <option value="마케팅">📢 마케팅 / 바이럴</option>
+                <option value="기타">📂 기타</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">최종 우승작 선정 개수</label>
+              <select
+                value={editRoomTargetWinnerCount}
+                onChange={e => setEditRoomTargetWinnerCount(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+              >
+                <option value={1}>🏆 1개 아이디어 확정</option>
+                <option value={2}>🏆 2개 아이디어 확정</option>
+                <option value={3}>🏆 3개 아이디어 확정</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">최대 정원 (최대 6명)</label>
+              <input
+                type="number"
+                min={1}
+                max={6}
+                value={editRoomMaxParticipants}
+                onChange={e => setEditRoomMaxParticipants(Number(e.target.value))}
+                className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700">익명 안심 최소 정족수</label>
+              <input
+                type="number"
+                min={1}
+                max={6}
+                value={editRoomMinThreshold}
+                onChange={e => setEditRoomMinThreshold(Number(e.target.value))}
+                className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setShowRoomSettingsModal(false)}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              disabled={isUpdatingRoomSettings}
+              className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-extrabold transition shadow-md flex items-center gap-1.5"
+            >
+              {isUpdatingRoomSettings ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  저장 중...
+                </>
+              ) : (
+                <>
+                  <Check className="w-3.5 h-3.5 text-amber-400" />
+                  방 정보 변경 사항 저장
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  )}
+</AnimatePresence>
+</div>
+);
 }
+
