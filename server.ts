@@ -3241,7 +3241,8 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     }
   }
   const ideaCompletedSet = ideaCompletedUsersMap.get(id) || new Set<string>();
-  const completedParticipantsCount = ideaCompletedSet.size;
+  const allCompletedUsers = new Set<string>([...ideaCompletedSet, ...uniqueSubmitters]);
+  const completedParticipantsCount = allCompletedUsers.size;
   const participantCount = Math.max(1, roomParticipants?.size || 1);
   const ideasRevealed =
     room.status !== 'IDEA_SUBMISSION' || completedParticipantsCount >= participantCount;
