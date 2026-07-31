@@ -4623,10 +4623,10 @@ export default function App() {
                                     animate={{ opacity: 1, height: 'auto' }}
                                     className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
                                   >
-                                    {/* 1. Which criteria apply? (Min 1 required) */}
+                                    {/* 1. Evaluate every criterion independently */}
                                     <div className="space-y-2">
                                       <label className="text-xs font-bold text-slate-800 block">
-                                        근거 평가 기준 선택 (2단계 제안된 평가 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
+                                        공통 기준 충족도 평가 (모든 기준 필수) <span className="text-rose-500">*</span>
                                       </label>
                                       <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
                                         {(() => {
@@ -4646,25 +4646,47 @@ export default function App() {
                                             return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
                                           }
 
-                                          return availableCriteria.map(crit => {
-                                            const isChecked = userVote.excludedCriterionIds.includes(crit.id);
-                                            return (
-                                              <label key={crit.id} className="flex items-start gap-2.5 text-xs font-semibold text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded-lg transition">
-                                                <input
-                                                  type="checkbox"
-                                                  checked={isChecked}
-                                                  onChange={e => handleCriteriaCheckboxChange(idea.id, crit.id, e.target.checked)}
-                                                  className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                                />
-                                                <div className="space-y-0.5">
-                                                  <span className="font-bold text-slate-900 block">{crit.name}</span>
-                                                  <span className="text-[11px] text-slate-500 font-normal block">{crit.description}</span>
-                                                </div>
-                                              </label>
-                                            );
-                                          });
+                                          return availableCriteria.map(crit => (
+                                            <div key={crit.id} className="p-2 rounded-lg border border-slate-100 space-y-2">
+                                              <div>
+                                                <span className="font-bold text-xs text-slate-900 block">{crit.name}</span>
+                                                <span className="text-[11px] text-slate-500 block">{crit.description}</span>
+                                              </div>
+                                              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                                {[
+                                                  { key: 'MET', label: '충족' },
+                                                  { key: 'PARTIAL', label: '일부 충족' },
+                                                  { key: 'NOT_MET', label: '미충족' },
+                                                  { key: 'UNSURE', label: '잘 모르겠음' }
+                                                ].map(option => {
+                                                  const selected = userVote.criteriaEvaluations?.[crit.id] === option.key;
+                                                  return (
+                                                    <button
+                                                      key={option.key}
+                                                      type="button"
+                                                      onClick={() => handleCriteriaEvaluationChange(
+                                                        idea.id,
+                                                        crit.id,
+                                                        option.key as CriteriaEvaluationValue
+                                                      )}
+                                                      className={`px-2 py-2 rounded-lg border text-[10px] font-bold transition ${
+                                                        selected
+                                                          ? 'bg-indigo-600 text-white border-indigo-600'
+                                                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                                      }`}
+                                                    >
+                                                      {option.label}
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
+                                          ));
                                         })()}
                                       </div>
+                                      <p className="text-[10px] text-slate-500">
+                                        ‘잘 모르겠음’은 숨기지 않고 비율로 표시하되, 기준 충족도 계산의 분모에서는 제외합니다.
+                                      </p>
                                     </div>
 
                                     {/* 2. Dynamic Reason Textarea */}
@@ -4697,8 +4719,8 @@ export default function App() {
                               const vote = evalSubmissions[idea.id];
                               if (!vote || !vote.decision) return false;
                               if (!vote.reasonText || !vote.reasonText.trim()) return false;
-                              const hasCriteria = ((roomDetails.criteria || []).length > 0) || ((roomDetails.proposals || []).length > 0);
-                              if (hasCriteria && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
+                              const availableCriteria = roomDetails.criteria || [];
+                              if (availableCriteria.some(criterion => !vote.criteriaEvaluations?.[criterion.id])) return false;
                               return true;
                             });
 
@@ -4706,7 +4728,7 @@ export default function App() {
                               <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
                                 {!isAllEvaluated && (
                                   <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
-                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [근거 평가 기준], [세부 사유]를 모두 작성하셔야 4단계 2차 투표로 이동할 수 있습니다.
+                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [모든 공통 기준의 충족도], [세부 사유]를 작성해야 제출할 수 있습니다.
                                   </p>
                                 )}
                                 <button
@@ -4738,7 +4760,7 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
-                      {roomDetails.room.status === 'FINAL_VOTE' && (
+                      {(roomDetails.room.finalVoteStatus === 'VOTING' || roomDetails.room.finalVoteStatus === 'TIE_PENDING') && (
                         <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
                           <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
                             <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
@@ -5182,13 +5204,21 @@ export default function App() {
                         </div>
 
                         {/* Process Step Progression Bar */}
-                        <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
-                          <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
-                        </div>
+                        {roomDetails.room.decisionMode === 'QUICK' ? (
+                          <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 선택지</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 익명투표</div>
+                            <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">3단계 결과</div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
+                            <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
+                          </div>
+                        )}
 
                         <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
                           {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
@@ -5197,7 +5227,9 @@ export default function App() {
                               <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
                               <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
                               <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
+                                {roomDetails.room.decisionMode === 'QUICK'
+                                  ? '모든 참여자가 다른 사람의 선택을 보지 않고 투표한 뒤 결과를 동시에 공개했습니다.'
+                                  : '전체 구성원의 공통 기준 평가와 최종 익명 투표를 근거로 최종 선정되었습니다.'}
                               </p>
                             </div>
                           ) : (
@@ -5252,6 +5284,55 @@ export default function App() {
                           </div>
                         </div>
                       )}
+
+                      {/* Decision round history and safe re-review */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex items-center gap-2">
+                            <RefreshCw className="w-5 h-5 text-indigo-600" />
+                            <h3 className="text-base font-black text-slate-900">결정 회차 기록</h3>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-500">
+                            이전 결과는 덮어쓰지 않습니다
+                          </span>
+                        </div>
+
+                        {(roomDetails.decisionRounds || []).length > 0 ? (
+                          <div className="space-y-2">
+                            {(roomDetails.decisionRounds || []).map(round => (
+                              <div key={round.id} className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                                <div>
+                                  <p className="text-xs font-extrabold text-slate-800">
+                                    {round.roundNumber}회차 · {round.decisionMode === 'QUICK' ? '빠른 결정' : '근거 기반 결정'}
+                                  </p>
+                                  <p className="text-[10px] text-slate-500">
+                                    {round.status === 'COMPLETED' ? '결과 보존 완료' : '진행 중'}
+                                  </p>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-medium">
+                                  {new Date(round.startedAt).toLocaleString('ko-KR')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-500">기존 방식으로 완료된 방이라 별도 회차 기록이 없습니다.</p>
+                        )}
+
+                        {roomDetails.room.hostId === userId && (
+                          <button
+                            type="button"
+                            onClick={handleRestartStage2WithSurvivingIdeas}
+                            disabled={(roomDetails.ideas || []).filter(idea =>
+                              idea.status === 'WINNER' ||
+                              (idea.status === 'ELIMINATED' && idea.eliminatedRound === undefined)
+                            ).length < 2}
+                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-black transition"
+                          >
+                            결과를 보존하고 새 재검토 회차 시작
+                          </button>
+                        )}
+                      </div>
 
                       {/* 로비 홈으로 이동 버튼 */}
                       <div className="text-center pt-4">
