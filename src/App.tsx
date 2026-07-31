@@ -1069,7 +1069,6 @@ export default function App() {
       const response = await fetch('/api/rooms', { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-<<<<<<< HEAD
         if (response.status === 401) {
           setIsLoggedIn(false);
           setUserId('');
@@ -1078,9 +1077,6 @@ export default function App() {
           setFetchRoomsError(false);
           return;
         }
-=======
-        if (response.status === 401) setIsLoggedIn(false);
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
         throw new Error(data?.error || '회의실 목록을 불러오지 못했습니다.');
       }
 
@@ -1249,10 +1245,7 @@ export default function App() {
           category: newRoomCategory,
           maxParticipants: Math.min(newRoomMaxParticipants, 6),
           targetWinnerCount: newRoomTargetWinners,
-<<<<<<< HEAD
-=======
           decisionMode: newRoomDecisionMode,
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
           isPublic: false,
           minResponseThreshold: 1,
           eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
@@ -1932,11 +1925,8 @@ export default function App() {
       triggerToast(
         data.approval?.approved
           ? '팀 동의 기준을 충족하여 익명 평가 단계로 이동했습니다.'
-<<<<<<< HEAD
-=======
           : data.approval?.needsRevision
             ? '팀 동의 기준에 미달하여 새 보완 회차를 시작합니다. 이전 의견과 투표는 기록으로 보존됩니다.'
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
           : vote === 'APPROVE'
             ? '이 기준으로 평가 진행에 동의했습니다.'
             : '보완이 필요하다는 의견을 익명으로 제출했습니다.'
@@ -2023,7 +2013,6 @@ export default function App() {
     triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
 
     setIsClusteringLoading(false);
-<<<<<<< HEAD
   };
 
   // Confirm Criteria (Host only)
@@ -2067,8 +2056,6 @@ export default function App() {
       triggerToast(message, 'error');
       fetchRoomDetails(activeRoomId!, true);
     }
-=======
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
   };
 
   // Accumulate evaluations
@@ -5074,18 +5061,7 @@ export default function App() {
                                     </div>
                                   </div>
 
-<<<<<<< HEAD
-                                  <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
-                                    <span className="text-[10px] text-slate-400 font-bold block leading-none">기준 충족도</span>
-                                    <span className="text-lg font-black text-slate-900">{stats.avgCriteriaComplianceRatio ?? stats.score}%</span>
-                                    {stats.validResponseCount !== undefined && (
-                                      <span className="text-[10px] text-slate-500 block mt-1">
-                                        유효 {stats.validResponseCount}명 · 잘 모르겠음 {stats.unsureRate || 0}%
-                                      </span>
-                                    )}
-                                  </div>
-=======
-                                  {roomDetails.room.finalVoteStatus !== 'VOTING' && roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
+                                  {roomDetails.room.finalVoteStatus !== 'VOTING' && roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && stats && (
                                     <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
                                       <span className="text-[10px] text-slate-400 font-bold block leading-none">기준 충족도</span>
                                       <span className="text-lg font-black text-slate-900">{stats.avgCriteriaComplianceRatio ?? stats.score}%</span>
@@ -5096,7 +5072,6 @@ export default function App() {
                                       )}
                                     </div>
                                   )}
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
                                 </div>
 
                                 {/* Aggregate vote counters (2 options: 유지 찬성 / 제외 희망) */}
@@ -6520,19 +6495,10 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-100/80">
-<<<<<<< HEAD
-                          <span>제안자: {idea.submitterName}</span>
-                          {stats && (
-                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
-                              기준 충족도 {stats.avgCriteriaComplianceRatio ?? stats.score}% · 추천 {stats.keepCount}표 · 우려 {stats.excludeCount}표
-                            </span>
-                          )}
-=======
                           <span>제안자: 평가 종료 전 비공개</span>
                           <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">
                             다른 사람의 선택과 중간 집계 비공개
                           </span>
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
                         </div>
                       </div>
                     );

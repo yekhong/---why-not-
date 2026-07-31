@@ -40,15 +40,12 @@ export interface Room {
   deadlines: Deadlines;
   createdAt: string;
   engineVersion?: number;
-<<<<<<< HEAD
-=======
   decisionMode?: DecisionMode;
   finalVoteStatus?: FinalVoteStatus;
   tieCandidateIdeaIds?: string[];
   tieSlots?: number;
   currentRoundId?: string;
   criteriaSetVersion?: number;
->>>>>>> f753dd0069db3b2eed0599a255560ddaad17ddef
 }
 
 export interface Idea {
@@ -123,28 +120,6 @@ export interface CriteriaSetApprovalSummary {
   needsRevision?: boolean;
 }
 
-export type CriteriaEvaluationValue = 'MET' | 'PARTIAL' | 'NOT_MET' | 'UNSURE';
-
-export interface CriterionMetric {
-  criterionId: string;
-  complianceRate: number;
-  validResponseCount: number;
-  unsureCount: number;
-  unsureRate: number;
-  metCount: number;
-  partialCount: number;
-  notMetCount: number;
-}
-
-export interface CriteriaSetApprovalSummary {
-  version: number;
-  approveCount: number;
-  reviseCount: number;
-  eligibleCount: number;
-  requiredApproveCount: number;
-  myVote?: 'APPROVE' | 'REVISE';
-  approved: boolean;
-}
 
 export interface EliminationRound {
   id: string;
