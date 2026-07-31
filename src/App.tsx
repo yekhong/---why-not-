@@ -305,6 +305,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [fetchRoomError, setFetchRoomError] = useState(false);
   const [showIdeaSubmissionGate, setShowIdeaSubmissionGate] = useState(false);
+  const isFetchingRoomRef = useRef(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -1091,24 +1092,32 @@ export default function App() {
   };
 
   const fetchRoomDetails = async (id: string, isSilent = false) => {
+    if (isFetchingRoomRef.current && isSilent) {
+      return; // Skip overlapping background poll if previous fetch is still processing
+    }
+    isFetchingRoomRef.current = true;
+
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
     setFetchRoomError(false);
 
     console.log(`[SYNC] 회의 정보 조회 시작 (roomId: ${id})`);
 
-    // 10-second timeout controller to prevent infinite loading
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    // Attach AbortController timeout ONLY for explicit non-silent loads to prevent infinite UI freeze.
+    // Background silent polling will NEVER time out artificially (0% chance of AbortError).
+    const controller = isSilent ? null : new AbortController();
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
 
     let isFetched = false;
 
     try {
-      const res = await fetch(`/api/rooms/${id}`, {
-        signal: controller.signal,
-        cache: 'no-store'
-      });
-      clearTimeout(timeoutId);
+      const fetchOptions: RequestInit = { cache: 'no-store' };
+      if (controller) {
+        fetchOptions.signal = controller.signal;
+      }
+
+      const res = await fetch(`/api/rooms/${id}`, fetchOptions);
+      if (timeoutId) clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
         console.log(`[SYNC] 회의 정보 조회 완료. 현재 단계: ${data?.room?.status}, 아이디어 수: ${data?.ideas?.length}`);
@@ -1170,12 +1179,14 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        console.error('[SYNC ERROR] 10초 데이터 조회 타임아웃 발생');
+        console.warn('[SYNC NOTICE] 30초 데이터 조회 타임아웃 발생 (다음 주기에 자동 재시도)');
       } else {
-        console.warn('[SYNC ERROR] Express backend fetchRoomDetails failed, reading from Supabase DB...', err);
+        console.warn('[SYNC ERROR] Express backend fetchRoomDetails failed, retrying...', err);
       }
+    } finally {
+      isFetchingRoomRef.current = false;
     }
 
     if (isFetched) {

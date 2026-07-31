@@ -61,13 +61,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// Do not allow a third-party origin to submit cookie-authenticated mutations.
+// Do not allow an untrusted origin to submit cookie-authenticated mutations.
 app.use((req, res, next) => {
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
   const origin = req.get('origin');
   if (!origin) return next();
   try {
-    if (new URL(origin).host !== req.get('host')) {
+    const originHost = new URL(origin).host;
+    const reqHost = req.get('host');
+    const allowedHosts = [reqHost, 'why-not-self.vercel.app', 'why-not.vercel.app', 'localhost:3000', 'localhost:5173'];
+    if (!allowedHosts.includes(originHost)) {
       return res.status(403).json({ error: '허용되지 않은 요청 출처입니다.' });
     }
   } catch {
