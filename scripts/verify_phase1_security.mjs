@@ -30,6 +30,27 @@ check(
   '세션 쿠키가 HttpOnly 및 SameSite=Strict로 설정됨'
 );
 check(
+  /const key = `\$\{req\.path\}:\$\{req\.ip \|\| 'unknown'\}:\$\{identifierHash\}`/.test(server) &&
+    /res\.statusCode >= 500[\s\S]*authAttempts\.delete\(key\)/.test(server),
+  '인증 API별 요청 제한이 분리되고 저장소 5xx 실패는 429 누적에서 제외됨'
+);
+check(
+  /AUTH_SCHEMA_NOT_READY/.test(server) &&
+    /AUTH_STORAGE_UNAVAILABLE/.test(server),
+  '가입 503이 인증 스키마 누락과 일시 저장소 장애로 구분됨'
+);
+check(
+  /isAuthSubmitting/.test(app) &&
+    /disabled=\{isAuthSubmitting \|\|/.test(app),
+  '브라우저가 회원가입/로그인 버튼의 중복 제출을 차단함'
+);
+check(
+  fs.existsSync(path.join(root, 'supabase_auth_hotfix_forward.sql')) &&
+    /CREATE TABLE IF NOT EXISTS public\.user_accounts/.test(read('supabase_auth_hotfix_forward.sql')) &&
+    /CREATE TABLE IF NOT EXISTS public\.user_sessions/.test(read('supabase_auth_hotfix_forward.sql')),
+  '누락된 인증 저장소를 준비하는 검토용 SQL이 포함됨'
+);
+check(
   /SUPABASE_SERVICE_ROLE_KEY/.test(server) &&
     !/VITE_SUPABASE_SERVICE_ROLE_KEY/.test(server) &&
     !/SUPABASE_SERVICE_ROLE_KEY/.test(app),
