@@ -1364,6 +1364,7 @@ export default function App() {
     } catch (error) {
       console.error('Room status transition failed:', error);
       triggerToast(error instanceof Error ? error.message : '단계를 변경하지 못했습니다.', 'error');
+      await fetchRoomDetails(activeRoomId, true);
     }
   };
 
