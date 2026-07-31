@@ -36,6 +36,7 @@ export interface Room {
   eliminationConfig: EliminationConfig;
   deadlines: Deadlines;
   createdAt: string;
+  engineVersion?: number;
 }
 
 export interface Idea {
@@ -79,9 +80,33 @@ export interface Evaluation {
   evaluatorId?: string; // Kept private on the server
   decision: 'KEEP' | 'NEUTRAL' | 'EXCLUDE';
   excludedCriterionIds?: string[];
+  criteriaEvaluations?: Record<string, CriteriaEvaluationValue>;
   reasonText?: string;
   reasonType?: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   round: number;
+}
+
+export type CriteriaEvaluationValue = 'MET' | 'PARTIAL' | 'NOT_MET' | 'UNSURE';
+
+export interface CriterionMetric {
+  criterionId: string;
+  complianceRate: number;
+  validResponseCount: number;
+  unsureCount: number;
+  unsureRate: number;
+  metCount: number;
+  partialCount: number;
+  notMetCount: number;
+}
+
+export interface CriteriaSetApprovalSummary {
+  version: number;
+  approveCount: number;
+  reviseCount: number;
+  eligibleCount: number;
+  requiredApproveCount: number;
+  myVote?: 'APPROVE' | 'REVISE';
+  approved: boolean;
 }
 
 export interface EliminationRound {
@@ -116,6 +141,9 @@ export interface RoomDetails {
   proposals?: CriterionProposal[];
   proposalsCount: number;
   completedParticipantsCount?: number; // count of unique participants who submitted 1 or more ideas
+  criteriaCompletedParticipantsCount?: number;
+  criteriaProposalsRevealed?: boolean;
+  criteriaApproval?: CriteriaSetApprovalSummary;
   participants?: Participant[];
   rounds: EliminationRound[];
   evaluatorsCount: number;
@@ -150,6 +178,10 @@ export interface AggregatedScore {
   objectiveExcludeCount: number;
   avgCriteriaComplianceRatio?: number; // Average criteria compliance percentage (0~100)
   criteriaMatchCounts?: Record<string, number>; // Per-criterion match/approval count
+  validResponseCount?: number;
+  unsureCount?: number;
+  unsureRate?: number;
+  criterionMetrics?: Record<string, CriterionMetric>;
 }
 
 export interface RoomInvite {
@@ -164,13 +196,9 @@ export interface RoomInvite {
 
 export interface InviteDetailsResponse {
   isValid: boolean;
-  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'STORE_UNAVAILABLE' | 'ERROR';
+  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'ERROR';
   errorMessage?: string;
-  // The invite landing page only needs these public display fields. Keeping
-  // this type narrow prevents the BFF from accidentally exposing hostId,
-  // deadlines, elimination settings, or other room-internal data to anyone
-  // who merely possesses a short-lived invite URL.
-  room?: Pick<Room, 'id' | 'title' | 'description' | 'category' | 'isPublic' | 'maxParticipants' | 'status'>;
+  room?: Room;
   hostNickname?: string;
   participantCount?: number;
   maxParticipants?: number;
