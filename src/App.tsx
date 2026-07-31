@@ -41,6 +41,7 @@ import {
   Evaluation,
   CriteriaEvaluationValue,
   EliminationRound,
+  DecisionMode,
   RoomDetails,
   Participant,
   InviteDetailsResponse
@@ -328,7 +329,7 @@ export default function App() {
   const [newRoomCategory, setNewRoomCategory] = useState<'기획' | '디자인'>('기획');
   const [newRoomMaxParticipants, setNewRoomMaxParticipants] = useState(2);
   const [newRoomTargetWinners, setNewRoomTargetWinners] = useState(1);
-  const [newRoomIsPublic, setNewRoomIsPublic] = useState(true);
+  const [newRoomDecisionMode, setNewRoomDecisionMode] = useState<DecisionMode>('STRUCTURED');
   const [newRoomVoteStartTime, setNewRoomVoteStartTime] = useState('');
   const [newRoomVoteEndTime, setNewRoomVoteEndTime] = useState('');
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
@@ -508,6 +509,7 @@ export default function App() {
   const [isSpinningRoulette, setIsSpinningRoulette] = useState(false);
   const [rouletteWinnerResult, setRouletteWinnerResult] = useState<string | null>(null);
   const [rouletteRotation, setRouletteRotation] = useState(0);
+  const [roulettePurpose, setRoulettePurpose] = useState<'PREVIEW' | 'TIE_RESOLUTION'>('PREVIEW');
 
   // Room Settings Edit Modal States (Host only)
   const [showRoomSettingsModal, setShowRoomSettingsModal] = useState(false);
@@ -656,9 +658,28 @@ export default function App() {
     }
   };
 
-  const handleConfirmIdeaGateToStage2 = () => {
-    handleExitIdeaGate();
-    handleForceChangeStatus('CRITERIA_PROPOSAL');
+  const handleConfirmIdeaGateToStage2 = async () => {
+    if (!activeRoomId || !roomDetails) return;
+    setShowIdeaSubmissionGate(false);
+    localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+    if (roomDetails.room.decisionMode === 'QUICK') {
+      try {
+        const response = await fetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || '빠른 익명 투표를 시작하지 못했습니다.');
+        triggerToast('다른 사람의 선택은 보이지 않는 상태로 익명 투표를 시작합니다.');
+        await fetchRoomDetails(activeRoomId);
+      } catch (error: any) {
+        setShowIdeaSubmissionGate(true);
+        triggerToast(error.message || '빠른 익명 투표를 시작하지 못했습니다.', 'error');
+      }
+      return;
+    }
+    await handleForceChangeStatus('CRITERIA_PROPOSAL');
   };
 
   const handleRestartStage2WithSurvivingIdeas = async () => {
@@ -666,11 +687,23 @@ export default function App() {
       triggerToast('최소 2개 이상의 생존 아이디어가 있어야 2단계로 재진행할 수 있습니다.', 'error');
       return;
     }
-    if (!window.confirm(`소거되지 않은 ${activeIdeasCount}개의 생존 아이디어만으로 2단계(평가 기준 설정)부터 3, 4, 5단계를 다시 진행하시겠습니까?`)) {
+    if (!window.confirm(`기존 결과를 보존하고 ${activeIdeasCount}개의 생존 아이디어로 새 재검토 회차를 시작하시겠습니까?`)) {
       return;
     }
-    await handleForceChangeStatus('CRITERIA_PROPOSAL');
-    triggerToast(`소거되지 않은 ${activeIdeasCount}개 생존 아이디어로 2단계 평가 기준 설정 단계부터 재진행합니다!`);
+    if (!activeRoomId) return;
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/review/restart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '재검토 회차를 시작하지 못했습니다.');
+      triggerToast(`기존 결과를 보존하고 ${data.roundNumber || '새'}회차 재검토를 시작했습니다.`);
+      await fetchRoomDetails(activeRoomId);
+    } catch (error: any) {
+      triggerToast(error.message || '재검토 회차를 시작하지 못했습니다.', 'error');
+    }
   };
 
   const handleLogout = async () => {
@@ -725,7 +758,7 @@ export default function App() {
           console.error('Session restore failed:', error);
           setIsLoggedIn(false);
         }
-      } finally {
+      } font-bold
         if (!cancelled) setIsSessionChecked(true);
       }
     };
@@ -925,7 +958,7 @@ export default function App() {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
       fetchInviteLandingDetails(token);
-    } finally {
+    } font-bold {
       setJoiningInvite(false);
     }
   };
@@ -1045,7 +1078,6 @@ export default function App() {
     } catch (error) {
       console.error('BFF fetchRooms error:', error);
       setFetchRoomsError(true);
-    } font-bold;
     } finally {
       setIsFetchRoomsLoading(false);
     }
@@ -1206,6 +1238,7 @@ export default function App() {
           category: newRoomCategory,
           maxParticipants: Math.min(newRoomMaxParticipants, 6),
           targetWinnerCount: newRoomTargetWinners,
+          decisionMode: newRoomDecisionMode,
           isPublic: false,
           minResponseThreshold: 1,
           eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
@@ -1226,6 +1259,7 @@ export default function App() {
       setNewRoomHostNickname('');
       setNewRoomTitle('');
       setNewRoomDesc('');
+      setNewRoomDecisionMode('STRUCTURED');
       setNewRoomVoteStartTime('');
       setNewRoomVoteEndTime('');
 
@@ -1849,7 +1883,6 @@ export default function App() {
       });
     } catch (error) {
       triggerToast(error instanceof Error ? error.message : 'AI 보완안을 만들지 못했습니다.', 'error');
-    } font-bold;
     } finally {
       setIsDevelopingIdea(false);
     }
@@ -1885,6 +1918,8 @@ export default function App() {
       triggerToast(
         data.approval?.approved
           ? '팀 동의 기준을 충족하여 익명 평가 단계로 이동했습니다.'
+          : data.approval?.needsRevision
+            ? '팀 동의 기준에 미달하여 새 보완 회차를 시작합니다. 이전 의견과 투표는 기록으로 보존됩니다.'
           : vote === 'APPROVE'
             ? '이 기준으로 평가 진행에 동의했습니다.'
             : '보완이 필요하다는 의견을 익명으로 제출했습니다.'
@@ -1971,49 +2006,6 @@ export default function App() {
     triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
 
     setIsClusteringLoading(false);
-  };
-
-  // Confirm Criteria (Host only)
-  const handleConfirmCriteria = async () => {
-    const targetCriteria = editableCriteria.length > 0 ? editableCriteria : (roomDetails?.criteria || []);
-    if (targetCriteria.length === 0) {
-      triggerToast('최소 하나 이상의 기준이 등록되어야 합니다.', 'error');
-      return;
-    }
-
-    // 1. Update local UI state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        criteria: targetCriteria,
-        room: {
-          ...prev.room,
-          status: 'EVALUATION'
-        }
-      };
-    });
-
-    triggerToast('취합된 평가 기준이 최종 확인되었습니다. 3단계 1차 투표 및 익명 평가를 시작합니다!');
-
-    // Persist through the authenticated backend only.
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmedCriteria: targetCriteria }),
-      });
-      if (res.ok) {
-        fetchRoomDetails(activeRoomId!);
-        return;
-      }
-      const data = await res.json().catch(() => null);
-      throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '평가 기준 확정에 실패했습니다.';
-      triggerToast(message, 'error');
-      fetchRoomDetails(activeRoomId!, true);
-    }
   };
 
   // Accumulate evaluations
@@ -2179,7 +2171,7 @@ export default function App() {
         return;
       }
       const data = await res.json().catch(() => null);
-      throw new Error(data?.error || '평가 제출에 실패했습니다.');
+      if (!res.ok) throw new Error(data?.error || '평가 제출에 실패했습니다.');
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
       triggerToast(message, 'error');
@@ -2280,39 +2272,20 @@ export default function App() {
 
     setIsSubmittingStarVote(true);
 
-    // Update local state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const newStarVotes = { ...(prev.starVotes || {}) };
-      mySelectedStarIdeaIds.forEach(id => {
-        newStarVotes[id] = (newStarVotes[id] || 0) + 1;
-      });
-      return {
-        ...prev,
-        isStarVoteSubmitted: true,
-        myStarVotes: mySelectedStarIdeaIds,
-        starVotes: newStarVotes,
-        starVoteCount: (prev.starVoteCount || 0) + 1
-      };
-    });
-
-    triggerToast('⭐ 4단계 2차 별 스티커 투표가 완료되었습니다!');
-
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/star-vote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId,
           selectedIdeaIds: mySelectedStarIdeaIds
         })
       });
-      if (res.ok) {
-        fetchRoomDetails(activeRoomId);
-        return;
-      }
-    } catch (err) {
-      console.warn('Express star vote API unavailable, saved in local state.');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || '투표를 저장하지 못했습니다.');
+      triggerToast(data.message || '익명 투표가 안전하게 제출되었습니다.');
+      await fetchRoomDetails(activeRoomId);
+    } catch (err: any) {
+      triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
     } finally {
       setIsSubmittingStarVote(false);
     }
@@ -2409,6 +2382,8 @@ export default function App() {
     }
   };
 
+
+
   // Utility to copy share link (URL에 roomId 포함하여 링크 복사)
   const copyShareLink = () => {
     const baseUrl = window.location.origin + window.location.pathname;
@@ -2471,6 +2446,11 @@ export default function App() {
   const rouletteCandidateIdeas = useMemo(() => {
     if (!roomDetails || !Array.isArray(roomDetails.ideas)) return [];
 
+    if (roulettePurpose === 'TIE_RESOLUTION' && (roomDetails.tieCandidateIdeaIds || []).length > 0) {
+      const tieIds = new Set(roomDetails.tieCandidateIdeaIds);
+      return roomDetails.ideas.filter(idea => tieIds.has(idea.id));
+    }
+
     const starVoteCounts = roomDetails.starVotes || {};
     const activeOrWinnerIdeas = roomDetails.ideas.filter(i => i && (i.status === 'ACTIVE' || i.status === 'WINNER'));
 
@@ -2491,10 +2471,10 @@ export default function App() {
       sorted[0] || { id: 'mock-1', title: 'AI 회의록 자동 요약 서비스', description: '', submitterId: '', submitterName: 'GOMINHAJO', status: 'ACTIVE' },
       { id: 'mock-2', title: '동네 소상공인 마감할인 매칭 앱', description: '', submitterId: '', submitterName: '익명 참여자 A', status: 'ACTIVE' }
     ];
-  }, [roomDetails]);
+  }, [roomDetails, roulettePurpose]);
 
   // Roulette spin handler
-  const handleSpinRoulette = () => {
+  const handleSpinRoulette = async () => {
     if (isSpinningRoulette || rouletteCandidateIdeas.length === 0) return;
     setIsSpinningRoulette(true);
     setRouletteWinnerResult(null);
@@ -2502,9 +2482,32 @@ export default function App() {
     const N = rouletteCandidateIdeas.length;
     const sliceAngle = 360 / N;
 
-    // Pick random winner candidate index [0 .. N-1]
-    const randomIndex = Math.floor(Math.random() * N);
-    const chosenIdea = rouletteCandidateIdeas[randomIndex];
+    let randomIndex = Math.floor(Math.random() * N);
+    let chosenIdea = rouletteCandidateIdeas[randomIndex];
+    if (roulettePurpose === 'TIE_RESOLUTION') {
+      if (!activeRoomId) {
+        setIsSpinningRoulette(false);
+        return;
+      }
+      try {
+        const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/resolve-tie`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || '동률 추첨 결과를 저장하지 못했습니다.');
+        const selectedId = data.randomlySelectedIdeaIds?.[0] || data.winnerIdeaIds?.[0];
+        const selectedIndex = rouletteCandidateIdeas.findIndex(idea => idea.id === selectedId);
+        if (selectedIndex < 0) throw new Error('서버가 확정한 동률 후보를 화면에서 찾지 못했습니다.');
+        randomIndex = selectedIndex;
+        chosenIdea = rouletteCandidateIdeas[selectedIndex];
+      } catch (error: any) {
+        setIsSpinningRoulette(false);
+        triggerToast(error.message || '동률 추첨에 실패했습니다.', 'error');
+        return;
+      }
+    }
 
     // Compute center angle of the chosen candidate sector
     const sliceCenterAngle = randomIndex * sliceAngle + sliceAngle / 2;
@@ -2535,10 +2538,17 @@ export default function App() {
 
     setRouletteRotation(newTargetRotation);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       setIsSpinningRoulette(false);
       setRouletteWinnerResult(chosenIdea.title);
-      triggerToast(`🎲 룰렛 추첨 결과: [${chosenIdea.title}] 이(가) 선택되었습니다! 🎉`);
+      triggerToast(
+        roulettePurpose === 'TIE_RESOLUTION'
+          ? `동률 추첨 결과 [${chosenIdea.title}]이(가) 최종 확정되었습니다.`
+          : `🎲 룰렛 미리보기 결과: [${chosenIdea.title}]`
+      );
+      if (roulettePurpose === 'TIE_RESOLUTION' && activeRoomId) {
+        await fetchRoomDetails(activeRoomId);
+      }
     }, 3600);
   };
 
@@ -3149,6 +3159,34 @@ export default function App() {
                       />
                     </div>
 
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-700">의사결정 방식</label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setNewRoomDecisionMode('STRUCTURED')}
+                          className={`p-3 rounded-xl border text-left transition ${newRoomDecisionMode === 'STRUCTURED'
+                            ? 'border-indigo-500 bg-indigo-50 text-indigo-950'
+                            : 'border-slate-200 bg-white text-slate-600'
+                            }`}
+                        >
+                          <span className="block text-xs font-extrabold">근거 기반 결정</span>
+                          <span className="block text-[10px] mt-1">기준 합의와 4단계 평가를 거쳐 결정합니다.</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewRoomDecisionMode('QUICK')}
+                          className={`p-3 rounded-xl border text-left transition ${newRoomDecisionMode === 'QUICK'
+                            ? 'border-indigo-500 bg-indigo-50 text-indigo-950'
+                            : 'border-slate-200 bg-white text-slate-600'
+                            }`}
+                        >
+                          <span className="block text-xs font-extrabold">빠른 결정</span>
+                          <span className="block text-[10px] mt-1">선택지 작성 후 서로의 선택을 보지 않고 투표합니다.</span>
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-700">카테고리</label>
@@ -3189,14 +3227,9 @@ export default function App() {
 
                       <div className="space-y-1">
                         <label className="text-xs font-bold text-slate-700">공개 여부</label>
-                        <select
-                          value={newRoomIsPublic ? 'public' : 'private'}
-                          onChange={e => setNewRoomIsPublic(e.target.value === 'public')}
-                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-700"
-                        >
-                          <option value="public">공개 스페이스</option>
-                          <option value="private">비공개 스페이스</option>
-                        </select>
+                        <div className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 bg-slate-50">
+                          비공개 팀 공간
+                        </div>
                       </div>
                     </div>
 
@@ -3559,14 +3592,23 @@ export default function App() {
                       프로세스 단계
                     </h3>
                     <div className="space-y-4">
-                      {[
-                        { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
-                        { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
-                        { key: 'EVALUATION', label: '3단계 : 1차 투표 및 익명 평가' },
-                        { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
-                        { key: 'CLOSED', label: '5단계 : 최종 결과' }
-                      ].map((step, idx) => {
-                        const statusesOrder: RoomStatus[] = ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
+                      {(roomDetails.room.decisionMode === 'QUICK'
+                        ? [
+                            { key: 'IDEA_SUBMISSION', label: '1단계 : 선택지 작성' },
+                            { key: 'ELIMINATION', label: '2단계 : 익명 투표' },
+                            { key: 'CLOSED', label: '3단계 : 결과와 근거' }
+                          ]
+                        : [
+                            { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
+                            { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
+                            { key: 'EVALUATION', label: '3단계 : 1차 투표 및 익명 평가' },
+                            { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
+                            { key: 'CLOSED', label: '5단계 : 최종 결과' }
+                          ]
+                      ).map((step, idx) => {
+                        const statusesOrder: RoomStatus[] = roomDetails.room.decisionMode === 'QUICK'
+                          ? ['IDEA_SUBMISSION', 'ELIMINATION', 'CLOSED']
+                          : ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
                         const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
                         const currentIdx = statusesOrder.indexOf(roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : roomSt);
                         const stepIdx = statusesOrder.indexOf(step.key as RoomStatus);
@@ -3621,11 +3663,21 @@ export default function App() {
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">
-                            {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
-                            {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
-                            {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
-                            {roomDetails.room?.status === 'ELIMINATION' && '4단계 : 2차 투표'}
-                            {roomDetails.room?.status === 'CLOSED' && '5단계 : 최종 결과'}
+                            {roomDetails.room.decisionMode === 'QUICK' ? (
+                              <>
+                                {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 선택지 작성'}
+                                {roomDetails.room?.status === 'ELIMINATION' && '2단계 : 익명 투표'}
+                                {roomDetails.room?.status === 'CLOSED' && '3단계 : 결과와 근거'}
+                              </>
+                            ) : (
+                              <>
+                                {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
+                                {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
+                                {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
+                                {roomDetails.room?.status === 'ELIMINATION' && '4단계 : 2차 투표'}
+                                {roomDetails.room?.status === 'CLOSED' && '5단계 : 최종 결과'}
+                              </>
+                            )}
                           </span>
                           {roomDetails.room?.hostId === userId && (
                             <>
@@ -3729,8 +3781,10 @@ export default function App() {
                                 </h3>
                                 <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
                                   {isIdeaGateMinMet
-                                    ? '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 2단계 평가 기준 설정으로 진행할 수 있습니다.'}
+                                    ? roomDetails.room.decisionMode === 'QUICK'
+                                      ? '선택지가 모두 모였습니다. 다른 사람의 선택을 보지 않는 익명 투표를 시작할 수 있습니다.'
+                                      : '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
+                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 다음 단계로 진행할 수 있습니다.'}
                                 </p>
                               </div>
 
@@ -3759,7 +3813,11 @@ export default function App() {
                                     className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
                                   >
                                     <Sparkles className="w-4 h-4 text-slate-950" />
-                                    <span>2단계: 평가 기준 설정하러 가기</span>
+                                    <span>
+                                      {roomDetails.room.decisionMode === 'QUICK'
+                                        ? '2단계: 익명 투표 시작하기'
+                                        : '2단계: 평가 기준 설정하러 가기'}
+                                    </span>
                                     <ArrowRight className="w-4 h-4" />
                                   </button>
                                 )}
@@ -3887,11 +3945,16 @@ export default function App() {
                               return (
                                 <motion.div
                                   key={idea.id}
-                                  className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3"
+                                  className={`bg-white p-5 rounded-xl border transition shadow-sm space-y-3 ${isMyIdea ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200'
+                                    }`}
                                 >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full shrink-0">
+                                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-2">
+                                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                                      <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 ${isMyIdea
+                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                        }`}>
+                                        <User className="w-3 h-3 text-indigo-400" />
                                         {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (idx % 26))}`}
                                       </span>
                                       <h3 className="text-sm font-bold text-slate-900 truncate">{idea.title}</h3>
@@ -4581,280 +4644,280 @@ export default function App() {
                               </span>
                             </div>
 
-                          {/* Controls for evaluation re-editing and host transition matching Image 1 */}
-                          <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
-                            <button
-                              type="button"
-                              onClick={handleStartReEditingEvaluation}
-                              className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
-                            >
-                              이전 단계(익명 평가)로 되돌아가기
-                            </button>
+                            {/* Controls for evaluation re-editing and host transition matching Image 1 */}
+                            <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-100">
+                              <button
+                                type="button"
+                                onClick={handleStartReEditingEvaluation}
+                                className="px-4.5 py-2.5 bg-white hover:bg-slate-50 text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl text-xs font-bold transition cursor-pointer shadow-xs"
+                              >
+                                이전 단계(익명 평가)로 되돌아가기
+                              </button>
 
-                            {roomDetails.room.hostId === userId && (
-                              <button
-                                type="button"
-                                onClick={() => handleForceChangeStatus('ELIMINATION')}
-                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Sparkles className="w-4 h-4 text-slate-950" />
-                                <span>피드백 보러가기 & 2차 투표 하러가기</span>
-                                <ArrowRight className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        /* ACTIVE SCREENING VOTING CARDS */
-                        <div className="space-y-6">
-                          {isReEditingEvaluation && (
-                            <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-left shadow-xs">
-                              <div className="space-y-0.5">
-                                <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
-                                  <Edit2 className="w-3.5 h-3.5 text-amber-600" />
-                                  이전 평가 내용 재작성 및 수정 모드
-                                </span>
-                                <p className="text-[11px] text-amber-800 font-medium">
-                                  이전에 제출했던 평가 내용이 입력창에 복원되었습니다. 수정 완료 후 하단의 [4단계 2차 투표로 이동] 버튼을 클릭해 주세요.
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleCancelReEditingEvaluation}
-                                className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
-                              >
-                                수정 취소
-                              </button>
+                              {roomDetails.room.hostId === userId && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleForceChangeStatus('ELIMINATION')}
+                                  className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Sparkles className="w-4 h-4 text-slate-950" />
+                                  <span>피드백 보러가기 & 2차 투표 하러가기</span>
+                                  <ArrowRight className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
-                          )}
-
-                          <div className="border-b border-slate-200 pb-2">
-                            <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
                           </div>
+                        ) : (
+                          /* ACTIVE SCREENING VOTING CARDS */
+                          <div className="space-y-6">
+                            {isReEditingEvaluation && (
+                              <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-left shadow-xs">
+                                <div className="space-y-0.5">
+                                  <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
+                                    <Edit2 className="w-3.5 h-3.5 text-amber-600" />
+                                    이전 평가 내용 재작성 및 수정 모드
+                                  </span>
+                                  <p className="text-[11px] text-amber-800 font-medium">
+                                    이전에 제출했던 평가 내용이 입력창에 복원되었습니다. 수정 완료 후 하단의 [4단계 2차 투표로 이동] 버튼을 클릭해 주세요.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={handleCancelReEditingEvaluation}
+                                  className="px-3 py-1.5 bg-white hover:bg-amber-100 text-slate-700 rounded-xl text-xs font-bold border border-amber-200 transition shrink-0 cursor-pointer"
+                                >
+                                  수정 취소
+                                </button>
+                              </div>
+                            )}
 
-                          {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
-                            const userVote = evalSubmissions[idea.id] || {
-                              decision: undefined,
-                              excludedCriterionIds: [],
-                              criteriaEvaluations: {},
-                              reasonText: '',
-                              reasonType: 'PREFERENCE'
-                            };
+                            <div className="border-b border-slate-200 pb-2">
+                              <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
+                            </div>
 
-                            return (
-                              <motion.div
-                                key={idea.id}
-                                className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4"
-                              >
-                                {/* Idea Overview Header */}
-                                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
-                                  <div className="space-y-1 flex-1 min-w-0">
-                                    <span className="text-[10px] font-black text-slate-400">후보 #{ideaIdx + 1}</span>
-                                    <h4 className="text-base font-bold text-slate-900">{idea.title}</h4>
+                            {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
+                              const userVote = evalSubmissions[idea.id] || {
+                                decision: undefined,
+                                excludedCriterionIds: [],
+                                criteriaEvaluations: {},
+                                reasonText: '',
+                                reasonType: 'PREFERENCE'
+                              };
 
-                                    {/* Idea description accordion toggle for stage 3 */}
+                              return (
+                                <motion.div
+                                  key={idea.id}
+                                  className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4"
+                                >
+                                  {/* Idea Overview Header */}
+                                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                                    <div className="space-y-1 flex-1 min-w-0">
+                                      <span className="text-[10px] font-black text-slate-400">후보 #{ideaIdx + 1}</span>
+                                      <h4 className="text-base font-bold text-slate-900">{idea.title}</h4>
+
+                                      {/* Idea description accordion toggle for stage 3 */}
+                                      {(() => {
+                                        const isDescExpanded = !!expandedIdeaIds[`stage3_${idea.id}`];
+                                        return (
+                                          <div className="pt-0.5">
+                                            {isDescExpanded ? (
+                                              <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line bg-slate-50 p-2.5 rounded-xl border border-slate-100 mt-1">
+                                                {idea.description}
+                                              </p>
+                                            ) : (
+                                              <p className="text-xs text-slate-500 line-clamp-1">
+                                                {idea.description}
+                                              </p>
+                                            )}
+                                            <button
+                                              type="button"
+                                              onClick={() => toggleIdeaExpanded(`stage3_${idea.id}`)}
+                                              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5 mt-1 transition"
+                                            >
+                                              <span>{isDescExpanded ? '설명 접기' : '상세 설명 더보기'}</span>
+                                              {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                            </button>
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
                                     {(() => {
-                                      const isDescExpanded = !!expandedIdeaIds[`stage3_${idea.id}`];
+                                      const isMyIdea = idea.submitterId === userId;
                                       return (
-                                        <div className="pt-0.5">
-                                          {isDescExpanded ? (
-                                            <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line bg-slate-50 p-2.5 rounded-xl border border-slate-100 mt-1">
-                                              {idea.description}
-                                            </p>
-                                          ) : (
-                                            <p className="text-xs text-slate-500 line-clamp-1">
-                                              {idea.description}
-                                            </p>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => toggleIdeaExpanded(`stage3_${idea.id}`)}
-                                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-0.5 mt-1 transition"
-                                          >
-                                            <span>{isDescExpanded ? '설명 접기' : '상세 설명 더보기'}</span>
-                                            {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                          </button>
-                                        </div>
+                                        <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${isMyIdea
+                                          ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                          }`}>
+                                          <User className="w-3 h-3 text-indigo-400" />
+                                          {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (ideaIdx % 26))}`}
+                                        </span>
                                       );
                                     })()}
                                   </div>
-                                  {(() => {
-                                    const isMyIdea = idea.submitterId === userId;
-                                    return (
-                                      <span className={`text-xs font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 self-start shrink-0 ${isMyIdea
-                                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                                        : 'bg-slate-100 text-slate-700 border border-slate-200'
-                                        }`}>
-                                        <User className="w-3 h-3 text-indigo-400" />
-                                        {isMyIdea ? '내 아이디어' : `아이디어 ${String.fromCharCode(65 + (ideaIdx % 26))}`}
-                                      </span>
-                                    );
-                                  })()}
-                                </div>
 
-                                {/* Voting Selector Button Group ([유지 찬성] / [제외 희망]) */}
-                                <div className="space-y-3">
-                                  <label className="text-xs font-extrabold text-slate-700">이 아이디어에 대한 익명 스탠스 선택 <span className="text-rose-500">*</span></label>
-                                  <div className="grid grid-cols-2 gap-3">
-                                    {[
-                                      { key: 'KEEP', label: '유지 찬성', desc: '기준에 부합하며 채택 추천', activeClass: 'bg-emerald-50 text-emerald-800 border-emerald-400 font-extrabold ring-2 ring-emerald-500/20' },
-                                      { key: 'EXCLUDE', label: '제외 희망', desc: '치명적 리스크/우려 존재', activeClass: 'bg-rose-50 text-rose-800 border-rose-400 font-extrabold ring-2 ring-rose-500/20' }
-                                    ].map(opt => {
-                                      const isSelected = userVote.decision === opt.key;
-                                      return (
-                                        <button
-                                          key={opt.key}
-                                          type="button"
-                                          onClick={() => handleVoteChange(idea.id, opt.key as any)}
-                                          className={`p-3.5 rounded-xl border text-center transition flex flex-col items-center justify-center gap-1 ${isSelected
-                                            ? opt.activeClass
-                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                                            }`}
-                                        >
-                                          <span className="text-sm font-bold">{opt.label}</span>
-                                          <span className="text-[10px] font-normal opacity-80">{opt.desc}</span>
-                                        </button>
-                                      );
-                                    })}
+                                  {/* Voting Selector Button Group ([유지 찬성] / [제외 희망]) */}
+                                  <div className="space-y-3">
+                                    <label className="text-xs font-extrabold text-slate-700">이 아이디어에 대한 익명 스탠스 선택 <span className="text-rose-500">*</span></label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                      {[
+                                        { key: 'KEEP', label: '유지 찬성', desc: '기준에 부합하며 채택 추천', activeClass: 'bg-emerald-50 text-emerald-800 border-emerald-400 font-extrabold ring-2 ring-emerald-500/20' },
+                                        { key: 'EXCLUDE', label: '제외 희망', desc: '치명적 리스크/우려 존재', activeClass: 'bg-rose-50 text-rose-800 border-rose-400 font-extrabold ring-2 ring-rose-500/20' }
+                                      ].map(opt => {
+                                        const isSelected = userVote.decision === opt.key;
+                                        return (
+                                          <button
+                                            key={opt.key}
+                                            type="button"
+                                            onClick={() => handleVoteChange(idea.id, opt.key as any)}
+                                            className={`p-3.5 rounded-xl border text-center transition flex flex-col items-center justify-center gap-1 ${isSelected
+                                              ? opt.activeClass
+                                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                              }`}
+                                          >
+                                            <span className="text-sm font-bold">{opt.label}</span>
+                                            <span className="text-[10px] font-normal opacity-80">{opt.desc}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
                                   </div>
-                                </div>
 
-                                {/* Criteria Checklist & Dynamic Reason Inputs (Required when KEEP or EXCLUDE is selected) */}
-                                {(userVote.decision === 'KEEP' || userVote.decision === 'EXCLUDE') && (
-                                  <motion.div
-                                    initial={{ opacity: 0, height: 0 }}
-                                    animate={{ opacity: 1, height: 'auto' }}
-                                    className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
-                                  >
-                                    {/* 1. Evaluate every criterion independently */}
-                                    <div className="space-y-2">
-                                      <label className="text-xs font-bold text-slate-800 block">
-                                        공통 기준 충족도 평가 (모든 기준 필수) <span className="text-rose-500">*</span>
-                                      </label>
-                                      <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
-                                        {(() => {
-                                          const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
-                                            ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
-                                            : (roomDetails.proposals || []).map((p, idx) => {
-                                              const rawText = p?.rawText || '';
-                                              const parts = rawText.split(': ');
-                                              return {
-                                                id: p?.id || `prop-${idx}`,
-                                                name: parts[0] || `기준 #${idx + 1}`,
-                                                description: parts.length > 1 ? parts.slice(1).join(': ') : rawText
-                                              };
-                                            });
+                                  {/* Criteria Checklist & Dynamic Reason Inputs (Required when KEEP or EXCLUDE is selected) */}
+                                  {(userVote.decision === 'KEEP' || userVote.decision === 'EXCLUDE') && (
+                                    <motion.div
+                                      initial={{ opacity: 0, height: 0 }}
+                                      animate={{ opacity: 1, height: 'auto' }}
+                                      className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
+                                    >
+                                      {/* 1. Evaluate every criterion independently */}
+                                      <div className="space-y-2">
+                                        <label className="text-xs font-bold text-slate-800 block">
+                                          공통 기준 충족도 평가 (모든 기준 필수) <span className="text-rose-500">*</span>
+                                        </label>
+                                        <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
+                                          {(() => {
+                                            const availableCriteria = (roomDetails.criteria && roomDetails.criteria.length > 0)
+                                              ? roomDetails.criteria.map(c => ({ id: c.id, name: c.name, description: c.description }))
+                                              : (roomDetails.proposals || []).map((p, idx) => {
+                                                const rawText = p?.rawText || '';
+                                                const parts = rawText.split(': ');
+                                                return {
+                                                  id: p?.id || `prop-${idx}`,
+                                                  name: parts[0] || `기준 #${idx + 1}`,
+                                                  description: parts.length > 1 ? parts.slice(1).join(': ') : rawText
+                                                };
+                                              });
 
-                                          if (availableCriteria.length === 0) {
-                                            return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
-                                          }
+                                            if (availableCriteria.length === 0) {
+                                              return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
+                                            }
 
-                                          return availableCriteria.map(crit => (
-                                            <div key={crit.id} className="p-2 rounded-lg border border-slate-100 space-y-2">
-                                              <div>
-                                                <span className="font-bold text-xs text-slate-900 block">{crit.name}</span>
-                                                <span className="text-[11px] text-slate-500 block">{crit.description}</span>
+                                            return availableCriteria.map(crit => (
+                                              <div key={crit.id} className="p-2 rounded-lg border border-slate-100 space-y-2">
+                                                <div>
+                                                  <span className="font-bold text-xs text-slate-900 block">{crit.name}</span>
+                                                  <span className="text-[11px] text-slate-500 block">{crit.description}</span>
+                                                </div>
+                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                                  {[
+                                                    { key: 'MET', label: '충족' },
+                                                    { key: 'PARTIAL', label: '일부 충족' },
+                                                    { key: 'NOT_MET', label: '미충족' },
+                                                    { key: 'UNSURE', label: '잘 모르겠음' }
+                                                  ].map(option => {
+                                                    const selected = userVote.criteriaEvaluations?.[crit.id] === option.key;
+                                                    return (
+                                                      <button
+                                                        key={option.key}
+                                                        type="button"
+                                                        onClick={() => handleCriteriaEvaluationChange(
+                                                          idea.id,
+                                                          crit.id,
+                                                          option.key as CriteriaEvaluationValue
+                                                        )}
+                                                        className={`px-2 py-2 rounded-lg border text-[10px] font-bold transition ${
+                                                          selected
+                                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                                        }`}
+                                                      >
+                                                        {option.label}
+                                                      </button>
+                                                    );
+                                                  })}
+                                                </div>
                                               </div>
-                                              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                                                {[
-                                                  { key: 'MET', label: '충족' },
-                                                  { key: 'PARTIAL', label: '일부 충족' },
-                                                  { key: 'NOT_MET', label: '미충족' },
-                                                  { key: 'UNSURE', label: '잘 모르겠음' }
-                                                ].map(option => {
-                                                  const selected = userVote.criteriaEvaluations?.[crit.id] === option.key;
-                                                  return (
-                                                    <button
-                                                      key={option.key}
-                                                      type="button"
-                                                      onClick={() => handleCriteriaEvaluationChange(
-                                                        idea.id,
-                                                        crit.id,
-                                                        option.key as CriteriaEvaluationValue
-                                                      )}
-                                                      className={`px-2 py-2 rounded-lg border text-[10px] font-bold transition ${
-                                                        selected
-                                                          ? 'bg-indigo-600 text-white border-indigo-600'
-                                                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                                      }`}
-                                                    >
-                                                      {option.label}
-                                                    </button>
-                                                  );
-                                                })}
-                                              </div>
-                                            </div>
-                                          ));
-                                        })()}
+                                            ));
+                                          })()}
+                                        </div>
+                                        <p className="text-[10px] text-slate-500">
+                                          ‘잘 모르겠음’은 숨기지 않고 비율로 표시하되, 기준 충족도 계산의 분모에서는 제외합니다.
+                                        </p>
                                       </div>
-                                      <p className="text-[10px] text-slate-500">
-                                        ‘잘 모르겠음’은 숨기지 않고 비율로 표시하되, 기준 충족도 계산의 분모에서는 제외합니다.
-                                      </p>
-                                    </div>
 
-                                    {/* 2. Dynamic Reason Textarea */}
-                                    <div className="space-y-1.5">
-                                      <label className="text-xs font-bold text-slate-800 block">
-                                        {userVote.decision === 'KEEP' ? '유지를 지지하는 세부 사유' : '제외를 요청하는 세부 사유'} <span className="text-rose-500">*</span>
-                                      </label>
-                                      <textarea
-                                        required
-                                        value={userVote.reasonText}
-                                        onChange={e => handleReasonTextChange(idea.id, e.target.value)}
-                                        placeholder={userVote.decision === 'KEEP' ? "이 아이디어의 유지를 지지하는 솔직한 근거를 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)" : "이 아이디어의 제외를 지지하는 솔직한 우려사항을 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)"}
-                                        rows={3}
-                                        className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-medium bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                      />
-                                      <p className="text-[10px] text-emerald-700 font-medium">
-                                        🔒 **익명 보호**: 입력하신 의견 원문은 건조하고 기계적인 AI 문체로 재구성되어 팀에 공유됩니다.
-                                      </p>
-                                    </div>
-                                  </motion.div>
-                                )}
-                              </motion.div>
-                            );
-                          })}
+                                      {/* 2. Dynamic Reason Textarea */}
+                                      <div className="space-y-1.5">
+                                        <label className="text-xs font-bold text-slate-800 block">
+                                          {userVote.decision === 'KEEP' ? '유지를 지지하는 세부 사유' : '제외를 요청하는 세부 사유'} <span className="text-rose-500">*</span>
+                                        </label>
+                                        <textarea
+                                          required
+                                          value={userVote.reasonText}
+                                          onChange={e => handleReasonTextChange(idea.id, e.target.value)}
+                                          placeholder={userVote.decision === 'KEEP' ? "이 아이디어의 유지를 지지하는 솔직한 근거를 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)" : "이 아이디어의 제외를 지지하는 솔직한 우려사항을 적어주세요. (AI가 기계적인 어조로 재구성하여 문체 유추를 방지합니다)"}
+                                          rows={3}
+                                          className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-medium bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                        />
+                                        <p className="text-[10px] text-emerald-700 font-medium">
+                                          🔒 **익명 보호**: 입력하신 의견 원문은 건조하고 기계적인 AI 문체로 재구성되어 팀에 공유됩니다.
+                                        </p>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </motion.div>
+                              );
+                            })}
 
-                          {/* Centered Voting Transition Button under the last candidate idea */}
-                          {(() => {
-                            const activeIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE');
-                            const isAllEvaluated = activeIdeas.length > 0 && activeIdeas.every(idea => {
-                              const vote = evalSubmissions[idea.id];
-                              if (!vote || !vote.decision) return false;
-                              if (!vote.reasonText || !vote.reasonText.trim()) return false;
-                              const availableCriteria = roomDetails.criteria || [];
-                              if (availableCriteria.some(criterion => !vote.criteriaEvaluations?.[criterion.id])) return false;
-                              return true;
-                            });
+                            {/* Centered Voting Transition Button under the last candidate idea */}
+                            {(() => {
+                              const activeIdeas = roomDetails.ideas.filter(i => i.status === 'ACTIVE');
+                              const isAllEvaluated = activeIdeas.length > 0 && activeIdeas.every(idea => {
+                                const vote = evalSubmissions[idea.id];
+                                if (!vote || !vote.decision) return false;
+                                if (!vote.reasonText || !vote.reasonText.trim()) return false;
+                                const availableCriteria = roomDetails.criteria || [];
+                                if (availableCriteria.some(criterion => !vote.criteriaEvaluations?.[criterion.id])) return false;
+                                return true;
+                              });
 
-                            return (
-                              <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
-                                {!isAllEvaluated && (
-                                  <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
-                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [모든 공통 기준의 충족도], [세부 사유]를 작성해야 제출할 수 있습니다.
-                                  </p>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={handleSubmitAllEvaluations}
-                                  disabled={!isAllEvaluated}
-                                  className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${isAllEvaluated
-                                    ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
-                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
-                                    }`}
-                                >
-                                  <Sparkles className="w-4 h-4" />
-                                  {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
-                                  <ArrowRight className="w-4 h-4" />
-                                </button>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                              return (
+                                <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
+                                  {!isAllEvaluated && (
+                                    <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
+                                      ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [모든 공통 기준의 충족도], [세부 사유]를 작성해야 제출할 수 있습니다.
+                                    </p>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={handleSubmitAllEvaluations}
+                                    disabled={!isAllEvaluated}
+                                    className={`w-full max-w-md py-4 rounded-2xl text-sm font-black transition flex items-center justify-center gap-2 shadow-lg ${isAllEvaluated
+                                      ? 'bg-gradient-to-r from-amber-400 via-amber-400 to-amber-500 text-slate-950 hover:from-amber-300 hover:to-amber-400 border border-amber-300 ring-4 ring-amber-400/20 cursor-pointer'
+                                      : 'bg-slate-200 text-slate-400 cursor-not-allowed border border-slate-300 opacity-80'
+                                      }`}
+                                  >
+                                    <Sparkles className="w-4 h-4" />
+                                    {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
+                                    <ArrowRight className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* -----------------------------------------------------------
                     VIEW 5: ELIMINATION (SCREENING DASHBOARD)
@@ -4863,19 +4926,25 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
-                      {roomDetails.room.status === 'FINAL_VOTE' && (
-                        <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
+                      {(roomDetails.room.finalVoteStatus === 'VOTING' || roomDetails.room.finalVoteStatus === 'TIE_PENDING') && (
+                        <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-slate-950 text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
                           <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
                             <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
-                            <span>방장이 2차 별 스티커 투표를 개시하였습니다! 생존 후보 중 최종 결과로 채택할 아이디어에 별 스티커를 붙여주세요.</span>
+                            <span>
+                              {roomDetails.room.finalVoteStatus === 'TIE_PENDING'
+                                ? '모든 투표가 끝났고 최종 채택 경계에서 동률이 발생했습니다.'
+                                : '다른 사람의 선택과 중간 집계는 모두 숨겨져 있습니다. 생존 후보 중 최종 결과로 채택할 아이디어를 선택해 주세요.'}
+                            </span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setShowFinalVoteModal(true)}
-                            className="px-4.5 py-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-xl text-xs font-black transition shrink-0 cursor-pointer shadow-sm flex items-center gap-1.5"
-                          >
-                            <span>⭐ 4단계 2차 별 스티커 투표하기</span>
-                          </button>
+                          {roomDetails.room.finalVoteStatus === 'VOTING' && (
+                            <button
+                              type="button"
+                              onClick={() => setShowFinalVoteModal(true)}
+                              className="px-4.5 py-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-xl text-xs font-black transition shrink-0 cursor-pointer shadow-sm flex items-center gap-1.5"
+                            >
+                              <span>⭐ 익명 최종 투표하기</span>
+                            </button>
+                          )}
                         </div>
                       )}
 
@@ -4886,7 +4955,13 @@ export default function App() {
                         <div className="space-y-4">
                           <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                             <h2 className="text-base font-extrabold text-slate-900">현재 생존해 있는 활성 후보 ({activeIdeasCount}개)</h2>
-                            <span className="text-xs text-slate-400 font-semibold">투표 결과: 유지 찬성 / 제외 희망</span>
+                            <span className="text-xs text-slate-400 font-semibold">
+                              {roomDetails.room.finalVoteStatus === 'VOTING'
+                                ? '중간 집계 비공개'
+                                : roomDetails.room.finalVoteStatus === 'TIE_PENDING'
+                                  ? '최종 집계 완료 · 동률 확정 대기'
+                                  : '투표 결과: 유지 찬성 / 제외 희망'}
+                            </span>
                           </div>
 
                           {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map(idea => {
@@ -4936,18 +5011,21 @@ export default function App() {
                                     </div>
                                   </div>
 
-                                  <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
-                                    <span className="text-[10px] text-slate-400 font-bold block leading-none">기준 충족도</span>
-                                    <span className="text-lg font-black text-slate-900">{stats.avgCriteriaComplianceRatio ?? stats.score}%</span>
-                                    {stats.validResponseCount !== undefined && (
-                                      <span className="text-[10px] text-slate-500 block mt-1">
-                                        유효 {stats.validResponseCount}명 · 잘 모르겠음 {stats.unsureRate || 0}%
-                                      </span>
-                                    )}
-                                  </div>
+                                  {roomDetails.room.finalVoteStatus !== 'VOTING' && roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
+                                    <div className="text-right self-start sm:self-auto bg-slate-50 py-1.5 px-3.5 border border-slate-100 rounded-xl shrink-0">
+                                      <span className="text-[10px] text-slate-400 font-bold block leading-none">기준 충족도</span>
+                                      <span className="text-lg font-black text-slate-900">{stats.avgCriteriaComplianceRatio ?? stats.score}%</span>
+                                      {stats.validResponseCount !== undefined && (
+                                        <span className="text-[10px] text-slate-500 block mt-1">
+                                          유효 {stats.validResponseCount}명 · 잘 모르겠음 {stats.unsureRate || 0}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
 
                                 {/* Aggregate vote counters (2 options: 유지 찬성 / 제외 희망) */}
+                                {roomDetails.room.finalVoteStatus !== 'VOTING' && roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
                                 <div className="grid grid-cols-2 gap-3 bg-slate-50 p-2.5 rounded-xl text-center text-xs font-extrabold text-slate-500">
                                   <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-100/80 flex items-center justify-between px-4">
                                     <span className="text-emerald-700 font-bold">유지 찬성</span>
@@ -4958,9 +5036,11 @@ export default function App() {
                                     <span className="text-sm font-black text-rose-800">{stats.excludeCount}표</span>
                                   </div>
                                 </div>
+                                )}
 
                                 {/* AI summarized anonymous comments (Security checked) */}
-                                {(commentSummaries.objectiveComments.length > 0 || commentSummaries.preferenceComments.length > 0) && (
+                                {roomDetails.room.finalVoteStatus !== 'VOTING' && roomDetails.room.finalVoteStatus !== 'TIE_PENDING' &&
+                                  (commentSummaries.objectiveComments.length > 0 || commentSummaries.preferenceComments.length > 0) && (
                                   <div className="bg-slate-50/50 p-3 rounded-xl border border-slate-100 space-y-3">
                                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">🗣️ 재구성된 익명 피드백 (어투 익명화)</span>
 
@@ -4989,7 +5069,9 @@ export default function App() {
                                 )}
 
                                 {/* Manual Elimination for Host (Targeting specific objective exclusions) */}
-                                {roomDetails.room.hostId === userId && (
+                                {roomDetails.room.hostId === userId &&
+                                  roomDetails.room.finalVoteStatus !== 'VOTING' &&
+                                  roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
                                   <div className="flex justify-end pt-1">
                                     <button
                                       type="button"
@@ -5011,7 +5093,50 @@ export default function App() {
                       <div className="lg:col-span-4 space-y-6">
 
                         {/* Step Control Box for Host & Invited Participants */}
-                        {roomDetails.room.hostId === userId ? (
+                        {roomDetails.room.finalVoteStatus === 'VOTING' ? (
+                          <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-amber-600 text-slate-950 p-5 rounded-2xl space-y-3 shadow-md border border-amber-300">
+                            <h3 className="text-sm font-extrabold text-slate-950 flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-slate-950" />
+                              익명 최종 투표
+                            </h3>
+                            <p className="text-xs font-bold text-slate-950 leading-relaxed">
+                              투표가 끝날 때까지 다른 사람의 선택과 중간 집계는 공개되지 않습니다.
+                            </p>
+                            <p className="text-[11px] font-bold text-slate-800">
+                              제출 현황 {roomDetails.starVoteSubmittedCount || 0} / {roomDetails.finalVoteExpectedCount || 0}명
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setShowFinalVoteModal(true)}
+                              className="w-full py-3 bg-slate-950 text-amber-300 hover:bg-slate-900 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-400 active:scale-95"
+                            >
+                              <Sparkles className="w-4 h-4 text-amber-400" />
+                              <span>⭐ 익명 최종 투표하기</span>
+                            </button>
+                          </div>
+                        ) : roomDetails.room.finalVoteStatus === 'TIE_PENDING' ? (
+                          <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4 shadow-md">
+                            <h3 className="text-sm font-bold text-amber-400">최종 채택 경계 동률</h3>
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              모든 표는 동시에 공개되었습니다. 동률 후보 안에서만 서버 추첨으로 남은 자리를 확정합니다.
+                            </p>
+                            {roomDetails.room.hostId === userId ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRoulettePurpose('TIE_RESOLUTION');
+                                  setRouletteWinnerResult(null);
+                                  setShowRouletteModal(true);
+                                }}
+                                className="w-full py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black"
+                              >
+                                동률 결과 안전하게 확정하기
+                              </button>
+                            ) : (
+                              <p className="text-xs font-bold text-amber-300">방장이 동률 결과를 확정하고 있습니다.</p>
+                            )}
+                          </div>
+                        ) : roomDetails.room.hostId === userId ? (
                           <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4 shadow-md">
                             <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
                               <Settings className="w-4 h-4" />
@@ -5086,7 +5211,9 @@ export default function App() {
                         )}
 
                         {/* Objective Constraints Alert Box */}
-                        {objectiveCandidates.length > 0 && (
+                        {roomDetails.room.finalVoteStatus !== 'VOTING' &&
+                          roomDetails.room.finalVoteStatus !== 'TIE_PENDING' &&
+                          objectiveCandidates.length > 0 && (
                           <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-200 text-slate-800 space-y-2">
                             <h4 className="text-xs font-bold text-amber-800 flex items-center gap-1">
                               <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
@@ -5104,87 +5231,153 @@ export default function App() {
                         )}
 
                         {/* Host Option: Restart Stage 2 with Surviving Ideas */}
-                        {roomDetails.room.hostId === userId && (
-                          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-2">
-                            <p className="text-xs font-bold text-slate-800">2단계 재진행 (옵션)</p>
-                            <p className="text-[11px] text-slate-500 leading-relaxed">
-                              소거된 아이디어를 제외하고, 현재 생존한 {activeIdeasCount}개 후보만으로 2단계(평가 기준 설정)부터 3, 4, 5단계를 새로 재진행할 수 있습니다.
+                        {roomDetails.room.hostId === userId &&
+                          roomDetails.room.finalVoteStatus !== 'VOTING' &&
+                          roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
+                          <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 shadow-md border border-slate-800">
+                            <div className="flex items-center justify-between gap-2">
+                              <h3 className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
+                                <Sparkles className="w-4 h-4 text-amber-400" />
+                                생존 아이디어 2단계 재설정
+                              </h3>
+                              <span className="text-[10px] font-extrabold bg-slate-800 text-indigo-200 px-2.5 py-0.5 rounded-full border border-slate-700">
+                                생존 {activeIdeasCount}개
+                              </span>
+                            </div>
+                          <p className="text-xs text-slate-300 leading-relaxed">
+                              현재 소거되지 않은 아이디어로 새 검토 회차를 시작합니다. 이전 회차의 평가와 결과는 덮어쓰지 않고 보존됩니다.
                             </p>
                             <button
                               type="button"
                               onClick={handleRestartStage2WithSurvivingIdeas}
-                              className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition cursor-pointer"
+                              disabled={activeIdeasCount < 2}
+                              className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-40 text-slate-950 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                             >
-                              🔄 생존 아이디어만으로 2단계 재진행
+                              <RefreshCw className="w-3.5 h-3.5 text-slate-950" />
+                              <span>새 재검토 회차 시작</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         )}
 
-                        {/* Developer & Test Seed evaluation button */}
-                        <div className="bg-slate-100 p-4 rounded-2xl border border-slate-200 space-y-2">
-                          <p className="text-xs font-bold text-slate-700">🧪 개발자 시뮬레이션 도구</p>
-                          <button
-                            onClick={handleSeedMockEvaluations}
-                            className="w-full py-2 bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 rounded-xl text-xs font-bold transition shadow-2xs"
-                          >
-                            가상 1차 평가 데이터 추가 (정족수 충족)
-                          </button>
-                          <button
-                            onClick={handleSeedMockStarVotes}
-                            className="w-full py-2 bg-white hover:bg-slate-50 border border-amber-300 text-amber-900 rounded-xl text-xs font-bold transition shadow-2xs"
-                          >
-                            ⭐ 가상 2차 별 투표 데이터 추가 (정족수 충족)
-                          </button>
-                          <button
-                            onClick={() => setShowRouletteModal(true)}
-                            className="w-full py-2 bg-amber-400 hover:bg-amber-300 border border-amber-500 text-slate-950 rounded-xl text-xs font-black transition shadow-xs flex items-center justify-center gap-1 cursor-pointer"
-                          >
-                            <span>🎲 룰렛 추첨 미리보기 (테스트)</span>
-                          </button>
-                        </div>
+                        {/* Rounds timeline */}
+                        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                          <h3 className="text-xs font-extrabold text-slate-500 uppercase tracking-wider">소거 타임라인</h3>
 
+                          {(!roomDetails.rounds || roomDetails.rounds.length === 0) ? (
+                            <p className="text-xs font-semibold text-slate-400">진행된 소거 라운드가 없습니다.</p>
+                          ) : (
+                            <div className="space-y-4 border-l-2 border-slate-100 pl-3.5">
+                              {(roomDetails.rounds || []).map(round => (
+                                <div key={round.id} className="space-y-1 relative">
+                                  <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-slate-900" />
+                                  <span className="text-[10px] font-black text-slate-400">{round.roundNumber}라운드 소거 완료</span>
+                                  <h4 className="text-xs font-bold text-slate-900">
+                                    {round.eliminatedIdeaIds.map(id => (roomDetails.ideas || []).find(i => i.id === id)?.title).join(', ')} 소거
+                                  </h4>
+                                  <p className="text-[10px] text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
+                                    {round.aiSummaryText}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
+
                     </div>
                   )}
 
                   {/* -----------------------------------------------------------
-                    VIEW 6: CLOSED (FINAL SUMMARY REPORT - SLEEK DESIGN)
+                    VIEW 6: CLOSED (FINAL REPORT SHOWCASE - UX IMPROVED)
                     ----------------------------------------------------------- */}
                   {roomDetails.room.status === 'CLOSED' && (
-                    <div className="space-y-6">
+                    <div className="space-y-6 max-w-4xl mx-auto text-left">
 
-                      {/* Header Actions: Print/Download PDF & Share Report */}
-                      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-                        <div className="flex items-center gap-2">
-                          <Award className="w-5 h-5 text-amber-500" />
-                          <span className="text-sm font-bold text-slate-900">최종 결과 리포트가 발급되었습니다</span>
+                      {/* ① 최종 결과 헤더 & PDF 저장 버튼 */}
+                      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 md:p-8 rounded-3xl text-white shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-400/30 px-2.5 py-0.5 rounded-full">
+                            최종 결과 보고서
+                          </span>
+                          <h1 className="text-xl md:text-2xl font-black tracking-tight text-white">
+                            {roomDetails.room.title}
+                          </h1>
+                          <p className="text-xs text-slate-300 font-medium">
+                            {roomDetails.room.decisionMode === 'QUICK'
+                              ? '다른 사람의 선택을 보지 않고 진행한 익명 투표와 최종 결정 근거입니다.'
+                              : '익명 아이디어 제안, 공통 기준 평가 및 최종 익명 투표를 종합한 결과입니다.'}
+                          </p>
                         </div>
-                        <div className="flex items-center gap-2 w-full sm:w-auto">
-                          <button
-                            type="button"
-                            onClick={handleDownloadPDF}
-                            className="flex-1 sm:flex-none px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            <span>PDF 인쇄 / 다운로드</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={copyShareLink}
-                            className="flex-1 sm:flex-none px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition border border-slate-200 flex items-center justify-center gap-1.5"
-                          >
-                            <Copy className="w-3.5 h-3.5 text-indigo-600" />
-                            <span>결과 링크 복사</span>
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={handleDownloadPDF}
+                          className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black transition shadow-md flex items-center gap-2 cursor-pointer shrink-0 border border-amber-500 active:scale-95"
+                        >
+                          <Download className="w-4 h-4 text-slate-950" />
+                          <span>최종 결과 리포트 PDF 저장</span>
+                        </button>
                       </div>
 
-                      {/* ③ 최종선정 결과 (우승작 발표 카드) */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                      {/* ② 동률 여부 확인 & 룰렛 섹션 (운영 정책: 동률 발생 시만 표시) */}
+                      {roomDetails.starVoteStatus === 'tie_pending' && (
+                        <div className="bg-amber-50 border-2 border-amber-400 p-6 rounded-3xl text-center space-y-4 shadow-md">
+                          <div className="inline-flex items-center gap-1.5 bg-amber-200 text-amber-950 font-black text-xs px-3.5 py-1 rounded-full border border-amber-300">
+                            <AlertCircle className="w-4 h-4 text-amber-800" />
+                            <span>⚠️ 최종 후보가 동률입니다</span>
+                          </div>
+                          <p className="text-xs text-amber-900 font-bold max-w-lg mx-auto">
+                            최종 채택 경계에서 동점이 발생했습니다. 운명의 룰렛을 돌려 우승 아이디어를 확정해주십시오!
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRoulettePurpose('TIE_RESOLUTION');
+                              setRouletteWinnerResult(null);
+                              setShowRouletteModal(true);
+                            }}
+                            disabled={isSpinningRoulette}
+                            className="py-3 px-6 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-2xl shadow-lg transition border border-amber-600 inline-flex items-center gap-2 cursor-pointer active:scale-95"
+                          >
+                            <Sparkles className="w-4 h-4 text-slate-950" />
+                            <span>[ 운명의 룰렛 돌리기 ]</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 테스트 환경 전용 룰렛 미리보기 카드 */}
+                      <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
+                        <div className="space-y-1 text-center sm:text-left">
+                          <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 justify-center sm:justify-start">
+                            <Sparkles className="w-4 h-4 text-amber-500" />
+                            🧪 테스트용 룰렛 미리보기
+                          </span>
+                          <p className="text-[11px] text-slate-500 font-medium">
+                            실제 최종 결과 및 DB 데이터에 영향을 주지 않으며, 룰렛 UI 및 회전 기능을 시연할 수 있습니다.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRoulettePurpose('PREVIEW');
+                            setRouletteWinnerResult(null);
+                            setShowRouletteModal(true);
+                          }}
+                          className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs rounded-xl transition shadow-xs shrink-0 border border-amber-500 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>룰렛 돌리기 (미리보기)</span>
+                        </button>
+                      </div>
+
+                      {/* ③ 최종 선정 아이디어 카드 (Spotlight) */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg space-y-5 relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-600 via-amber-400 to-indigo-600" />
+
                         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                          <h2 className="text-lg md:text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-                            <Award className="w-6 h-6 text-amber-500" />
-                            최종 우승작 (선정된 아이디어)
+                          <h2 className="text-lg font-black text-slate-900 flex items-center gap-2">
+                            <Award className="w-5 h-5 text-amber-500" />
+                            🏆 최종 선정 아이디어
                           </h2>
                           <button
                             type="button"
@@ -5211,12 +5404,24 @@ export default function App() {
                                     최종 채택
                                   </span>
                                 </div>
-                                <p className="text-xs md:text-sm text-slate-600 leading-relaxed font-medium">
+                                <p className="text-xs md:text-sm text-slate-700 leading-relaxed whitespace-pre-line">
                                   {winner.description}
                                 </p>
-                                <div className="pt-2 border-t border-indigo-100/60 flex items-center justify-between text-xs font-bold text-indigo-600">
-                                  <span>제안자 : {winner.submitterName}</span>
-                                  <span>⭐ 최종 득표: {roomDetails.starVotes?.[winner.id] || 0}표</span>
+
+                                <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-200/60">
+                                  <span className="font-bold text-slate-800">
+                                    제안자: {winner.submitterName || '익명 참여자'}
+                                  </span>
+                                  {winner.attachmentUrl && (
+                                    <a
+                                      href={winner.attachmentUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-indigo-600 hover:underline font-bold text-xs"
+                                    >
+                                      📎 참고 자료 링크 보기
+                                    </a>
+                                  )}
                                 </div>
                               </div>
                             ))
@@ -5224,119 +5429,61 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* ④ 최종 선정 이유 (AI 요약 리포트 및 근처 평가 근거) */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                          <Sparkles className="w-5 h-5 text-amber-500" />
-                          <h3 className="text-base font-black text-slate-900">최종 선정 이유 및 AI 리포트</h3>
+                      {/* ④ AI 종합 분석 보고서 및 논의 내역 카드 (Markdown Rendered) */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+                        <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+                          <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                            <Sparkles className="w-5 h-5 text-indigo-600" />
+                            Potens AI 종합 의사결정 리포트
+                          </h2>
+                          <span className="text-xs font-bold text-slate-400">자동 생성 및 검증 완료</span>
                         </div>
 
-                        {roomDetails.aiFinalSummary ? (
-                          <div className="space-y-4">
-                            <SafeMarkdown content={roomDetails.aiFinalSummary} />
+                        {roomDetails.room.finalReportText ? (
+                          <div className="prose prose-slate max-w-none">
+                            <SafeMarkdown content={roomDetails.room.finalReportText} />
                           </div>
                         ) : (
-                          <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200/80 text-center space-y-2">
-                            <p className="text-xs text-slate-600 font-bold">
-                              💡 평가 데이터 및 투표 근거를 종합하여 세부 리포트를 도출하는 중입니다.
-                            </p>
-                            <p className="text-[11px] text-slate-400">
-                              (참여자의 평가 데이터가 충분하지 않을 경우 기본 평가 점수 및 별 스티커 집계 결과를 기준으로 표출됩니다)
-                            </p>
+                          <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200 space-y-2">
+                            <RefreshCw className="w-6 h-6 text-indigo-600 animate-spin mx-auto" />
+                            <p className="text-xs font-bold text-slate-600">AI 종합 분석 리포트를 생성하고 있습니다...</p>
                           </div>
                         )}
                       </div>
 
-                      {/* ⑤ 라운드별 의사결정 과정 타임라인 */}
-                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-5">
-                        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                          <FileText className="w-5 h-5 text-indigo-600" />
-                          <h3 className="text-base font-black text-slate-900">라운드별 의사결정 및 소거 과정</h3>
-                        </div>
-
-                        {/* Process Step Progression Bar */}
-                        <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
-                          <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
-                        </div>
-
-                        <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
-                          {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
-                            <div className="space-y-1 relative">
-                              <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-600" />
-                              <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
-                              <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
-                              <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
-                              </p>
-                            </div>
-                          ) : (
-                            (roomDetails.rounds || []).map(round => (
-                              <div key={round.id} className="space-y-1 relative">
-                                <div className="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full bg-rose-500" />
-                                <span className="text-[10px] font-black text-rose-500">{round.roundNumber}라운드 탈락 및 소거 이력</span>
-                                <h4 className="text-xs md:text-sm font-bold text-slate-900">
-                                  {(round.eliminatedIdeaIds || []).map(id => roomDetails?.ideas?.find(i => i.id === id)?.title || '아이디어').join(', ')} 소거
-                                </h4>
-                                <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                  {round.aiSummaryText}
-                                </p>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-
-                      {/* ⑥ 의견이 갈린 아이디어 (Controversial Ideas) */}
+                      {/* ⑤ 찬반/갈등 아이디어 논의 요약 섹션 */}
                       {controversialIdeas.length > 0 && (
-                        <div className="bg-white p-6 md:p-8 rounded-3xl border border-amber-200 shadow-sm space-y-4">
-                          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                            <AlertCircle className="w-5 h-5 text-amber-600" />
-                            <h3 className="text-base font-black text-slate-900">의견이 팽팽했던 쟁점 아이디어</h3>
+                        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                          <div className="border-b border-slate-100 pb-2">
+                            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                              <Info className="w-4 h-4 text-amber-500" />
+                              주요 쟁점 및 찬반 대립 아이디어 복기
+                            </h3>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              유지 찬성과 제외 요청표가 팽팽하게 대립했던 후보들의 핵심 논점 요약입니다.
+                            </p>
                           </div>
-                          <p className="text-xs text-slate-500 leading-relaxed">
-                            유지 의견과 제외 의견이 동시에 높았거나, 4단계 별 스티커 투표 치열한 경합으로 인상 깊었던 쟁점 후보입니다.
-                          </p>
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="space-y-3">
                             {controversialIdeas.map(idea => {
                               const stats = roomDetails.aggregatedScores?.[idea.id];
-                              const stars = roomDetails.starVotes?.[idea.id] || 0;
-
                               return (
-                                <div key={idea.id} className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/80 space-y-1.5">
-                                  <h4 className="text-xs font-extrabold text-slate-900">{idea.title}</h4>
-                                  <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-2">{idea.description}</p>
-                                  <div className="flex items-center gap-3 pt-1 text-[10px] font-bold text-amber-900">
+                                <div key={idea.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2 text-xs">
+                                  <div className="flex items-center justify-between font-bold">
+                                    <span className="text-slate-900 text-sm font-black">{idea.title}</span>
                                     {stats && (
-                                      <>
-                                        <span>👍 찬성: {stats.keepCount}표</span>
-                                        <span>👎 제외희망: {stats.excludeCount}표</span>
-                                      </>
+                                      <span className="text-slate-600 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                                        👍 찬성 {stats.keepCount}표 vs 👎 제외 {stats.excludeCount}표
+                                      </span>
                                     )}
-                                    <span>⭐ 별스티커: {stars}표</span>
                                   </div>
+                                  <p className="text-slate-600 leading-relaxed">{idea.description}</p>
                                 </div>
                               );
                             })}
                           </div>
                         </div>
                       )}
-
-                      {/* 로비 홈으로 이동 버튼 */}
-                      <div className="text-center pt-4">
-                        <button
-                          type="button"
-                          onClick={handleLeaveRoom}
-                          className="px-7 py-3 bg-indigo-600 text-white hover:bg-indigo-700 rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
-                        >
-                          로비 홈화면으로 이동하기
-                        </button>
-                      </div>
-
                     </div>
                   )}
 
@@ -5643,11 +5790,21 @@ export default function App() {
               <div className="space-y-1">
                 <div className="inline-flex items-center gap-1 bg-amber-100 border border-amber-300 text-amber-900 text-[11px] font-black px-3 py-0.5 rounded-full mb-1">
                   <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                  <span>🧪 테스트용 룰렛 미리보기</span>
+                  <span>
+                    {roulettePurpose === 'TIE_RESOLUTION'
+                      ? '🔐 동률 결과 안전 확정'
+                      : '🧪 테스트용 룰렛 미리보기'}
+                  </span>
                 </div>
                 <h3 className="text-lg font-black text-slate-900">🎲 운명의 룰렛 돌리기</h3>
-                <p className="text-xs text-rose-600 font-bold bg-rose-50 border border-rose-100 p-2 rounded-xl">
-                  ⚠️ 이 결과는 실제 최종 선정 결과에 반영되지 않는 미리보기 테스트입니다.
+                <p className={`text-xs font-bold p-2 rounded-xl border ${
+                  roulettePurpose === 'TIE_RESOLUTION'
+                    ? 'text-indigo-700 bg-indigo-50 border-indigo-100'
+                    : 'text-rose-600 bg-rose-50 border-rose-100'
+                }`}>
+                  {roulettePurpose === 'TIE_RESOLUTION'
+                    ? '서버가 동률 후보 안에서 암호학적 난수로 추첨하고, 그 결과를 최종 기록으로 저장합니다. 한 번 확정하면 다시 돌릴 수 없습니다.'
+                    : '⚠️ 이 결과는 실제 최종 선정 결과에 반영되지 않는 미리보기 테스트입니다.'}
                 </p>
               </div>
 
@@ -5738,7 +5895,11 @@ export default function App() {
               {/* Result Indicator */}
               {rouletteWinnerResult && (
                 <div className="bg-amber-50 border border-amber-300 p-3 rounded-2xl space-y-1 animate-fade-in">
-                  <span className="text-[10px] font-bold text-amber-800">🎉 룰렛 미리보기 당첨 후보</span>
+                  <span className="text-[10px] font-bold text-amber-800">
+                    {roulettePurpose === 'TIE_RESOLUTION'
+                      ? '🎉 최종 확정 후보'
+                      : '🎉 룰렛 미리보기 당첨 후보'}
+                  </span>
                   <p className="text-sm font-black text-indigo-950">[{rouletteWinnerResult}]</p>
                 </div>
               )}
@@ -5754,7 +5915,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleSpinRoulette}
-                  disabled={isSpinningRoulette}
+                  disabled={isSpinningRoulette || (roulettePurpose === 'TIE_RESOLUTION' && Boolean(rouletteWinnerResult))}
                   className="flex-1 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   {isSpinningRoulette ? (
@@ -5765,7 +5926,15 @@ export default function App() {
                   ) : (
                     <>
                       <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                      <span>{rouletteWinnerResult ? '다시 돌리기' : '룰렛 돌리기'}</span>
+                      <span>
+                        {roulettePurpose === 'TIE_RESOLUTION' && rouletteWinnerResult
+                          ? '최종 확정 완료'
+                          : rouletteWinnerResult
+                            ? '다시 돌리기'
+                            : roulettePurpose === 'TIE_RESOLUTION'
+                              ? '동률 결과 확정하기'
+                              : '룰렛 돌리기'}
+                      </span>
                     </>
                   )}
                 </button>
@@ -6047,7 +6216,11 @@ export default function App() {
                       ⭐
                     </div>
                     <div>
-                      <h3 className="text-base font-extrabold text-slate-900">4단계 2차 별 스티커 투표</h3>
+                      <h3 className="text-base font-extrabold text-slate-900">
+                        {roomDetails?.room.decisionMode === 'QUICK'
+                          ? '2단계 익명 투표'
+                          : '4단계 2차 별 스티커 투표'}
+                      </h3>
                       <p className="text-xs text-slate-500 font-medium">생존한 후보 아이디어 중 최종 결과로 채택할 후보에 별 스티커를 붙여주세요.</p>
                     </div>
                   </div>
@@ -6063,7 +6236,7 @@ export default function App() {
                 {/* Star Status Display Header Banner */}
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+                  const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
                   const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
                   const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
                   const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
@@ -6094,7 +6267,7 @@ export default function App() {
               <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
+                  const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE');
                   const activeIdeaIds = activeIdeas.map(i => i.id);
                   const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
                   const isSubmittedByMe = Boolean(
@@ -6110,7 +6283,6 @@ export default function App() {
                     const isSelectedByMe = isSubmittedByMe
                       ? validMyStarVotes.includes(idea.id)
                       : mySelectedStarIdeaIds.includes(idea.id);
-                    const stats = roomDetails?.aggregatedScores?.[idea.id];
                     const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
 
                     return (
@@ -6159,7 +6331,7 @@ export default function App() {
                               <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
                             </button>
 
-                            {roomDetails?.room.hostId === userId && totalStarVotes > 0 && (
+                            {roomDetails?.room.finalVoteStatus === 'FINALIZED' && totalStarVotes > 0 && (
                               <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
                                 ⭐ {totalStarVotes}표 득표
                               </span>
@@ -6168,12 +6340,10 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 pt-1 border-t border-slate-100/80">
-                          <span>제안자: {idea.submitterName}</span>
-                          {stats && (
-                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">
-                              기준 충족도 {stats.avgCriteriaComplianceRatio ?? stats.score}% · 추천 {stats.keepCount}표 · 우려 {stats.excludeCount}표
-                            </span>
-                          )}
+                          <span>제안자: 평가 종료 전 비공개</span>
+                          <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">
+                            다른 사람의 선택과 중간 집계 비공개
+                          </span>
                         </div>
                       </div>
                     );
@@ -6184,7 +6354,7 @@ export default function App() {
               {/* Fixed Footer with Submission Controls */}
               {(() => {
                 const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+                const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
                 const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
                 const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
                 const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
@@ -6308,8 +6478,7 @@ export default function App() {
                     value={editRoomDesc}
                     onChange={e => setEditRoomDesc(e.target.value)}
                     rows={3}
-                    placeholder="회의 목적, 제약 사항 및 고려 조건을 입력해 주십시오."
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
 
@@ -6403,5 +6572,4 @@ export default function App() {
     </div>
   );
 }
-
 
