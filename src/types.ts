@@ -5,7 +5,12 @@ export type RoomStatus =
   | 'CRITERIA_REVIEW'
   | 'EVALUATION'
   | 'ELIMINATION'
+  | 'FINAL_VOTE'
+  | 'EVALUATION_ROUND_2'
   | 'CLOSED';
+
+export type DecisionMode = 'STRUCTURED' | 'QUICK';
+export type FinalVoteStatus = 'NOT_STARTED' | 'VOTING' | 'TIE_PENDING' | 'FINALIZED';
 
 export interface EliminationConfig {
   countPerRound: number;
@@ -34,6 +39,13 @@ export interface Room {
   eliminationConfig: EliminationConfig;
   deadlines: Deadlines;
   createdAt: string;
+  engineVersion?: number;
+  decisionMode?: DecisionMode;
+  finalVoteStatus?: FinalVoteStatus;
+  tieCandidateIdeaIds?: string[];
+  tieSlots?: number;
+  currentRoundId?: string;
+  criteriaSetVersion?: number;
 }
 
 export interface Idea {
@@ -77,9 +89,35 @@ export interface Evaluation {
   evaluatorId?: string; // Kept private on the server
   decision: 'KEEP' | 'NEUTRAL' | 'EXCLUDE';
   excludedCriterionIds?: string[];
+  criteriaEvaluations?: Record<string, CriteriaEvaluationValue>;
   reasonText?: string;
   reasonType?: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   round: number;
+  roundId?: string;
+}
+
+export type CriteriaEvaluationValue = 'MET' | 'PARTIAL' | 'NOT_MET' | 'UNSURE';
+
+export interface CriterionMetric {
+  criterionId: string;
+  complianceRate: number;
+  validResponseCount: number;
+  unsureCount: number;
+  unsureRate: number;
+  metCount: number;
+  partialCount: number;
+  notMetCount: number;
+}
+
+export interface CriteriaSetApprovalSummary {
+  version: number;
+  approveCount: number;
+  reviseCount: number;
+  eligibleCount: number;
+  requiredApproveCount: number;
+  myVote?: 'APPROVE' | 'REVISE';
+  approved: boolean;
+  needsRevision?: boolean;
 }
 
 export interface EliminationRound {
@@ -88,6 +126,27 @@ export interface EliminationRound {
   roundNumber: number;
   eliminatedIdeaIds: string[];
   aiSummaryText: string;
+}
+
+export interface DecisionRound {
+  id: string;
+  roomId: string;
+  roundNumber: number;
+  decisionMode: DecisionMode;
+  status: 'ACTIVE' | 'COMPLETED';
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface DecisionReport {
+  reportText: string;
+  selectedReasons: string[];
+  majorConcerns: string[];
+  unverifiedAssumptions: string[];
+  nextValidationTasks: string[];
+  modelName: string;
+  promptVersion: string;
+  generatedAt: string;
 }
 
 export interface Participant {
@@ -114,8 +173,12 @@ export interface RoomDetails {
   proposals?: CriterionProposal[];
   proposalsCount: number;
   completedParticipantsCount?: number; // count of unique participants who submitted 1 or more ideas
+  criteriaCompletedParticipantsCount?: number;
+  criteriaProposalsRevealed?: boolean;
+  criteriaApproval?: CriteriaSetApprovalSummary;
   participants?: Participant[];
   rounds: EliminationRound[];
+  decisionRounds?: DecisionRound[];
   evaluatorsCount: number;
   myEvaluations?: Evaluation[];
   hasEvaluated: boolean;
@@ -127,11 +190,15 @@ export interface RoomDetails {
     objectiveConstraintPenalty: number;
   };
   aiFinalSummary?: string;
+  decisionReport?: DecisionReport;
   starVotes?: Record<string, number>; // ideaId -> total star votes count
   myStarVotes?: string[]; // array of selected ideaIds for current user
   isStarVoteSubmitted?: boolean;
   starVoteCount?: number;
   starVoteStatus?: 'voting' | 'tie_pending' | 'finalized';
+  tieCandidateIdeaIds?: string[];
+  tieSlots?: number;
+  finalVoteExpectedCount?: number;
   // If threshold is met, we might send aggregated scores or AI-rephrased comments:
   aggregatedScores?: Record<string, AggregatedScore>;
   aiSummarizedComments?: Record<string, {
@@ -148,6 +215,10 @@ export interface AggregatedScore {
   objectiveExcludeCount: number;
   avgCriteriaComplianceRatio?: number; // Average criteria compliance percentage (0~100)
   criteriaMatchCounts?: Record<string, number>; // Per-criterion match/approval count
+  validResponseCount?: number;
+  unsureCount?: number;
+  unsureRate?: number;
+  criterionMetrics?: Record<string, CriterionMetric>;
 }
 
 export interface RoomInvite {

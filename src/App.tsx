@@ -45,7 +45,6 @@ import {
   InviteDetailsResponse
 } from './types';
 
-import { supabase } from './supabase';
 
 // Custom lightweight Markdown-to-JSX Parser for the AI reports
 function SafeMarkdown({ content }: { content: string }) {
@@ -100,9 +99,8 @@ export default function App() {
   // ----------------------------------------------------------------
   // User Authentication / Email & Password Identity (AUTH-01 & Email Auth Spec)
   // ----------------------------------------------------------------
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('why_not_logged_in') === 'true';
-  });
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isSessionChecked, setIsSessionChecked] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP' | 'RECOVER'>('LOGIN');
 
@@ -111,6 +109,7 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
 
   // Recovery code states
   const [recoveryCodeOutput, setRecoveryCodeOutput] = useState<string | null>(null);
@@ -126,17 +125,16 @@ export default function App() {
   const [tempNickname, setTempNickname] = useState('');
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
-  // Password validation helper: 소문자 및 숫자로만 구성, 최대 15자 (테스트 계정 TEST1234 허용)
+  // Password validation helper: 8~64자의 영문과 숫자 조합
   const isPasswordValid = useMemo(() => {
     if (!authPassword) return false;
-    if (authPassword.toUpperCase() === 'TEST1234') return true;
-    const isValidCharAndLength = /^[a-z0-9]{1,15}$/.test(authPassword);
-    const hasLowercase = /[a-z]/.test(authPassword);
+    const isValidLength = authPassword.length >= 8 && authPassword.length <= 64;
+    const hasLetter = /[A-Za-z]/.test(authPassword);
     const hasDigit = /[0-9]/.test(authPassword);
-    return isValidCharAndLength && hasLowercase && hasDigit;
+    return isValidLength && hasLetter && hasDigit;
   }, [authPassword]);
 
-  // Email validation helper: 이메일/ID 형식 검사 (테스트 계정 GOMINHAJO 허용)
+  // Email validation helper: 이메일 또는 서비스 로그인 ID
   const isEmailValid = useMemo(() => {
     const input = authEmail.trim();
     if (!input) return false;
@@ -144,27 +142,16 @@ export default function App() {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input);
   }, [authEmail]);
 
-  // Helper to persist registered users locally for fallback
-  const saveLocalRegisteredUser = (email: string, pass: string, name: string, id: string) => {
-    try {
-      const existing = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
-      const filtered = existing.filter((u: any) => u.email?.toLowerCase() !== email.toLowerCase());
-      filtered.push({ email: email.toLowerCase(), password: pass, name, id });
-      localStorage.setItem('why_not_registered_users', JSON.stringify(filtered));
-    } catch (e) {
-      console.error('Failed to save registered user locally:', e);
-    }
-  };
-
   // Secure Email/ID Signup Handler (/api/auth/signup)
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAuthSubmitting) return;
     if (!isEmailValid) {
       triggerToast('올바른 로그인 아이디/이메일 형식을 입력해 주세요.', 'error');
       return;
     }
     if (!isPasswordValid) {
-      triggerToast('비밀번호는 영문 소문자와 숫자의 조합으로 최대 15자까지 가능합니다.', 'error');
+      triggerToast('비밀번호는 8~64자의 영문과 숫자 조합이어야 합니다.', 'error');
       return;
     }
     if (!authName.trim()) {
@@ -172,6 +159,8 @@ export default function App() {
       return;
     }
 
+    setAuthError(null);
+    setIsAuthSubmitting(true);
     try {
       const res = await fetch('/api/auth/signup', {
         method: 'POST',
@@ -183,8 +172,12 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
+        const retryAfter = Number(data.retryAfterSeconds || res.headers.get('Retry-After') || 0);
+        if (res.status === 429 && retryAfter > 0) {
+          throw new Error(`요청이 너무 많습니다. 약 ${Math.ceil(retryAfter / 60)}분 후 다시 시도해 주세요.`);
+        }
         throw new Error(data.error || '회원가입 처리 중 오류가 발생했습니다.');
       }
 
@@ -195,10 +188,6 @@ export default function App() {
       setUserId(uId);
       setNickname(uName);
       setUserEmail(uEmail);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', uEmail);
-      localStorage.setItem('why_not_logged_in', 'true');
       setIsLoggedIn(true);
 
       if (data.recoveryCode) {
@@ -208,35 +197,24 @@ export default function App() {
       }
       triggerToast('회원가입이 완료되었습니다! 발급된 복구 코드를 반드시 보관하세요.');
     } catch (err: any) {
-      console.warn('Backend Auth Signup notice, using local session fallback:', err);
-      const uId = `user_${Math.random().toString(36).substring(2, 9)}`;
-      const uName = authName.trim();
-      const uEmail = authEmail.trim();
-      const genCode = `RC-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-      saveLocalRegisteredUser(uEmail, authPassword, uName, uId);
-
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail(uEmail);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', uEmail);
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setRecoveryCodeOutput(genCode);
-      triggerToast('회원가입이 완료되었습니다!');
+      const message = err?.message || '회원가입 처리 중 오류가 발생했습니다.';
+      setAuthError(message);
+      triggerToast(message, 'error');
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
   // Secure Email/ID Login Handler (/api/auth/login)
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAuthSubmitting) return;
     setAuthError(null);
     const failMsg = '아이디 또는 비밀번호가 올바르지 않습니다. 입력한 정보를 다시 확인해 주세요.';
 
     const inputEmailOrId = authEmail.trim();
 
+    setIsAuthSubmitting(true);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -247,7 +225,7 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) {
         const uId = data.user.id;
         const uName = data.user.nickname;
@@ -256,62 +234,24 @@ export default function App() {
         setUserId(uId);
         setNickname(uName);
         setUserEmail(uEmail);
-        localStorage.setItem('why_not_user_id', uId);
-        localStorage.setItem('why_not_user_name', uName);
-        localStorage.setItem('why_not_user_email', uEmail);
-        localStorage.setItem('why_not_logged_in', 'true');
         setIsLoggedIn(true);
         setShowLoginModal(false);
         triggerToast(`${uName}님 환영합니다!`);
         return;
       }
+      const retryAfter = Number(data.retryAfterSeconds || res.headers.get('Retry-After') || 0);
+      const message = res.status === 429 && retryAfter > 0
+        ? `요청이 너무 많습니다. 약 ${Math.ceil(retryAfter / 60)}분 후 다시 시도해 주세요.`
+        : (data.error || failMsg);
+      setAuthError(message);
+      triggerToast(message, 'error');
+      return;
     } catch (err) {
       console.warn('Backend Auth Login error:', err);
-    }
-
-    // Dedicated instant check for the test account requested by user: ID: GOMINHAJO / PW: TEST1234
-    if ((inputEmailOrId.toUpperCase() === 'GOMINHAJO' || inputEmailOrId.toUpperCase() === 'GOMINHAJO@TEST.COM') && authPassword.toUpperCase() === 'TEST1234') {
-      const uId = 'user_gominhajo_test';
-      const uName = 'GOMINHAJO';
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail('gominhajo@test.com');
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', 'gominhajo@test.com');
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast('테스트 계정(GOMINHAJO)으로 로그인되었습니다!');
-      return;
-    }
-
-    // Local fallback check
-    let registeredUsers: any[] = [];
-    try {
-      registeredUsers = JSON.parse(localStorage.getItem('why_not_registered_users') || '[]');
-    } catch (e) { }
-
-    const matchedUser = registeredUsers.find(
-      (u: any) => u.email && u.email.toLowerCase() === inputEmailOrId.toLowerCase()
-    );
-
-    if (matchedUser && (!matchedUser.password || matchedUser.password === authPassword)) {
-      const uId = matchedUser.id || `user_${Math.random().toString(36).substring(2, 9)}`;
-      const uName = matchedUser.name || localStorage.getItem('why_not_user_name') || '사용자';
-      setUserId(uId);
-      setNickname(uName);
-      setUserEmail(inputEmailOrId);
-      localStorage.setItem('why_not_user_id', uId);
-      localStorage.setItem('why_not_user_name', uName);
-      localStorage.setItem('why_not_user_email', inputEmailOrId);
-      localStorage.setItem('why_not_logged_in', 'true');
-      setIsLoggedIn(true);
-      setShowLoginModal(false);
-      triggerToast(`${uName}님 환영합니다!`);
-    } else {
-      setAuthError(failMsg);
-      triggerToast(failMsg, 'error');
+      setAuthError('서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      triggerToast('서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', 'error');
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
@@ -354,10 +294,6 @@ export default function App() {
         setUserId(data.user.id);
         setNickname(data.user.nickname);
         setUserEmail(data.loginId);
-        localStorage.setItem('why_not_user_id', data.user.id);
-        localStorage.setItem('why_not_user_name', data.user.nickname);
-        localStorage.setItem('why_not_user_email', data.loginId);
-        localStorage.setItem('why_not_logged_in', 'true');
         setIsLoggedIn(true);
       }
 
@@ -473,22 +409,10 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, isReEditing: true })
+          body: JSON.stringify({ isReEditing: true })
         });
       } catch (err) {
         console.warn('Re-edit status update error:', err);
-      }
-
-      if (activeRoomId !== 'room-gominhajo') {
-        try {
-          await supabase
-            .from('evaluations')
-            .delete()
-            .eq('room_id', activeRoomId)
-            .eq('evaluator_id', userId);
-        } catch (supaErr) {
-          console.error('Supabase DB evaluations delete error on re-edit:', supaErr);
-        }
       }
 
       fetchRoomDetails(activeRoomId, true);
@@ -511,40 +435,23 @@ export default function App() {
         }));
 
         try {
-          await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
+          const response = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ evaluatorId: userId, submissions })
+            body: JSON.stringify({ submissions })
           });
+          const data = await response.json().catch(() => null);
+          if (!response.ok) throw new Error(data?.error || '평가를 복원하지 못했습니다.');
         } catch (err) {
           console.warn('Cancel re-edit re-submission error:', err);
-        }
-
-        if (activeRoomId !== 'room-gominhajo') {
-          try {
-            for (const sub of submissions) {
-              await supabase.from('evaluations').insert({
-                id: `eval-${Math.random().toString(36).substring(2, 9)}`,
-                room_id: activeRoomId,
-                idea_id: sub.ideaId,
-                evaluator_id: userId,
-                decision: sub.decision,
-                excluded_criterion_ids: sub.excludedCriterionIds || [],
-                reason_text: sub.reasonText || '',
-                reason_type: sub.reasonType || 'PREFERENCE',
-                round: 1
-              });
-            }
-          } catch (supaErr) {
-            console.error('Supabase DB re-insert on cancel re-edit error:', supaErr);
-          }
+          triggerToast(err instanceof Error ? err.message : '평가를 복원하지 못했습니다.', 'error');
         }
       } else {
         try {
           await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, isReEditing: false })
+            body: JSON.stringify({ isReEditing: false })
           });
         } catch (err) {
           console.warn('Cancel re-edit status update error:', err);
@@ -577,17 +484,6 @@ export default function App() {
         });
       } catch (err) {
         console.warn('Status update API error:', err);
-      }
-
-      if (activeRoomId !== 'room-gominhajo') {
-        try {
-          await supabase
-            .from('rooms')
-            .update({ status: 'FINAL_VOTE' })
-            .eq('id', activeRoomId);
-        } catch (supaErr) {
-          console.error('Supabase room status update error:', supaErr);
-        }
       }
 
       fetchRoomDetails(activeRoomId, true);
@@ -673,8 +569,6 @@ export default function App() {
     }
 
     setIsUpdatingRoomSettings(true);
-    let isUpdated = false;
-
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}`, {
         method: 'PATCH',
@@ -690,39 +584,13 @@ export default function App() {
         })
       });
 
-      if (res.ok) {
-        isUpdated = true;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '방 정보 수정에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API room patch failed, trying direct Supabase DB fallback:', err);
-    }
-
-    // Direct Supabase DB update fallback
-    if (!isUpdated && activeRoomId) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('rooms')
-          .update({
-            title: editRoomTitle.trim(),
-            description: editRoomDesc.trim(),
-            category: editRoomCategory,
-            max_participants: editRoomMaxParticipants,
-            target_winner_count: editRoomTargetWinnerCount,
-            min_response_threshold: editRoomMinThreshold
-          })
-          .eq('id', activeRoomId);
-
-        if (supaErr) {
-          triggerToast(`방 정보 수정 오류: ${supaErr.message}`, 'error');
-          setIsUpdatingRoomSettings(false);
-          return;
-        }
-        isUpdated = true;
-      } catch (supaEx: any) {
-        triggerToast(`방 정보 수정 오류: ${supaEx.message}`, 'error');
-        setIsUpdatingRoomSettings(false);
-        return;
-      }
+      const message = err instanceof Error ? err.message : '방 정보 수정에 실패했습니다.';
+      triggerToast(message, 'error');
+      setIsUpdatingRoomSettings(false);
+      return;
     }
 
     triggerToast('방 정보가 성공적으로 수정되었습니다!');
@@ -737,13 +605,6 @@ export default function App() {
     const url = `${window.location.origin}?room=${activeRoomId}&role=participant`;
     navigator.clipboard.writeText(url);
     triggerToast('① 참여자 전용 링크 (최대 6명, 의견등록 가능)가 복사되었습니다!');
-  };
-
-  const copyVoterLink = () => {
-    if (!activeRoomId) return;
-    const url = `${window.location.origin}?room=${activeRoomId}&role=voter`;
-    navigator.clipboard.writeText(url);
-    triggerToast('② 투표자 공개 링크 (MVP 기본 30명, 2차 투표 전용)가 복사되었습니다!');
   };
 
   const handleSendEmailInvite = (e: React.FormEvent) => {
@@ -779,7 +640,7 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId })
+          body: JSON.stringify({})
         });
         fetchRoomDetails(activeRoomId, false);
       } catch (e) {
@@ -796,7 +657,7 @@ export default function App() {
         await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId })
+          body: JSON.stringify({})
         });
         fetchRoomDetails(activeRoomId, false);
       } catch (e) {
@@ -824,96 +685,86 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
     } catch (e) {
       console.error(e);
     }
-    localStorage.setItem('why_not_logged_in', 'false');
+    [
+      'why_not_registered_users',
+      'why_not_logged_in',
+      'why_not_user_id',
+      'why_not_user_name',
+      'why_not_user_email'
+    ].forEach((key) => localStorage.removeItem(key));
     localStorage.removeItem('why_not_active_room_id');
     setIsLoggedIn(false);
+    setUserId('');
+    setNickname('');
+    setUserEmail('');
     setActiveRoomId(null);
     triggerToast('로그아웃되었습니다.');
   };
 
-  // Supabase auth state observer listener
+  // The browser never decides who the user is. The HttpOnly server session does.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
-        setNickname(name);
-        setUserEmail(session.user.email || '');
-        setIsLoggedIn(true);
-      }
-    });
+    let cancelled = false;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setUserId(session.user.id);
-        const name = session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || nickname;
-        setNickname(name);
-        setUserEmail(session.user.email || '');
-        setIsLoggedIn(true);
-      }
-    });
+    const restoreServerSession = async () => {
+      try {
+        const response = await fetch('/api/auth/session', { cache: 'no-store' });
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
 
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Multi-tab LocalStorage Sync Observer (why_not_user_name)
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'why_not_user_name' && e.newValue) {
-        setNickname(e.newValue);
+        if (response.ok && data?.authenticated && data?.user) {
+          setUserId(data.user.id);
+          setNickname(data.user.nickname || '');
+          setTempNickname(data.user.nickname || '');
+          setUserEmail(data.user.loginId || '');
+          setIsLoggedIn(true);
+        } else {
+          setUserId('');
+          setNickname('');
+          setUserEmail('');
+          setIsLoggedIn(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Session restore failed:', error);
+          setIsLoggedIn(false);
+        }
+      } finally {
+        if (!cancelled) setIsSessionChecked(true);
       }
     };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+
+    restoreServerSession();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ----------------------------------------------------------------
-  // Load User Info and Rooms list on mount
-  // ----------------------------------------------------------------
+  // Invite landing data is public only for an unexpired, unrevoked token.
   useEffect(() => {
-    let savedId = localStorage.getItem('why_not_user_id');
-    let savedName = localStorage.getItem('why_not_user_name');
-
-    if (!savedId) {
-      savedId = `user_${Math.random().toString(36).substr(2, 9)}`;
-      localStorage.setItem('why_not_user_id', savedId);
-    }
-    if (!savedName) {
-      savedName = '익명_참여자';
-      localStorage.setItem('why_not_user_name', savedName);
-    }
-
-    const savedEmail = localStorage.getItem('why_not_user_email');
-    if (savedEmail) {
-      setUserEmail(savedEmail);
-    }
-
-    setUserId(savedId);
-    setNickname(savedName);
-    setTempNickname(savedName);
-
-    fetchRooms();
-
-    // 1. Detect /invite/:inviteToken or ?inviteToken=... (Invite token takes precedence over savedRoomId)
     const params = new URLSearchParams(window.location.search);
-    const urlRoomId = params.get('room') || params.get('roomId');
-    const urlRole = params.get('role') || 'member';
-
-    const pathname = window.location.pathname;
-    const inviteMatch = pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
+    const inviteMatch = window.location.pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
     const tokenFromUrl = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
-
     if (tokenFromUrl) {
       setLandingInviteToken(tokenFromUrl);
       fetchInviteLandingDetails(tokenFromUrl);
-      return;
     }
+  }, []);
 
-    // 2. URL 쿼리 파라미터 및 로컬 저장소에서 활성 방 정보 복원
+  // Load private room data only after the server has authenticated the session.
+  useEffect(() => {
+    if (!isSessionChecked || !isLoggedIn || !userId) return;
+
+    fetchRooms();
+    const params = new URLSearchParams(window.location.search);
+    const urlRoomId = params.get('room') || params.get('roomId');
+    const urlRole = params.get('role') || 'member';
     const savedRoomId = localStorage.getItem('why_not_active_room_id');
     const targetRoomId = urlRoomId || savedRoomId;
 
@@ -923,9 +774,9 @@ export default function App() {
       } else {
         localStorage.setItem('why_not_user_role', 'MEMBER');
       }
-      handleSelectRoom(targetRoomId, savedId, savedName);
+      handleSelectRoom(targetRoomId, userId, nickname);
     }
-  }, []);
+  }, [isSessionChecked, isLoggedIn, userId]);
 
   // Auto-Redirect to target room when user logs in with URL query params or pendingRoomId
   useEffect(() => {
@@ -970,100 +821,38 @@ export default function App() {
     return () => clearInterval(interval);
   }, [inviteTokenExpiresAt, landingInviteData?.expiresAt]);
 
-  // Realtime Subscriptions for Participants, Ideas, Proposals, and Room state changes
+  // Private room synchronization goes through the authenticated BFF.
+  // Browser-side Supabase Realtime is intentionally not used here.
   useEffect(() => {
-    if (!activeRoomId) return;
+    if (!activeRoomId || !isLoggedIn) return;
 
-    // Reset AI suggested criteria cards to [] on room switch/mount
     setAiSuggestedCriteria([]);
-
     fetchRoomDetails(activeRoomId);
 
-    // Supabase Realtime Channel for active room (instantaneous 0.1s UI synchronization)
-    const channel = supabase
-      .channel(`room-realtime-${activeRoomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Participant changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'ideas', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Idea changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Room changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'criterion_proposals', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Proposal changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'evaluations', filter: `room_id=eq.${activeRoomId}` },
-        (payload) => {
-          console.log('[REALTIME] Evaluation changed:', payload);
-          fetchRoomDetails(activeRoomId, true);
-        }
-      )
-      .subscribe();
-
-    // 3-second background polling fallback
     const interval = setInterval(() => {
       fetchRoomDetails(activeRoomId, true);
     }, 3000);
 
     return () => {
-      supabase.removeChannel(channel);
       clearInterval(interval);
     };
-  }, [activeRoomId]);
+  }, [activeRoomId, isLoggedIn]);
 
   // Generate or Refresh 3-Minute Invite Token
   const handleGenerateNewInviteToken = async (roomId: string) => {
     try {
-      // 1. Try Supabase RPC
-      const { data, error } = await supabase.rpc('create_room_invite', {
-        p_room_id: roomId,
-        p_user_id: userId || 'host'
-      });
-
-      if (!error && data && data.success) {
-        setActiveInviteToken(data.invite_token);
-        setInviteTokenExpiresAt(data.expires_at);
-        triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
-        return data.invite_token;
-      }
-
-      // 2. Express Backend API fallback
       const res = await fetch(`/api/rooms/${roomId}/invites`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: userId || 'host' })
+        headers: { 'Content-Type': 'application/json' }
       });
       const apiData = await res.json();
-      if (apiData.success && apiData.invite) {
+      if (res.ok && apiData.success && apiData.invite) {
         setActiveInviteToken(apiData.invite.inviteToken);
         setInviteTokenExpiresAt(apiData.invite.expiresAt);
         triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
         return apiData.invite.inviteToken;
       }
+      throw new Error(apiData?.error || '초대 링크를 생성할 수 없습니다.');
     } catch (err: any) {
       console.error('Failed to create invite token:', err);
       triggerToast('초대 링크 생성 중 오류가 발생했습니다.', 'error');
@@ -1074,11 +863,11 @@ export default function App() {
   // Deactivate active invite token for room
   const handleDeactivateInviteToken = async (roomId: string) => {
     try {
-      await supabase.rpc('deactivate_room_invite', {
-        p_room_id: roomId,
-        p_user_id: userId || 'host'
-      });
-      await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      const response = await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || '초대 링크를 비활성화할 수 없습니다.');
+      }
       setActiveInviteToken(null);
       setInviteTokenExpiresAt(null);
       triggerToast('초대 링크가 비활성화되었습니다.');
@@ -1090,154 +879,17 @@ export default function App() {
   // Fetch Invite Landing Details
   const fetchInviteLandingDetails = async (token: string) => {
     setLandingLoading(true);
-    const savedName = localStorage.getItem('why_not_user_name') || nickname;
-    if (savedName) {
-      setLandingNicknameInput(savedName);
-    }
+    if (nickname) setLandingNicknameInput(nickname);
+
     try {
-      // 1. Try Supabase RPC
-      const { data, error } = await supabase.rpc('get_invite_details', { p_token: token });
-
-      if (!error && data) {
-        if (!data.is_valid) {
-          setLandingInviteData({
-            isValid: false,
-            errorCode: data.error_code,
-            errorMessage: data.error_message
-          });
-        } else {
-          setLandingInviteData({
-            isValid: true,
-            room: {
-              id: data.room.id,
-              title: data.room.title,
-              description: data.room.description,
-              category: data.room.category,
-              isPublic: data.room.is_public,
-              maxParticipants: data.room.max_participants,
-              status: data.room.status,
-              hostId: data.room.host_id,
-              minResponseThreshold: 3,
-              eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-              deadlines: {},
-              createdAt: new Date().toISOString()
-            },
-            hostNickname: data.host_nickname,
-            participantCount: data.participant_count,
-            maxParticipants: data.max_participants,
-            expiresAt: data.expires_at,
-            secondsRemaining: data.seconds_remaining
-          });
-          if (data.seconds_remaining) {
-            setInviteSecondsLeft(data.seconds_remaining);
-          }
-        }
-        setLandingLoading(false);
-        return;
-      }
-
-      // 2. Express Backend API fallback
-      try {
-        const res = await fetch(`/api/invites/${token}`);
-        if (res.ok) {
-          const apiData: InviteDetailsResponse = await res.json();
-          if (apiData && apiData.isValid !== undefined) {
-            setLandingInviteData(apiData);
-            if (apiData.secondsRemaining) {
-              setInviteSecondsLeft(apiData.secondsRemaining);
-            }
-            setLandingLoading(false);
-            return;
-          }
-        }
-      } catch (apiErr) {
-        console.warn('Express API invite fetch failed, trying direct Supabase DB fallback:', apiErr);
-      }
-
-      // 3. Direct Supabase DB Table Fallback
-      const { data: invRow } = await supabase.from('room_invites').select('*').eq('invite_token', token).maybeSingle();
-      if (!invRow) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'NOT_FOUND',
-          errorMessage: '존재하지 않는 초대 링크입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      if (!invRow.is_active) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'DEACTIVATED',
-          errorMessage: '방장에 의해 비활성화된 초대 링크입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const nowMs = Date.now();
-      const expMs = new Date(invRow.expires_at).getTime();
-      const secondsRem = Math.max(0, Math.floor((expMs - nowMs) / 1000));
-
-      if (expMs <= nowMs) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'EXPIRED',
-          errorMessage: '생성된 지 3분이 지나 만료된 초대 링크입니다.',
-          secondsRemaining: 0
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const { data: roomRow } = await supabase.from('rooms').select('*').eq('id', invRow.room_id).maybeSingle();
-      if (!roomRow) {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'ROOM_DELETED',
-          errorMessage: '삭제된 회의실입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      if (roomRow.status === 'CLOSED') {
-        setLandingInviteData({
-          isValid: false,
-          errorCode: 'ROOM_CLOSED',
-          errorMessage: '이미 종료된 회의실입니다.'
-        });
-        setLandingLoading(false);
-        return;
-      }
-
-      const { data: partRows } = await supabase.from('participants').select('*').eq('room_id', roomRow.id);
-      const participantCount = Math.max(1, partRows?.length || 0);
-
-      setLandingInviteData({
-        isValid: true,
-        room: {
-          id: roomRow.id,
-          title: roomRow.title,
-          description: roomRow.description,
-          category: roomRow.category,
-          isPublic: roomRow.is_public,
-          maxParticipants: roomRow.max_participants,
-          status: roomRow.status,
-          hostId: roomRow.host_id,
-          minResponseThreshold: roomRow.min_response_threshold || 1,
-          eliminationConfig: roomRow.elimination_config || { countPerRound: 1, tieBreak: 'random' },
-          deadlines: roomRow.deadlines || {},
-          createdAt: roomRow.created_at || new Date().toISOString()
-        },
-        hostNickname: '방장',
-        participantCount,
-        maxParticipants: roomRow.max_participants || 6,
-        expiresAt: invRow.expires_at,
-        secondsRemaining: secondsRem
+      const response = await fetch(`/api/invites/${encodeURIComponent(token)}`, {
+        cache: 'no-store'
       });
-      setInviteSecondsLeft(secondsRem);
+      const data: InviteDetailsResponse = await response.json();
+      setLandingInviteData(data);
+      if (data.secondsRemaining !== undefined) {
+        setInviteSecondsLeft(data.secondsRemaining);
+      }
     } catch (err: any) {
       console.error('Failed to fetch invite details:', err);
       setLandingInviteData({
@@ -1256,73 +908,29 @@ export default function App() {
     setJoiningInvite(true);
 
     const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
-    localStorage.setItem('why_not_user_name', nameToUse);
     setNickname(nameToUse);
 
     try {
-      // 1. Try Supabase RPC Join (Atomic lock & 3-min expiration check in PostgreSQL)
-      const { data, error } = await supabase.rpc('join_room_via_invite', {
-        p_token: token,
-        p_user_id: userId,
-        p_nickname: nameToUse
+      const response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname: nameToUse })
       });
-
-      if (!error && data && data.success) {
-        const targetRoomId = data.room_id;
-        localStorage.setItem('why_not_active_room_id', targetRoomId);
-        setActiveRoomId(targetRoomId);
-        setLandingInviteToken(null);
-        setLandingInviteData(null);
-        setInviteTokenExpiresAt(null);
-        window.history.replaceState({}, '', '/');
-        triggerToast(data.message || '회의실 참가가 완료되었습니다!');
-        handleSelectRoom(targetRoomId, userId, nameToUse);
-        return;
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) setShowLoginModal(true);
+        throw new Error(data?.error || '참가에 실패했습니다.');
       }
 
-      // 2. Express Backend API fallback
-      try {
-        const res = await fetch(`/api/invites/${token}/join`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, nickname: nameToUse })
-        });
-        if (res.ok) {
-          const apiData = await res.json();
-          const targetRoomId = apiData.roomId;
-          localStorage.setItem('why_not_active_room_id', targetRoomId);
-          setActiveRoomId(targetRoomId);
-          setLandingInviteToken(null);
-          setLandingInviteData(null);
-          setInviteTokenExpiresAt(null);
-          window.history.replaceState({}, '', '/');
-          triggerToast('회의실 참가가 완료되었습니다!');
-          handleSelectRoom(targetRoomId, userId, nameToUse);
-          return;
-        }
-      } catch (apiErr) {
-        console.warn('Express API join failed, trying direct Supabase DB fallback:', apiErr);
-      }
-
-      // 3. Direct Supabase DB Fallback
-      if (landingInviteData?.room?.id) {
-        const targetRoomId = landingInviteData.room.id;
-        await supabase.from('participants').upsert({
-          room_id: targetRoomId,
-          user_id: userId,
-          nickname: nameToUse
-        }, { onConflict: 'room_id,user_id' });
-
-        localStorage.setItem('why_not_active_room_id', targetRoomId);
-        setActiveRoomId(targetRoomId);
-        setLandingInviteToken(null);
-        setLandingInviteData(null);
-        setInviteTokenExpiresAt(null);
-        window.history.replaceState({}, '', '/');
-        triggerToast('회의실 참가가 완료되었습니다!');
-        handleSelectRoom(targetRoomId, userId, nameToUse);
-        return;
-      }
+      const targetRoomId = data.roomId;
+      localStorage.setItem('why_not_active_room_id', targetRoomId);
+      setActiveRoomId(targetRoomId);
+      setLandingInviteToken(null);
+      setLandingInviteData(null);
+      setInviteTokenExpiresAt(null);
+      window.history.replaceState({}, '', '/');
+      triggerToast('회의실 참가가 완료되었습니다!');
+      handleSelectRoom(targetRoomId, userId, nameToUse);
     } catch (err: any) {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
@@ -1424,8 +1032,7 @@ export default function App() {
   };
 
   const fetchRooms = async () => {
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) {
+    if (!isLoggedIn || !userId) {
       setRoomsList([]);
       setIsFetchRoomsLoading(false);
       setFetchRoomsError(false);
@@ -1436,101 +1043,17 @@ export default function App() {
     setFetchRoomsError(false);
 
     try {
-      // Direct Supabase DB query: Single Source of Truth for Rooms created or joined by user
-      const { data: hostRooms, error: hostErr } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('host_id', activeUserId);
-
-      const { data: memberPart, error: partErr } = await supabase
-        .from('participants')
-        .select('room_id, hidden_at')
-        .eq('user_id', activeUserId);
-
-      if (hostErr && partErr) {
-        throw new Error('Supabase DB room query failed: ' + (hostErr?.message || partErr?.message));
+      const response = await fetch('/api/rooms', { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) setIsLoggedIn(false);
+        throw new Error(data?.error || '회의실 목록을 불러오지 못했습니다.');
       }
 
-      const participantMap = new Map<string, { hiddenAt: string | null }>();
-      (memberPart || []).forEach(p => {
-        participantMap.set(p.room_id, { hiddenAt: p.hidden_at || null });
-      });
-
-      const joinedRoomIds = (memberPart || []).map(p => p.room_id);
-
-      let joinedRooms: any[] = [];
-      if (joinedRoomIds.length > 0) {
-        const { data: jRooms } = await supabase
-          .from('rooms')
-          .select('*')
-          .in('id', joinedRoomIds);
-        joinedRooms = jRooms || [];
-      }
-
-      const combinedMap = new Map<string, any>();
-      (hostRooms || []).forEach(r => combinedMap.set(r.id, r));
-      joinedRooms.forEach(r => combinedMap.set(r.id, r));
-      const supaRooms = Array.from(combinedMap.values());
-
-      // Prepare local storage hidden fallback across re-login sessions
-      let localHiddenSet = new Set<string>();
-      try {
-        const curEmail = userEmail || localStorage.getItem('why_not_user_email') || '';
-        const rawIdHidden = localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]';
-        const rawEmailHidden = curEmail ? localStorage.getItem(`why_not_hidden_rooms_${curEmail}`) || '[]' : '[]';
-        const parsedId = JSON.parse(rawIdHidden);
-        const parsedEmail = JSON.parse(rawEmailHidden);
-        localHiddenSet = new Set([...parsedId, ...parsedEmail]);
-      } catch (e) {}
-
-      // Calculate participant count and format room card info
-      const mapped = await Promise.all(supaRooms.map(async r => {
-        const { count } = await supabase
-          .from('participants')
-          .select('*', { count: 'exact', head: true })
-          .eq('room_id', r.id);
-
-        const isHost = Boolean(r.host_id && activeUserId && r.host_id === activeUserId && r.host_id !== 'anon-host');
-        const myRole = isHost ? '방장' : '참여자';
-
-        const pInfo = participantMap.get(r.id);
-        const isHidden = Boolean(pInfo?.hiddenAt || localHiddenSet.has(r.id));
-
-        let readableStatus = '아이디어 모집';
-        if (r.status === 'SETUP') readableStatus = '설정 중';
-        else if (r.status === 'CLOSED') readableStatus = '최종 선정';
-        else if (['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(r.status)) readableStatus = '평가 중';
-
-        return {
-          id: r.id,
-          title: r.title,
-          description: r.description,
-          category: r.category || '기획',
-          isPublic: r.is_public !== undefined ? r.is_public : true,
-          maxParticipants: r.max_participants || 6,
-          targetWinnerCount: r.target_winner_count || 1,
-          isPinned: r.is_pinned || false,
-          status: r.status || 'IDEA_SUBMISSION',
-          readableStatus,
-          ideasCount: 0,
-          evaluatorsCount: count || 1,
-          minResponseThreshold: r.min_response_threshold || 1,
-          createdAt: r.created_at,
-          updatedAt: r.updated_at || r.created_at,
-          hostId: r.host_id,
-          isHost,
-          myRole,
-          isHidden
-        };
-      }));
-
-      // Sort by creation date descending
-      mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-      setRoomsList(mapped);
+      setRoomsList(Array.isArray(data) ? data : (data?.rooms || []));
       setFetchRoomsError(false);
-    } catch (supaErr) {
-      console.error('Supabase DB fetchRooms error:', supaErr);
+    } catch (error) {
+      console.error('BFF fetchRooms error:', error);
       setFetchRoomsError(true);
     } finally {
       setIsFetchRoomsLoading(false);
@@ -1551,7 +1074,10 @@ export default function App() {
     let isFetched = false;
 
     try {
-      const res = await fetch(`/api/rooms/${id}?userId=${userId}`, { signal: controller.signal });
+      const res = await fetch(`/api/rooms/${id}`, {
+        signal: controller.signal,
+        cache: 'no-store'
+      });
       clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
@@ -1608,6 +1134,10 @@ export default function App() {
         isFetched = true;
       } else {
         console.warn(`[SYNC ERROR] Express backend responded with status: ${res.status}`);
+        if (res.status === 401) {
+          setIsLoggedIn(false);
+          setShowLoginModal(true);
+        }
       }
     } catch (err: any) {
       clearTimeout(timeoutId);
@@ -1625,173 +1155,10 @@ export default function App() {
       return;
     }
 
-    // Special fallback for room-gominhajo
-    if (id === 'room-gominhajo') {
-      console.log('[SYNC] Default gominhajo room fallback applied');
-      setRoomDetails(prev => {
-        if (prev && prev.room.id === 'room-gominhajo') {
-          return prev;
-        }
-        return DEFAULT_GOMINHAJO_ROOM;
-      });
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
-    // Direct Supabase DB fallback
-    try {
-      const { data: roomData, error: roomErr } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (roomErr || !roomData) throw new Error('방을 찾을 수 없습니다.');
-      console.log('[SYNC] Supabase DB 방 정보 조회 완료');
-
-      const { data: ideasData } = await supabase.from('ideas').select('*').eq('room_id', id);
-      console.log(`[SYNC] Supabase DB 아이디어 조회 완료 (${ideasData?.length || 0}개)`);
-
-      const { data: criteriaData } = await supabase.from('criteria').select('*').eq('room_id', id);
-      const { data: proposalsData } = await supabase.from('criterion_proposals').select('*').eq('room_id', id);
-      const { data: participantsData } = await supabase.from('participants').select('*').eq('room_id', id);
-      console.log(`[SYNC] Supabase DB 참여자 조회 완료 (${participantsData?.length || 0}명)`);
-
-      const { data: evaluationsData } = await supabase.from('evaluations').select('*').eq('room_id', id);
-
-      const roomObj: Room = {
-        id: roomData.id,
-        title: roomData.title,
-        description: roomData.description,
-        category: roomData.category,
-        isPublic: roomData.is_public,
-        maxParticipants: roomData.max_participants,
-        targetWinnerCount: roomData.target_winner_count,
-        isPinned: roomData.is_pinned,
-        hostId: roomData.host_id,
-        status: roomData.status,
-        minResponseThreshold: roomData.min_response_threshold || 1,
-        eliminationConfig: roomData.elimination_config || { countPerRound: 1, tieBreak: 'random' },
-        deadlines: roomData.deadlines || {},
-        createdAt: roomData.created_at,
-      };
-
-      const mappedIdeas: Idea[] = (ideasData || []).map(i => ({
-        id: i.id,
-        roomId: i.room_id,
-        title: i.title,
-        description: i.description,
-        submitterId: i.submitter_id || (i as any).submitterId || '',
-        submitterName: i.submitter_name,
-        attachmentUrl: i.attachment_url,
-        pdfAttachmentUrl: i.pdf_attachment_url,
-        tags: i.tags,
-        status: i.status
-      }));
-
-      const mappedCriteria: Criterion[] = (criteriaData || []).map(c => ({
-        id: c.id,
-        roomId: c.room_id,
-        name: c.name,
-        description: c.description,
-        confirmed: true
-      }));
-
-      const mappedParticipants: Participant[] = (participantsData || []).map(p => ({
-        roomId: p.room_id,
-        userId: p.user_id,
-        nickname: p.nickname,
-        role: p.role || 'MEMBER',
-        isIdeaDone: p.is_idea_done || false
-      }));
-
-      const mappedProposals: CriterionProposal[] = (proposalsData || []).map(p => ({
-        id: p.id,
-        roomId: p.room_id,
-        rawText: p.raw_text || (p as any).rawText || '',
-        proposerId: p.proposer_id || (p as any).proposerId || '',
-        clusterId: p.cluster_id || (p as any).clusterId,
-        isAiSuggested: p.is_ai_suggested !== undefined ? p.is_ai_suggested : (Boolean((p as any).isAiSuggested) || (p.id && p.id.startsWith('prop-ai-')) || p.proposer_id === 'gemini-ai')
-      }));
-
-      const uniqueEvaluators = new Set((evaluationsData || []).map(e => e.evaluator_id).filter(Boolean));
-
-      // Calculate unique submitters with fallbacks
-      const uniqueSubmitters = new Set(
-        mappedIdeas.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean)
-      );
-      console.log(`[SYNC] Supabase DB 고유 참여자 계산 완료 (${uniqueSubmitters.size}명)`);
-
-      const targetMinThreshold = Math.max(roomData.min_response_threshold || 1, (participantsData || []).length || uniqueSubmitters.size || 1);
-      roomObj.minResponseThreshold = targetMinThreshold;
-      const evaluatorsCount = uniqueEvaluators.size;
-      const minResponseThresholdMet = evaluatorsCount >= targetMinThreshold;
-
-      const dataObj: RoomDetails = {
-        room: roomObj,
-        ideas: mappedIdeas,
-        criteria: mappedCriteria,
-        proposals: mappedProposals,
-        proposalsCount: mappedProposals.length,
-        completedParticipantsCount: uniqueSubmitters.size,
-        participants: mappedParticipants,
-        rounds: [],
-        evaluatorsCount,
-        myEvaluations: (evaluationsData || []).filter(e => e.evaluator_id === userId).map(e => ({
-          id: e.id,
-          roomId: e.room_id,
-          ideaId: e.idea_id,
-          evaluatorId: e.evaluator_id,
-          decision: e.decision as any,
-          excludedCriterionIds: e.excluded_criterion_ids || [],
-          reasonText: e.reason_text || '',
-          reasonType: e.reason_type as any || 'PREFERENCE',
-          round: e.round || 1
-        })),
-        hasEvaluated: (evaluationsData || []).some(e => e.evaluator_id === userId),
-        minResponseThresholdMet,
-        scoreConfig: { keepWeight: 10, neutralWeight: 0, excludeWeight: -10, objectiveConstraintPenalty: 25 }
-      };
-
-      setRoomDetails(prev => {
-        const incomingProps = dataObj.proposals || [];
-        const existingProps = (prev && prev.room.id === dataObj.room.id) ? (prev.proposals || []) : [];
-
-        // Preserve only very recent local optimistic creations (< 3 seconds old) that haven't hit server yet
-        const now = Date.now();
-        const pendingUnsynced = existingProps.filter(ep => {
-          if (!ep.createdAt) return false;
-          const age = now - new Date(ep.createdAt).getTime();
-          return age < 3000 && ep.proposerId === userId;
-        });
-
-        const combined = [...incomingProps];
-        pendingUnsynced.forEach(ep => {
-          if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
-            combined.push(ep);
-          }
-        });
-
-        return {
-          ...dataObj,
-          proposals: combined,
-          proposalsCount: combined.length
-        };
-      });
-      if (roomObj.status === 'CRITERIA_REVIEW' && editableCriteria.length === 0) {
-        setEditableCriteria(mappedCriteria);
-      }
-      console.log('[SYNC] 현재 단계 적용 완료');
-    } catch (supaErr) {
-      console.error('[SYNC ERROR] Supabase fetchRoomDetails failed:', supaErr);
-      setFetchRoomError(true);
-      triggerToast('방 정보를 불러오는 데 실패했습니다.', 'error');
-    } finally {
-      console.log('[SYNC] 초기 로딩 종료');
-      setLoading(false);
-      setRefreshing(false);
-    }
+    setFetchRoomError(true);
+    setLoading(false);
+    setRefreshing(false);
+    triggerToast('방 정보를 불러오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.', 'error');
   };
 
   // Update user room entry nickname (Max 6 chars)
@@ -1808,10 +1175,10 @@ export default function App() {
       setPendingRoomId(null);
       handleSelectRoom(targetId, userId, trimmed);
     } else if (activeRoomId) {
-      fetch(`/api/rooms/${activeRoomId}/join`, {
-        method: 'POST',
+      fetch(`/api/rooms/${activeRoomId}/me`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, nickname: trimmed }),
+        body: JSON.stringify({ nickname: trimmed }),
       });
     }
   };
@@ -1828,8 +1195,7 @@ export default function App() {
     }
     if (!newRoomTitle.trim()) return;
 
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) {
+    if (!userId) {
       triggerToast('로그인 세션이 유효하지 않습니다. 다시 로그인해 주세요.', 'error');
       setShowLoginModal(true);
       return;
@@ -1839,73 +1205,30 @@ export default function App() {
     localStorage.setItem('why_not_room_nickname', hostNick);
     setNickname(hostNick);
 
-    const createdRoomId = `room-${Math.random().toString(36).substring(2, 9)}`;
-
     try {
-      // 1. Insert into Supabase DB 'rooms' (Single Source of Truth)
-      const { error: supaError } = await supabase
-        .from('rooms')
-        .insert({
-          id: createdRoomId,
+      const response = await fetch('/api/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           title: newRoomTitle.trim(),
-          description: newRoomDesc || '',
+          description: newRoomDesc,
           category: newRoomCategory,
-          is_public: newRoomIsPublic,
-          max_participants: Math.min(Math.max(newRoomMaxParticipants, 2), 6),
-          target_winner_count: newRoomTargetWinners,
-          is_pinned: false,
-          host_id: activeUserId,
-          status: 'IDEA_SUBMISSION',
-          min_response_threshold: 1,
-          elimination_config: { countPerRound: 1, tieBreak: 'random' },
+          maxParticipants: Math.min(newRoomMaxParticipants, 6),
+          targetWinnerCount: newRoomTargetWinners,
+          isPublic: false,
+          minResponseThreshold: 1,
+          eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
           deadlines: {
             evaluationAt: newRoomVoteEndTime || undefined,
             voteStartTime: newRoomVoteStartTime || undefined
-          },
-        });
-
-      if (supaError) {
-        console.error('Supabase DB room insert error:', supaError);
-        throw new Error('회의실 DB 저장 실패: ' + (supaError.message || '오류 발생'));
+          }
+        })
+      });
+      const createdRoom = await response.json().catch(() => null);
+      if (!response.ok || !createdRoom?.id) {
+        throw new Error(createdRoom?.error || '회의실을 저장하지 못했습니다.');
       }
-
-      // 2. Insert host into Supabase DB 'participants' (Atomic completion)
-      const { error: partErr } = await supabase
-        .from('participants')
-        .insert({
-          room_id: createdRoomId,
-          user_id: activeUserId,
-          nickname: hostNick
-        });
-
-      if (partErr) {
-        console.error('Supabase host participant insert error:', partErr);
-        // Rollback room insertion to avoid orphan room!
-        await supabase.from('rooms').delete().eq('id', createdRoomId);
-        throw new Error('방장 정보 등록 실패: ' + (partErr.message || '오류 발생'));
-      }
-
-      // 3. Notify Express server memory (if active)
-      try {
-        await fetch('/api/rooms', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: createdRoomId,
-            title: newRoomTitle.trim(),
-            description: newRoomDesc,
-            category: newRoomCategory,
-            maxParticipants: Math.min(newRoomMaxParticipants, 6),
-            targetWinnerCount: newRoomTargetWinners,
-            isPublic: newRoomIsPublic,
-            hostId: activeUserId,
-            minResponseThreshold: 1,
-            eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
-          })
-        });
-      } catch (e) {
-        console.info('Express server memory sync notice:', e);
-      }
+      const createdRoomId = createdRoom.id;
 
       triggerToast(`회의실이 성공적으로 생성되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
@@ -1918,8 +1241,8 @@ export default function App() {
       // Select newly created room, open share modal and refresh dashboard list
       setActiveRoomId(createdRoomId);
       setShowShareModal(true);
-      handleGenerateNewInviteToken(createdRoomId);
-      fetchRoomDetails(createdRoomId);
+      await handleGenerateNewInviteToken(createdRoomId);
+      await fetchRoomDetails(createdRoomId);
       await fetchRooms();
     } catch (err: any) {
       console.error('Room Creation Failed:', err);
@@ -1946,120 +1269,69 @@ export default function App() {
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: nextPinState } : r));
     triggerToast(nextPinState ? '★ 상단 고정되었습니다. (ON)' : '☆ 상단 고정이 해제되었습니다. (OFF)');
 
-    // 2. Server API or Supabase DB persistence
     try {
       const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
-      if (!res.ok) throw new Error();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '고정 상태를 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Express backend offline, updating pin state directly in Supabase DB...');
-      try {
-        await supabase
-          .from('rooms')
-          .update({ is_pinned: nextPinState })
-          .eq('id', roomId);
-      } catch (supaErr) {
-        console.error('Supabase DB pin toggle error:', supaErr);
-      }
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: !nextPinState } : r));
+      triggerToast(err instanceof Error ? err.message : '고정 상태를 저장하지 못했습니다.', 'error');
     }
   };
 
   // Hide Room from My Dashboard (Only affects active user, preserves room & other participants)
   const handleHideRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) return;
+    if (!userId) return;
 
-    // 1. Instant local UI update
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
-
-    // Persist in localStorage fallback
-    try {
-      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
-      set.add(roomId);
-      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
-    } catch (err) {}
-
     triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
 
-    // 2. Persist in Supabase DB participants table (hidden_at)
     try {
-      await supabase
-        .from('participants')
-        .update({ hidden_at: new Date().toISOString() })
-        .match({ room_id: roomId, user_id: activeUserId });
+      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'POST' });
+      if (!response.ok) throw new Error('회의실 숨김 상태를 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Supabase hidden_at update notice:', err);
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
+      triggerToast('회의실 숨김 상태를 저장하지 못했습니다.', 'error');
     }
   };
 
   // Restore Room to My Dashboard
   const handleRestoreRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
-    const activeUserId = userId || localStorage.getItem('why_not_user_id') || '';
-    if (!activeUserId) return;
+    if (!userId) return;
 
-    // 1. Instant local UI update
     setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
-
-    // Remove from localStorage fallback
-    try {
-      const set = new Set(JSON.parse(localStorage.getItem(`why_not_hidden_rooms_${activeUserId}`) || '[]'));
-      set.delete(roomId);
-      localStorage.setItem(`why_not_hidden_rooms_${activeUserId}`, JSON.stringify(Array.from(set)));
-    } catch (err) {}
-
     triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
 
-    // 2. Persist in Supabase DB participants table (hidden_at = null)
     try {
-      await supabase
-        .from('participants')
-        .update({ hidden_at: null })
-        .match({ room_id: roomId, user_id: activeUserId });
+      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('회의실 숨김 상태를 해제하지 못했습니다.');
     } catch (err) {
-      console.warn('Supabase hidden_at restore notice:', err);
+      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
+      triggerToast('회의실 숨김 상태를 해제하지 못했습니다.', 'error');
     }
   };
 
-  // Force Change Room Status / Milestone (Host or Debug stage selector)
+  // Advance a room only through the server-validated milestone transition.
   const handleForceChangeStatus = async (nextStatus: RoomStatus) => {
     if (!activeRoomId) return;
 
-    // 1. Instant local UI update
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        room: {
-          ...prev.room,
-          status: nextStatus
-        }
-      };
-    });
-
-    triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
-
-    // 2. Persist to Express API or Supabase DB
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus })
       });
-      if (res.ok) return;
-    } catch (e) {
-      console.warn('Express status API unreachable, persisting to Supabase...');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: nextStatus })
-          .eq('id', activeRoomId);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error || '단계를 변경하지 못했습니다.');
       }
-    } catch (supaErr) {
-      console.error('Supabase status update error:', supaErr);
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
+    } catch (error) {
+      console.error('Room status transition failed:', error);
+      triggerToast(error instanceof Error ? error.message : '단계를 변경하지 못했습니다.', 'error');
     }
   };
 
@@ -2088,17 +1360,9 @@ export default function App() {
     setIsReEditingEvaluation(false);
     setShowIdeaSubmissionGate(false);
     localStorage.setItem('why_not_active_room_id', id);
-    const uId = customUserId || userId;
     const nick = customNickname || currentSavedNickname || nickname;
-    try {
-      await fetch(`/api/rooms/${id}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: uId, nickname: nick }),
-      });
-    } catch (err) {
-      console.error(err);
-    }
+    if (nick && nick !== nickname) setNickname(nick);
+    await fetchRoomDetails(id);
   };
 
   // Submit Idea (Anonymously, Max 5 ideas per user limit)
@@ -2153,53 +1417,22 @@ export default function App() {
       attachmentUrl: ideaLink,
       pdfAttachmentUrl: ideaPdfName,
       tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-      submitterId: userId,
-      submitterName: anonLabel,
     };
 
-    // 1. Try Express backend endpoint
     try {
-      await fetch(`/api/rooms/${activeRoomId}/ideas`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newIdeaObj),
       });
-    } catch (e) {
-      console.warn('Express API server unaccessible...', e);
-    }
-
-    // 2. Always persist to Supabase DB so Realtime triggers for all clients
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        if (roomDetails?.room) {
-          await supabase.from('rooms').upsert({
-            id: activeRoomId,
-            title: roomDetails.room.title || '새 회의방',
-            description: roomDetails.room.description || '',
-            category: roomDetails.room.category || '기획',
-            host_id: roomDetails.room.hostId || userId || 'host-1',
-            status: roomDetails.room.status || 'IDEA_SUBMISSION'
-          }, { onConflict: 'id' });
-        }
-
-        const newIdeaId = `idea-${Math.random().toString(36).substring(2, 9)}`;
-        await supabase
-          .from('ideas')
-          .insert({
-            id: newIdeaId,
-            room_id: activeRoomId,
-            title: ideaTitle,
-            description: ideaDesc,
-            submitter_id: userId,
-            submitter_name: anonLabel,
-            attachment_url: ideaLink || null,
-            pdf_attachment_url: ideaPdfName || null,
-            tags: ideaTags ? ideaTags.split(',').map(t => t.trim()).filter(Boolean) : [],
-            status: 'ACTIVE'
-          });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || '아이디어를 등록하지 못했습니다.');
       }
-    } catch (err: any) {
-      console.error('Supabase DB submit idea error:', err);
+    } catch (error) {
+      console.error('Idea submission failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 등록하지 못했습니다.', 'error');
+      return;
     }
 
     triggerToast(`아이디어가 익명(${anonLabel})으로 성공적으로 등록되었습니다!`);
@@ -2222,9 +1455,6 @@ export default function App() {
       return;
     }
 
-    let updatedSuccess = false;
-
-    // Try Express backend endpoint first
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'PUT',
@@ -2234,35 +1464,14 @@ export default function App() {
           description: editIdeaDesc.trim(),
           attachmentUrl: editIdeaLink.trim(),
           pdfAttachmentUrl: editIdeaPdfName.trim(),
-          submitterId: userId,
         }),
       });
-      if (res.ok) updatedSuccess = true;
-    } catch (e) {
-      console.warn('Express API server unaccessible for edit, trying direct Supabase update...', e);
-    }
-
-    // Supabase DB Direct update fallback
-    if (!updatedSuccess) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('ideas')
-          .update({
-            title: editIdeaTitle.trim(),
-            description: editIdeaDesc.trim(),
-            attachment_url: editIdeaLink.trim() || null,
-            pdf_attachment_url: editIdeaPdfName.trim() || null,
-          })
-          .eq('id', ideaId)
-          .eq('submitter_id', userId);
-
-        if (supaErr) throw supaErr;
-        updatedSuccess = true;
-      } catch (err: any) {
-        console.error('Supabase DB update idea error:', err);
-        triggerToast(`아이디어 수정 도중 오류가 발생했습니다: ${err.message}`, 'error');
-        return;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '아이디어를 수정하지 못했습니다.');
+    } catch (error) {
+      console.error('Idea update failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 수정하지 못했습니다.', 'error');
+      return;
     }
 
     // Update local roomDetails state if gominhajo or direct state match
@@ -2291,34 +1500,16 @@ export default function App() {
       return;
     }
 
-    let deletedSuccess = false;
-
-    // Try Express backend endpoint first
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}?submitterId=${userId}`, {
+      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'DELETE',
       });
-      if (res.ok) deletedSuccess = true;
-    } catch (e) {
-      console.warn('Express API server unaccessible for delete, trying direct Supabase deletion...', e);
-    }
-
-    // Supabase DB Direct deletion fallback
-    if (!deletedSuccess) {
-      try {
-        const { error: supaErr } = await supabase
-          .from('ideas')
-          .delete()
-          .eq('id', ideaId)
-          .eq('submitter_id', userId);
-
-        if (supaErr) throw supaErr;
-        deletedSuccess = true;
-      } catch (err: any) {
-        console.error('Supabase DB delete idea error:', err);
-        triggerToast(`아이디어 삭제 도중 오류가 발생했습니다: ${err.message}`, 'error');
-        return;
-      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '아이디어를 삭제하지 못했습니다.');
+    } catch (error) {
+      console.error('Idea deletion failed:', error);
+      triggerToast(error instanceof Error ? error.message : '아이디어를 삭제하지 못했습니다.', 'error');
+      return;
     }
 
     // Update local roomDetails state
@@ -2379,43 +1570,25 @@ export default function App() {
       };
     });
 
-    // Background API sync & Supabase DB Direct insertion fallback
+    // Persist only through the authenticated backend. The browser never writes
+    // directly to Supabase and never impersonates a synthetic "gemini-ai" user.
     for (let idx = 0; idx < uniqueSuggestions.length; idx++) {
       const item = uniqueSuggestions[idx];
       const text = typeof item === 'string' ? item : (item.name ? `${item.name}${item.description ? `: ${item.description}` : ''}` : '');
       if (!text) continue;
 
-      let apiSuccess = false;
       try {
         const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rawText: text, proposerId: 'gemini-ai' })
+          body: JSON.stringify({ rawText: text, isAiSuggested: true })
         });
-        if (res.ok) apiSuccess = true;
-      } catch (e) { }
-
-      // Supabase Direct DB Fallback
-      if (!apiSuccess && activeRoomId && activeRoomId !== 'room-gominhajo') {
-        try {
-          const { data: existingProps } = await supabase
-            .from('criterion_proposals')
-            .select('id')
-            .eq('room_id', activeRoomId)
-            .eq('raw_text', text);
-
-          if (!existingProps || existingProps.length === 0) {
-            const newPropId = `prop-ai-${idx}-${Math.random().toString(36).substring(2, 7)}`;
-            await supabase.from('criterion_proposals').insert({
-              id: newPropId,
-              room_id: activeRoomId,
-              raw_text: text,
-              proposer_id: 'gemini-ai'
-            });
-          }
-        } catch (supaErr) {
-          console.warn('Supabase DB auto proposal insert notice:', supaErr);
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || 'AI 추천 기준 저장에 실패했습니다.');
         }
+      } catch (error) {
+        console.warn('AI recommendation persistence failed:', error);
       }
     }
   };
@@ -2556,48 +1729,22 @@ export default function App() {
     triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
     setProposalText('');
 
-    // Always persist to Supabase DB so data survives server restarts and realtime triggers
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        if (roomDetails?.room) {
-          await supabase.from('rooms').upsert({
-            id: activeRoomId,
-            title: roomDetails.room.title || '회의실',
-            description: roomDetails.room.description || '',
-            category: roomDetails.room.category || '기획',
-            host_id: roomDetails.room.hostId || userId || 'host-1',
-            status: roomDetails.room.status || 'CRITERIA_PROPOSAL'
-          }, { onConflict: 'id' });
-        }
-
-        await supabase
-          .from('criterion_proposals')
-          .insert({
-            id: newProposalObj.id,
-            room_id: activeRoomId,
-            raw_text: textToSubmit.trim(),
-            proposer_id: userId,
-            is_ai_suggested: isAi
-          });
-      }
-    } catch (supaErr) {
-      console.warn('Supabase DB proposal insert notice:', supaErr);
-    }
-
-    // Sync to Express API backend
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: newProposalObj.id,
           rawText: textToSubmit.trim(),
-          proposerId: userId,
           isAiSuggested: isAi,
         }),
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 제안을 저장하지 못했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, proposal saved in Supabase & local state.');
+      const message = err instanceof Error ? err.message : '평가 기준 제안을 저장하지 못했습니다.';
+      triggerToast(message, 'error');
     }
 
     fetchRoomDetails(activeRoomId!, true);
@@ -2632,27 +1779,18 @@ export default function App() {
 
     triggerToast('제안된 평가 기준이 수정되었습니다.');
 
-    // 2. Sync to Supabase DB
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        await supabase
-          .from('criterion_proposals')
-          .update({ raw_text: updatedText })
-          .eq('id', proposalId);
-      }
-    } catch (supaErr) {
-      console.warn('Supabase proposal update notice:', supaErr);
-    }
-
-    // 3. Sync to Express Backend API
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rawText: updatedText, userId })
+        body: JSON.stringify({ rawText: updatedText })
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 수정에 실패했습니다.');
     } catch (e) {
-      console.warn('Express proposal update notice:', e);
+      const message = e instanceof Error ? e.message : '평가 기준 수정에 실패했습니다.';
+      triggerToast(message, 'error');
     }
 
     if (activeRoomId) fetchRoomDetails(activeRoomId, true);
@@ -2675,27 +1813,17 @@ export default function App() {
 
     triggerToast('제안된 평가 기준이 삭제되었습니다.');
 
-    // 2. Sync to Supabase DB
+    // Persist through the authenticated backend only.
     try {
-      if (activeRoomId) {
-        await supabase
-          .from('criterion_proposals')
-          .delete()
-          .eq('id', proposalId);
-      }
-    } catch (supaErr) {
-      console.warn('Supabase proposal delete notice:', supaErr);
-    }
-
-    // 3. Sync to Express Backend API
-    try {
-      await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
+        headers: { 'Content-Type': 'application/json' }
       });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '평가 기준 삭제에 실패했습니다.');
     } catch (e) {
-      console.warn('Express proposal delete notice:', e);
+      const message = e instanceof Error ? e.message : '평가 기준 삭제에 실패했습니다.';
+      triggerToast(message, 'error');
     }
 
     if (activeRoomId) fetchRoomDetails(activeRoomId, true);
@@ -2783,31 +1911,7 @@ export default function App() {
     setEditableCriteria(finalCriteria);
     triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
 
-    // Sync to Supabase DB
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: 'CRITERIA_REVIEW' })
-          .eq('id', activeRoomId);
-
-        const supaCriteria = finalCriteria.map((c, i) => ({
-          id: c.id || `crit-candidate-${i}-${Math.random().toString(36).substr(2, 5)}`,
-          room_id: activeRoomId,
-          name: c.name,
-          description: c.description,
-          confirmed: false
-        }));
-
-        try {
-          await supabase.from('criteria').insert(supaCriteria);
-        } catch (e) { }
-      }
-    } catch (supaErr) {
-      console.error('Supabase DB criteria clustering sync error:', supaErr);
-    } finally {
-      setIsClusteringLoading(false);
-    }
+    setIsClusteringLoading(false);
   };
 
   // Confirm Criteria (Host only)
@@ -2833,7 +1937,7 @@ export default function App() {
 
     triggerToast('취합된 평가 기준이 최종 확인되었습니다. 3단계 1차 투표 및 익명 평가를 시작합니다!');
 
-    // 2. Sync to API or Supabase in background
+    // Persist through the authenticated backend only.
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
         method: 'POST',
@@ -2844,19 +1948,12 @@ export default function App() {
         fetchRoomDetails(activeRoomId!);
         return;
       }
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, criteria confirmed locally.');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        await supabase
-          .from('rooms')
-          .update({ status: 'EVALUATION' })
-          .eq('id', activeRoomId);
-      }
-    } catch (supaErr) {
-      console.error('Supabase status update error:', supaErr);
+      const message = err instanceof Error ? err.message : '평가 기준 확정에 실패했습니다.';
+      triggerToast(message, 'error');
+      fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -3018,7 +2115,7 @@ export default function App() {
 
     setIsReEditingEvaluation(false);
 
-    // Update local state immediately & transition status to 4단계 ELIMINATION (2차 투표)
+    // Mark only this user's completion locally. The server controls phase changes.
     setRoomDetails(prev => {
       if (!prev) return prev;
       return {
@@ -3026,11 +2123,7 @@ export default function App() {
         hasEvaluated: true,
         evaluatorsCount: (prev.evaluatorsCount || 0) + 1,
         minResponseThresholdMet: true,
-        aggregatedScores: newAggregated,
-        room: {
-          ...prev.room,
-          status: 'ELIMINATION'
-        }
+        aggregatedScores: newAggregated
       };
     });
 
@@ -3049,29 +2142,13 @@ export default function App() {
         fetchRoomDetails(activeRoomId!);
         return;
       }
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.error || '평가 제출에 실패했습니다.');
     } catch (err) {
-      console.warn('Express API unavailable, trying Supabase DB insertion for evaluations...');
-    }
-
-    try {
-      if (activeRoomId && activeRoomId !== 'room-gominhajo') {
-        for (const sub of submissions) {
-          const evalId = `eval-${Math.random().toString(36).substring(2, 9)}`;
-          await supabase.from('evaluations').insert({
-            id: evalId,
-            room_id: activeRoomId,
-            idea_id: sub.ideaId,
-            evaluator_id: userId || 'anon-evaluator',
-            decision: sub.decision,
-            excluded_criterion_ids: sub.excludedCriterionIds || [],
-            reason_text: sub.reasonText || '',
-            reason_type: sub.reasonType || 'PREFERENCE',
-            round: 1
-          });
-        }
-      }
-    } catch (supaErr) {
-      console.error('Supabase DB evaluations insert error:', supaErr);
+      const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
+      triggerToast(message, 'error');
+      setRoomDetails(prev => prev ? { ...prev, hasEvaluated: false } : prev);
+      fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -3560,7 +2637,7 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <div
                   onClick={() => {
-                    const currentLoginId = userEmail || localStorage.getItem('why_not_user_email') || nickname || '알 수 없음';
+                    const currentLoginId = userEmail || nickname || '알 수 없음';
                     navigator.clipboard.writeText(currentLoginId);
                     triggerToast(`✨ 로그인 이메일 ID: ${currentLoginId} (복사되었습니다!)`, 'success');
                   }}
@@ -3575,7 +2652,7 @@ export default function App() {
 
                   {/* 마우스를 닉네임에 대면(Hover): 이메일 ID로 텍스트 인라인 전환 */}
                   <span className="text-xs font-bold text-indigo-700 font-mono transition-all duration-200 hidden group-hover:inline-block">
-                    {userEmail || localStorage.getItem('why_not_user_email') || '이메일 정보 없음'}
+                    {userEmail || '이메일 정보 없음'}
                   </span>
                 </div>
                 <button
@@ -4267,7 +3344,7 @@ export default function App() {
                       if (showHiddenRooms && !room.isHidden) return false;
 
                       // Ownership Filter
-                      const curUserId = userId || localStorage.getItem('why_not_user_id') || '';
+                      const curUserId = userId;
                       if (roomOwnershipFilter === 'CREATED_BY_ME') {
                         if (room.hostId !== curUserId && !room.isHost) return false;
                       } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
@@ -4299,7 +3376,7 @@ export default function App() {
                         statusBadge = <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/50">🔒 평가 중</span>;
                       }
 
-                      const myRoleBadge = (room.isHost || room.hostId === (userId || localStorage.getItem('why_not_user_id')))
+                      const myRoleBadge = (room.isHost || room.hostId === userId)
                         ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">👑 방장</span>
                         : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
 
@@ -4499,32 +3576,6 @@ export default function App() {
                     </section>
                   )}
 
-                  {/* Host-only developer quick stage selector (placed at sidebar bottom) */}
-                  {roomDetails.room?.hostId === userId && (
-                    <section className="pt-4 border-t border-slate-100 space-y-2">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        🛠️ 단계 강제 변경:
-                      </span>
-                      <div className="flex flex-col gap-1.5">
-                        {['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'].map((st) => (
-                          <button
-                            key={st}
-                            onClick={() => handleForceChangeStatus(st as RoomStatus)}
-                            className={`text-[10px] font-semibold py-1 px-2.5 rounded-lg border text-left transition ${roomDetails.room.status === st
-                              ? 'bg-indigo-600 text-white border-indigo-600'
-                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                              }`}
-                          >
-                            {st === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
-                            {st === 'CRITERIA_PROPOSAL' && '2단계 : 평가 기준 설정'}
-                            {st === 'EVALUATION' && '3단계 : 1차 투표 및 익명 평가'}
-                            {st === 'ELIMINATION' && '4단계 : 2차 투표'}
-                            {st === 'CLOSED' && '5단계 : 최종 결과'}
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  )}
                 </aside>
 
                 {/* 2. MAIN WORKSPACE */}
@@ -5572,10 +4623,10 @@ export default function App() {
                                     animate={{ opacity: 1, height: 'auto' }}
                                     className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4 overflow-hidden text-left"
                                   >
-                                    {/* 1. Which criteria apply? (Min 1 required) */}
+                                    {/* 1. Evaluate every criterion independently */}
                                     <div className="space-y-2">
                                       <label className="text-xs font-bold text-slate-800 block">
-                                        근거 평가 기준 선택 (2단계 제안된 평가 기준 중 1개 이상 필수 선택) <span className="text-rose-500">*</span>
+                                        공통 기준 충족도 평가 (모든 기준 필수) <span className="text-rose-500">*</span>
                                       </label>
                                       <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200">
                                         {(() => {
@@ -5595,25 +4646,47 @@ export default function App() {
                                             return <p className="text-xs text-slate-400">등록된 평가 기준이 없습니다. (2단계에서 평가 기준이 제안되어야 합니다)</p>;
                                           }
 
-                                          return availableCriteria.map(crit => {
-                                            const isChecked = userVote.excludedCriterionIds.includes(crit.id);
-                                            return (
-                                              <label key={crit.id} className="flex items-start gap-2.5 text-xs font-semibold text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded-lg transition">
-                                                <input
-                                                  type="checkbox"
-                                                  checked={isChecked}
-                                                  onChange={e => handleCriteriaCheckboxChange(idea.id, crit.id, e.target.checked)}
-                                                  className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                                />
-                                                <div className="space-y-0.5">
-                                                  <span className="font-bold text-slate-900 block">{crit.name}</span>
-                                                  <span className="text-[11px] text-slate-500 font-normal block">{crit.description}</span>
-                                                </div>
-                                              </label>
-                                            );
-                                          });
+                                          return availableCriteria.map(crit => (
+                                            <div key={crit.id} className="p-2 rounded-lg border border-slate-100 space-y-2">
+                                              <div>
+                                                <span className="font-bold text-xs text-slate-900 block">{crit.name}</span>
+                                                <span className="text-[11px] text-slate-500 block">{crit.description}</span>
+                                              </div>
+                                              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                                {[
+                                                  { key: 'MET', label: '충족' },
+                                                  { key: 'PARTIAL', label: '일부 충족' },
+                                                  { key: 'NOT_MET', label: '미충족' },
+                                                  { key: 'UNSURE', label: '잘 모르겠음' }
+                                                ].map(option => {
+                                                  const selected = userVote.criteriaEvaluations?.[crit.id] === option.key;
+                                                  return (
+                                                    <button
+                                                      key={option.key}
+                                                      type="button"
+                                                      onClick={() => handleCriteriaEvaluationChange(
+                                                        idea.id,
+                                                        crit.id,
+                                                        option.key as CriteriaEvaluationValue
+                                                      )}
+                                                      className={`px-2 py-2 rounded-lg border text-[10px] font-bold transition ${
+                                                        selected
+                                                          ? 'bg-indigo-600 text-white border-indigo-600'
+                                                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                                      }`}
+                                                    >
+                                                      {option.label}
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
+                                          ));
                                         })()}
                                       </div>
+                                      <p className="text-[10px] text-slate-500">
+                                        ‘잘 모르겠음’은 숨기지 않고 비율로 표시하되, 기준 충족도 계산의 분모에서는 제외합니다.
+                                      </p>
                                     </div>
 
                                     {/* 2. Dynamic Reason Textarea */}
@@ -5646,8 +4719,8 @@ export default function App() {
                               const vote = evalSubmissions[idea.id];
                               if (!vote || !vote.decision) return false;
                               if (!vote.reasonText || !vote.reasonText.trim()) return false;
-                              const hasCriteria = ((roomDetails.criteria || []).length > 0) || ((roomDetails.proposals || []).length > 0);
-                              if (hasCriteria && (!vote.excludedCriterionIds || vote.excludedCriterionIds.length === 0)) return false;
+                              const availableCriteria = roomDetails.criteria || [];
+                              if (availableCriteria.some(criterion => !vote.criteriaEvaluations?.[criterion.id])) return false;
                               return true;
                             });
 
@@ -5655,7 +4728,7 @@ export default function App() {
                               <div className="pt-6 pb-4 flex flex-col items-center justify-center space-y-3">
                                 {!isAllEvaluated && (
                                   <p className="text-xs text-amber-600 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
-                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [근거 평가 기준], [세부 사유]를 모두 작성하셔야 4단계 2차 투표로 이동할 수 있습니다.
+                                    ⚠️ 모든 후보 아이디어에 대해 [익명 스탠스], [모든 공통 기준의 충족도], [세부 사유]를 작성해야 제출할 수 있습니다.
                                   </p>
                                 )}
                                 <button
@@ -5687,7 +4760,7 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
                       {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
-                      {roomDetails.room.status === 'FINAL_VOTE' && (
+                      {(roomDetails.room.finalVoteStatus === 'VOTING' || roomDetails.room.finalVoteStatus === 'TIE_PENDING') && (
                         <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
                           <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
                             <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
@@ -6131,13 +5204,21 @@ export default function App() {
                         </div>
 
                         {/* Process Step Progression Bar */}
-                        <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
-                          <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
-                          <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
-                        </div>
+                        {roomDetails.room.decisionMode === 'QUICK' ? (
+                          <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 선택지</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 익명투표</div>
+                            <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">3단계 결과</div>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-5 gap-1.5 text-center text-[10px] font-bold text-slate-600 bg-slate-100 p-2 rounded-2xl">
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">1단계 아이디어</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">2단계 기준확정</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">3단계 익명평가</div>
+                            <div className="bg-indigo-600 text-white p-1.5 rounded-xl">4단계 별투표</div>
+                            <div className="bg-amber-400 text-slate-950 p-1.5 rounded-xl font-black">5단계 최종결과</div>
+                          </div>
+                        )}
 
                         <div className="space-y-5 border-l-2 border-slate-200 pl-4 ml-2 pt-2">
                           {(!roomDetails?.rounds || roomDetails.rounds.length === 0) ? (
@@ -6146,7 +5227,9 @@ export default function App() {
                               <span className="text-[10px] font-black text-indigo-600">세션 소거 완료</span>
                               <h4 className="text-xs md:text-sm font-bold text-slate-900">단일 라운드 심사 후 최종 우승작 결정</h4>
                               <p className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1">
-                                전체 구성원의 평가 기준 점수 및 2차 별 스티커 투표 결과를 합산하여 최종 선정 완료되었습니다.
+                                {roomDetails.room.decisionMode === 'QUICK'
+                                  ? '모든 참여자가 다른 사람의 선택을 보지 않고 투표한 뒤 결과를 동시에 공개했습니다.'
+                                  : '전체 구성원의 공통 기준 평가와 최종 익명 투표를 근거로 최종 선정되었습니다.'}
                               </p>
                             </div>
                           ) : (
@@ -6201,6 +5284,55 @@ export default function App() {
                           </div>
                         </div>
                       )}
+
+                      {/* Decision round history and safe re-review */}
+                      <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex items-center gap-2">
+                            <RefreshCw className="w-5 h-5 text-indigo-600" />
+                            <h3 className="text-base font-black text-slate-900">결정 회차 기록</h3>
+                          </div>
+                          <span className="text-[10px] font-bold text-slate-500">
+                            이전 결과는 덮어쓰지 않습니다
+                          </span>
+                        </div>
+
+                        {(roomDetails.decisionRounds || []).length > 0 ? (
+                          <div className="space-y-2">
+                            {(roomDetails.decisionRounds || []).map(round => (
+                              <div key={round.id} className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3">
+                                <div>
+                                  <p className="text-xs font-extrabold text-slate-800">
+                                    {round.roundNumber}회차 · {round.decisionMode === 'QUICK' ? '빠른 결정' : '근거 기반 결정'}
+                                  </p>
+                                  <p className="text-[10px] text-slate-500">
+                                    {round.status === 'COMPLETED' ? '결과 보존 완료' : '진행 중'}
+                                  </p>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-medium">
+                                  {new Date(round.startedAt).toLocaleString('ko-KR')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-500">기존 방식으로 완료된 방이라 별도 회차 기록이 없습니다.</p>
+                        )}
+
+                        {roomDetails.room.hostId === userId && (
+                          <button
+                            type="button"
+                            onClick={handleRestartStage2WithSurvivingIdeas}
+                            disabled={(roomDetails.ideas || []).filter(idea =>
+                              idea.status === 'WINNER' ||
+                              (idea.status === 'ELIMINATED' && idea.eliminatedRound === undefined)
+                            ).length < 2}
+                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-black transition"
+                          >
+                            결과를 보존하고 새 재검토 회차 시작
+                          </button>
+                        )}
+                      </div>
 
                       {/* 로비 홈으로 이동 버튼 */}
                       <div className="text-center pt-4">
@@ -6473,7 +5605,7 @@ export default function App() {
                       <div className="pt-2 space-y-2">
                         <button
                           type="submit"
-                          disabled={authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim())}
+                          disabled={isAuthSubmitting || (authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim()))}
                           className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
                         >
                           {authMode === 'LOGIN' ? '로그인' : '회원가입 완료 및 복구코드 발급'}
@@ -6651,7 +5783,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Dual Link & Invitation Modal (① 참여자 전용 링크 vs ② 투표자 공개 링크) */}
+      {/* Private participant invitation modal */}
       <AnimatePresence>
         {showShareModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -6668,7 +5800,7 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="text-lg font-bold text-slate-900 leading-snug">회의실 전용 링크 공유 및 관리</h3>
-                    <p className="text-xs text-slate-400">참여자용 링크 및 2차 투표자 전용 공개 링크를 구분 발급합니다.</p>
+                    <p className="text-xs text-slate-400">초대받은 로그인 팀원만 회의실에 참여할 수 있습니다.</p>
                   </div>
                 </div>
                 <button
@@ -6732,29 +5864,6 @@ export default function App() {
                 >
                   <Copy className="w-4 h-4 text-indigo-600" />
                   <span>참여자 전용 복사 링크</span>
-                </button>
-              </div>
-
-              {/* Card 2: ② 투표자 공개 링크 */}
-              <div className="p-5 bg-slate-50 rounded-3xl border border-slate-200/80 space-y-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-900 text-white">
-                    ② 투표자 공개 링크
-                  </span>
-                  <span className="text-xs font-bold text-slate-700">MVP 기본 30명 (2차 익명 투표 전용)</span>
-                </div>
-
-                <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                  인원 제한이 완화되어 제출된 아이디어에 대해 소신 투표만 익명으로 진행하는 외부/동료 전용 공개 링크입니다.
-                </p>
-
-                <button
-                  type="button"
-                  onClick={copyVoterLink}
-                  className="w-full py-3.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-800 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-                >
-                  <Copy className="w-4 h-4 text-slate-600" />
-                  <span>투표자 전용 복사 링크</span>
                 </button>
               </div>
 
