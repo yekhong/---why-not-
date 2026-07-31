@@ -758,7 +758,7 @@ export default function App() {
           console.error('Session restore failed:', error);
           setIsLoggedIn(false);
         }
-      } font-bold
+      } finally {
         if (!cancelled) setIsSessionChecked(true);
       }
     };
@@ -958,7 +958,7 @@ export default function App() {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
       fetchInviteLandingDetails(token);
-    } font-bold {
+    } finally {
       setJoiningInvite(false);
     }
   };
