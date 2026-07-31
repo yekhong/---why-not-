@@ -6,13 +6,13 @@ import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { 
-  Room, 
-  RoomStatus, 
-  Idea, 
-  CriterionProposal, 
-  Criterion, 
-  Evaluation, 
+import {
+  Room,
+  RoomStatus,
+  Idea,
+  CriterionProposal,
+  Criterion,
+  Evaluation,
   EliminationRound,
   RoomDetails
 } from './src/types';
@@ -373,15 +373,35 @@ function enforceAuthRateLimit(req: Request, res: Response, next: NextFunction) {
 }
 
 function isMissingAuthSchemaError(error: unknown): boolean {
-  const candidate = error as { code?: unknown; message?: unknown; details?: unknown } | null;
-  const code = String(candidate?.code || '');
-  const text = `${candidate?.message || ''} ${candidate?.details || ''}`.toLowerCase();
+  const candidate = error as {
+    code?: unknown;
+    message?: unknown;
+    details?: unknown;
+    hint?: unknown;
+  } | null;
+
+  const code = String(candidate?.code || '').toUpperCase();
+  const text = [
+    candidate?.message,
+    candidate?.details,
+    candidate?.hint
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
   return (
     code === '42P01' ||
     code === 'PGRST205' ||
-    text.includes('user_accounts') ||
-    text.includes('user_sessions') ||
-    text.includes('schema cache')
+    text.includes('relation "public.user_accounts" does not exist') ||
+    text.includes('relation "public.user_sessions" does not exist') ||
+    (
+      text.includes('could not find the table') &&
+      (
+        text.includes('user_accounts') ||
+        text.includes('user_sessions')
+      )
+    )
   );
 }
 
@@ -1890,10 +1910,10 @@ app.post('/api/rooms/:id/pin', async (req: AuthenticatedRequest, res) => {
 app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   const { error } = SUPABASE_CONFIGURED
     ? await supabase
-        .from('participants')
-        .update({ hidden_at: new Date().toISOString() })
-        .eq('room_id', req.params.id)
-        .eq('user_id', req.auth!.userId)
+      .from('participants')
+      .update({ hidden_at: new Date().toISOString() })
+      .eq('room_id', req.params.id)
+      .eq('user_id', req.auth!.userId)
     : { error: null };
   if (error) return res.status(503).json({ error: '회의실 숨김 상태를 저장하지 못했습니다.' });
   return res.json({ success: true });
@@ -1902,10 +1922,10 @@ app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
 app.delete('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   const { error } = SUPABASE_CONFIGURED
     ? await supabase
-        .from('participants')
-        .update({ hidden_at: null })
-        .eq('room_id', req.params.id)
-        .eq('user_id', req.auth!.userId)
+      .from('participants')
+      .update({ hidden_at: null })
+      .eq('room_id', req.params.id)
+      .eq('user_id', req.auth!.userId)
     : { error: null };
   if (error) return res.status(503).json({ error: '회의실 숨김 상태를 해제하지 못했습니다.' });
   return res.json({ success: true });
@@ -2297,7 +2317,7 @@ app.post('/api/rooms/:id/ideas', async (req: AuthenticatedRequest, res) => {
   }
 
   roomIdeas.push(newIdea);
-  
+
   ideas.set(id, roomIdeas);
   res.status(201).json(newIdea);
 });
@@ -2577,7 +2597,7 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
  */
 app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   const { title, description, minResponseThreshold, eliminationConfig, deadlines, category, maxParticipants, targetWinnerCount } = req.body;
-  
+
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) {
     return res.status(400).json({ error: '방 제목은 1~120자로 입력해 주세요.' });
   }
@@ -2800,7 +2820,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   room.minResponseThreshold = targetThreshold;
 
   // Filter evaluations to only return the current caller's private evaluations if they want to view/edit them
-  const myEvaluations = userId 
+  const myEvaluations = userId
     ? roomEvals.filter(e => e.evaluatorId === String(userId)).map(({ evaluatorId, ...rest }) => rest as Evaluation)
     : [];
 
@@ -2913,7 +2933,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   // if threshold is met OR room is already CLOSED/ELIMINATION
   // ---------------------------------------------------------------
   const isEvaluationClosed = room.status === 'ELIMINATION' || room.status === 'CLOSED';
-  
+
   if (minResponseThresholdMet || isEvaluationClosed) {
     // 1. Calculate aggregated scores for each idea with criteria compliance weighting
     const aggregatedScores: Record<string, {
@@ -3029,7 +3049,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       // We do rephrasing asynchronously or lazily. For instant UX in seed rooms, 
       // let's run them.
       const summarized: Record<string, { objectiveComments: string[]; preferenceComments: string[] }> = {};
-      
+
       for (const idea of roomIdeas) {
         const commentsForIdea = commentMap[idea.id] || [];
         summarized[idea.id] = await aiSummarizeComments(idea.title, commentsForIdea);
@@ -3306,7 +3326,7 @@ ${description}
 app.post('/api/rooms/:id/criteria/suggest', async (req, res) => {
   const { id } = req.params;
   const room = rooms.get(id);
-  
+
   // 1단계 제출된 아이디어 목록 (클라이언트 전송 또는 서버 메모리 데이터)
   const clientIdeas = req.body?.ideas;
   const roomIdeas: Idea[] = (Array.isArray(clientIdeas) && clientIdeas.length > 0)
@@ -3373,7 +3393,7 @@ JSON 출력 예시:
               config: { responseMimeType: 'application/json' }
             });
             rawText = resp.text || '';
-          } catch (e) {}
+          } catch (e) { }
         }
       }
 
@@ -3430,13 +3450,13 @@ JSON 출력 예시:
     });
   }
   const ideaCount = roomIdeas.length;
-  
+
   // 1단계 제출된 아이디어 목록 포맷팅 (없을 경우 안내 텍스트)
-  const ideasListText = roomIdeas.length > 0 
+  const ideasListText = roomIdeas.length > 0
     ? roomIdeas.map((idea, idx) => {
-        const desc = idea.description ? idea.description.replace(/\n+/g, ' ').trim() : '';
-        return `  ${idx + 1}. ${idea.title}${desc ? `: ${desc}` : ''}`;
-      }).join('\n')
+      const desc = idea.description ? idea.description.replace(/\n+/g, ' ').trim() : '';
+      return `  ${idx + 1}. ${idea.title}${desc ? `: ${desc}` : ''}`;
+    }).join('\n')
     : '  - 등록된 아이디어 없음 (회의방 카테고리, 주제, 한 줄 설명 및 제약 조건을 반영하여 기준 생성 필요)';
 
   const prompt = `# 아이디어 평가 기준 추천 프롬프트
@@ -4254,7 +4274,7 @@ app.post('/api/rooms/:id/seed-star-votes', async (req, res) => {
 
     for (let i = 0; i < neededCount; i++) {
       const mockUserId = `mock-star-voter-${timestamp}-${i + 1}`;
-      
+
       // Pick distinct targetWinners ideas for this mock voter
       const shuffledIdeas = [...activeIdeas].sort(() => 0.5 - Math.random());
       const selectedIds = shuffledIdeas.slice(0, Math.min(targetWinners, activeIdeas.length)).map(item => item.id);
@@ -4462,8 +4482,8 @@ app.post('/api/rooms/:id/elimination/next', async (req, res) => {
     .map(e => e.reasonText!);
 
   const aiSummary = await aiSummarizeRound(
-    currentRoundNum, 
-    ideasToEliminate.map(i => i.title), 
+    currentRoundNum,
+    ideasToEliminate.map(i => i.title),
     eliminatedReasons.length > 0 ? eliminatedReasons : ['기준 평점이 다소 부족하여 소거되었습니다.']
   );
 
@@ -4540,7 +4560,7 @@ async function generateFinalRoomReport(
   roomRounds: EliminationRound[]
 ): Promise<string> {
   const winners = roomIdeas.filter(i => i.status === 'WINNER').map(i => i.title);
-  
+
   // Map eliminated info
   const evs = getCurrentMemberEvaluations(id);
   const eliminatedList = roomIdeas
@@ -4560,7 +4580,7 @@ async function generateFinalRoomReport(
   // Highlight controversial ideas (where voters are split between KEEP and EXCLUDE)
   const controversialList: string[] = [];
   const evMap: Record<string, { keep: number; exclude: number }> = {};
-  
+
   evs.forEach(e => {
     if (!evMap[e.ideaId]) evMap[e.ideaId] = { keep: 0, exclude: 0 };
     if (e.decision === 'KEEP') evMap[e.ideaId].keep += 1;
