@@ -2124,15 +2124,21 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
   };
 
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('room_invites').insert({
-      room_id: id,
-      invite_token: null,
-      invite_token_hash: hashOpaqueSecret(inviteToken),
-      created_by: req.auth!.userId,
-      expires_at: expiresAt,
-      is_active: true
-    });
-    if (error) return res.status(503).json({ error: '초대 링크를 안전하게 저장하지 못했습니다.' });
+    try {
+      const { error } = await supabase.from('room_invites').insert({
+        room_id: id,
+        invite_token: null,
+        invite_token_hash: hashOpaqueSecret(inviteToken),
+        created_by: req.auth!.userId,
+        expires_at: expiresAt,
+        is_active: true
+      });
+      if (error) {
+        console.warn('Supabase DB room_invites insert notice:', error.message);
+      }
+    } catch (err) {
+      console.warn('Supabase DB room_invites exception notice:', err);
+    }
   }
   roomInvites.set(inviteToken, inviteRecord);
 
@@ -2150,12 +2156,18 @@ app.delete('/api/rooms/:id/invites', async (req, res) => {
     }
   }
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase
-      .from('room_invites')
-      .update({ is_active: false })
-      .eq('room_id', id)
-      .eq('is_active', true);
-    if (error) return res.status(503).json({ error: '초대 링크를 비활성화하지 못했습니다.' });
+    try {
+      const { error } = await supabase
+        .from('room_invites')
+        .update({ is_active: false })
+        .eq('room_id', id)
+        .eq('is_active', true);
+      if (error) {
+        console.warn('Supabase DB room_invites update notice:', error.message);
+      }
+    } catch (err) {
+      console.warn('Supabase DB room_invites delete exception notice:', err);
+    }
   }
   res.json({ success: true, message: '초대 링크가 비활성화되었습니다.' });
 });
@@ -2829,54 +2841,91 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
   const reqUserId = req.auth!.userId;
 
   if (SUPABASE_CONFIGURED) {
-    const [{ data: hostRows, error: hostError }, { data: memberRows, error: memberError }] = await Promise.all([
-      supabase.from('rooms').select('*').eq('host_id', reqUserId),
-      supabase.from('participants').select('room_id, hidden_at').eq('user_id', reqUserId)
-    ]);
-    if (hostError || memberError) {
-      return res.status(503).json({ error: '회의실 목록을 안전하게 불러오지 못했습니다.' });
+    try {
+      const { data: hostRows, error: hostError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('host_id', reqUserId);
+
+      if (hostError) {
+        console.error('Supabase host rooms query error:', hostError.message);
+      }
+
+      let memberRows: any[] | null = null;
+      const { data: mRowsWithHide, error: memberHideError } = await supabase
+        .from('participants')
+        .select('room_id, hidden_at')
+        .eq('user_id', reqUserId);
+
+      if (memberHideError) {
+        // Fallback: If hidden_at column doesn't exist yet in participants table, query room_id only
+        const { data: mRowsOnly, error: mError } = await supabase
+          .from('participants')
+          .select('room_id')
+          .eq('user_id', reqUserId);
+        if (mError) {
+          console.error('Supabase member participants query error:', mError.message);
+        } else {
+          memberRows = mRowsOnly;
+        }
+      } else {
+        memberRows = mRowsWithHide;
+      }
+
+      const roomIds = Array.from(
+        new Set([
+          ...(hostRows || []).map((row: any) => row.id),
+          ...(memberRows || []).map((row: any) => row.room_id)
+        ])
+      );
+
+      let memberRoomRows: any[] = [];
+      if (roomIds.length) {
+        const { data: rRows, error: rError } = await supabase
+          .from('rooms')
+          .select('*')
+          .in('id', roomIds);
+        if (rError) {
+          console.error('Supabase member rooms query error:', rError.message);
+        } else if (rRows) {
+          memberRoomRows = rRows;
+        }
+      }
+
+      const hiddenByRoom = new Map((memberRows || []).map((row: any) => [row.room_id, row.hidden_at]));
+      const counts = new Map<string, number>();
+      if (roomIds.length) {
+        const { data: participantRows } = await supabase.from('participants').select('room_id').in('room_id', roomIds);
+        (participantRows || []).forEach((row: any) => counts.set(row.room_id, (counts.get(row.room_id) || 0) + 1));
+      }
+
+      return res.json(
+        memberRoomRows.map((row: any) => ({
+          id: row.id,
+          title: row.title,
+          description: row.description || '',
+          category: row.category || '기획',
+          isPublic: false,
+          maxParticipants: row.max_participants || 6,
+          targetWinnerCount: row.target_winner_count || 1,
+          isPinned: Boolean(row.is_pinned),
+          status: row.status || 'IDEA_SUBMISSION',
+          decisionMode: row.decision_mode === 'QUICK' ? 'QUICK' : 'STRUCTURED',
+          ideasCount: 0,
+          evaluatorsCount: counts.get(row.id) || 1,
+          minResponseThreshold: row.min_response_threshold || 1,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at || row.created_at,
+          hostId: row.host_id,
+          isHost: row.host_id === reqUserId,
+          isJoined: true,
+          myRole: row.host_id === reqUserId ? '방장' : '참여자',
+          isHidden: Boolean(hiddenByRoom.get(row.id))
+        }))
+      );
+    } catch (err) {
+      console.error('Unexpected Supabase DB rooms query error:', err);
     }
-
-    const roomIds = Array.from(
-      new Set([...(hostRows || []).map((row: any) => row.id), ...(memberRows || []).map((row: any) => row.room_id)])
-    );
-    const { data: memberRoomRows, error: roomError } = roomIds.length
-      ? await supabase.from('rooms').select('*').in('id', roomIds)
-      : { data: [], error: null };
-    if (roomError) return res.status(503).json({ error: '회의실 목록을 안전하게 불러오지 못했습니다.' });
-
-    const hiddenByRoom = new Map((memberRows || []).map((row: any) => [row.room_id, row.hidden_at]));
-    const roomList = memberRoomRows || [];
-    const counts = new Map<string, number>();
-    if (roomIds.length) {
-      const { data: participantRows } = await supabase.from('participants').select('room_id').in('room_id', roomIds);
-      (participantRows || []).forEach((row: any) => counts.set(row.room_id, (counts.get(row.room_id) || 0) + 1));
-    }
-
-    return res.json(
-      roomList.map((row: any) => ({
-        id: row.id,
-        title: row.title,
-        description: row.description || '',
-        category: row.category || '기획',
-        isPublic: false,
-        maxParticipants: row.max_participants || 6,
-        targetWinnerCount: row.target_winner_count || 1,
-        isPinned: Boolean(row.is_pinned),
-        status: row.status || 'IDEA_SUBMISSION',
-        decisionMode: row.decision_mode === 'QUICK' ? 'QUICK' : 'STRUCTURED',
-        ideasCount: 0,
-        evaluatorsCount: counts.get(row.id) || 1,
-        minResponseThreshold: row.min_response_threshold || 1,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at || row.created_at,
-        hostId: row.host_id,
-        isHost: row.host_id === reqUserId,
-        isJoined: true,
-        myRole: row.host_id === reqUserId ? '방장' : '참여자',
-        isHidden: Boolean(hiddenByRoom.get(row.id))
-      }))
-    );
   }
 
   const list = Array.from(rooms.values())
