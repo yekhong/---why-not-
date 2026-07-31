@@ -1,0 +1,20 @@
+WhyNot phase 2 persona-first patch
+
+Replace/add these files in the Antigravity IDE local project:
+
+server.ts
+src/App.tsx
+src/types.ts
+supabase_migration_phase2_persona_forward.sql
+supabase_migration_phase2_persona_rollback.sql
+ANTIGRAVITY_PHASE2_HANDOFF.md
+WHYNOT_THREE_STAGE_IMPLEMENTATION.md
+
+Do not copy:
+.env
+.env.local
+node_modules
+dist
+
+Status:
+Code written. Build/lint/browser/database migration verification intentionally deferred by user request.

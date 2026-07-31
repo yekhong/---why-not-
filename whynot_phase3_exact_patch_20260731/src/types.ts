@@ -9,6 +9,9 @@ export type RoomStatus =
   | 'EVALUATION_ROUND_2'
   | 'CLOSED';
 
+export type DecisionMode = 'STRUCTURED' | 'QUICK';
+export type FinalVoteStatus = 'NOT_STARTED' | 'VOTING' | 'TIE_PENDING' | 'FINALIZED';
+
 export interface EliminationConfig {
   countPerRound: number;
   ratioPerRound?: number;
@@ -37,6 +40,12 @@ export interface Room {
   deadlines: Deadlines;
   createdAt: string;
   engineVersion?: number;
+  decisionMode?: DecisionMode;
+  finalVoteStatus?: FinalVoteStatus;
+  tieCandidateIdeaIds?: string[];
+  tieSlots?: number;
+  currentRoundId?: string;
+  criteriaSetVersion?: number;
 }
 
 export interface Idea {
@@ -84,6 +93,7 @@ export interface Evaluation {
   reasonText?: string;
   reasonType?: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   round: number;
+  roundId?: string;
 }
 
 export type CriteriaEvaluationValue = 'MET' | 'PARTIAL' | 'NOT_MET' | 'UNSURE';
@@ -107,6 +117,7 @@ export interface CriteriaSetApprovalSummary {
   requiredApproveCount: number;
   myVote?: 'APPROVE' | 'REVISE';
   approved: boolean;
+  needsRevision?: boolean;
 }
 
 export interface EliminationRound {
@@ -115,6 +126,27 @@ export interface EliminationRound {
   roundNumber: number;
   eliminatedIdeaIds: string[];
   aiSummaryText: string;
+}
+
+export interface DecisionRound {
+  id: string;
+  roomId: string;
+  roundNumber: number;
+  decisionMode: DecisionMode;
+  status: 'ACTIVE' | 'COMPLETED';
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface DecisionReport {
+  reportText: string;
+  selectedReasons: string[];
+  majorConcerns: string[];
+  unverifiedAssumptions: string[];
+  nextValidationTasks: string[];
+  modelName: string;
+  promptVersion: string;
+  generatedAt: string;
 }
 
 export interface Participant {
@@ -146,6 +178,7 @@ export interface RoomDetails {
   criteriaApproval?: CriteriaSetApprovalSummary;
   participants?: Participant[];
   rounds: EliminationRound[];
+  decisionRounds?: DecisionRound[];
   evaluatorsCount: number;
   myEvaluations?: Evaluation[];
   hasEvaluated: boolean;
@@ -157,11 +190,15 @@ export interface RoomDetails {
     objectiveConstraintPenalty: number;
   };
   aiFinalSummary?: string;
+  decisionReport?: DecisionReport;
   starVotes?: Record<string, number>; // ideaId -> total star votes count
   myStarVotes?: string[]; // array of selected ideaIds for current user
   isStarVoteSubmitted?: boolean;
   starVoteCount?: number;
   starVoteStatus?: 'voting' | 'tie_pending' | 'finalized';
+  tieCandidateIdeaIds?: string[];
+  tieSlots?: number;
+  finalVoteExpectedCount?: number;
   // If threshold is met, we might send aggregated scores or AI-rephrased comments:
   aggregatedScores?: Record<string, AggregatedScore>;
   aiSummarizedComments?: Record<string, {
