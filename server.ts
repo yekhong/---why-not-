@@ -1915,7 +1915,7 @@ function mapRoomRow(row: any): Room {
     deadlines: row.deadlines || {},
     createdAt: row.created_at || new Date().toISOString(),
     engineVersion: Number(row.engine_version || 1),
-    decisionMode: row.decision_mode === 'QUICK' ? 'QUICK' : 'STRUCTURED',
+    decisionMode: (row.decision_mode === 'QUICK' || rooms.get(row.id)?.decisionMode === 'QUICK') ? 'QUICK' : 'STRUCTURED',
     finalVoteStatus,
     tieCandidateIdeaIds: Array.isArray(row.tie_candidate_idea_ids) ? row.tie_candidate_idea_ids : [],
     tieSlots: Number(row.tie_slots || 0),
@@ -2453,6 +2453,53 @@ app.post('/api/rooms/:id/status', async (req, res) => {
   }
   rooms.set(id, room);
   res.json({ success: true, status: room.status });
+});
+
+/**
+ * Fast-Track Quick Decision Room: Transition directly from IDEA_SUBMISSION to Anonymous Voting Phase (FINAL_VOTE / ELIMINATION)
+ */
+app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, res) => {
+  const { id } = req.params;
+  const room = await hydrateRoomFromSupabase(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  const activeIdeas = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
+  if (activeIdeas.length < 2) {
+    return res.status(400).json({ error: '투표를 시작하려면 최소 2개 이상의 선택지(아이디어)가 등록되어야 합니다.' });
+  }
+
+  const targetStatus: RoomStatus = 'ELIMINATION';
+  room.status = targetStatus;
+  room.finalVoteStatus = 'VOTING';
+  room.tieCandidateIdeaIds = [];
+  room.tieSlots = 0;
+
+  if (SUPABASE_CONFIGURED) {
+    const { error } = await supabase
+      .from('rooms')
+      .update({
+        status: targetStatus,
+        final_vote_status: 'VOTING',
+        tie_candidate_idea_ids: [],
+        tie_slots: 0
+      })
+      .eq('id', id);
+    if (error) {
+      console.warn('Supabase quick/start-vote status update notice:', error.message);
+    }
+  }
+
+  rooms.set(id, room);
+  const round = await ensureDecisionRound(room, activeIdeas);
+  await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${round.id}`);
+
+  res.json({
+    success: true,
+    status: room.status,
+    message: '빠른 결정 익명 투표 단계가 시작되었습니다.'
+  });
 });
 
 /**
@@ -3026,7 +3073,7 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   };
 
   if (SUPABASE_CONFIGURED) {
-    const { error: roomError } = await supabase.from('rooms').insert({
+    const roomInsertObj: Record<string, any> = {
       id: newId,
       title: newRoom.title,
       description: newRoom.description,
@@ -3039,8 +3086,16 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
       status: newRoom.status,
       min_response_threshold: newRoom.minResponseThreshold,
       elimination_config: newRoom.eliminationConfig,
-      deadlines: newRoom.deadlines
-    });
+      deadlines: newRoom.deadlines,
+      decision_mode: newRoom.decisionMode
+    };
+
+    let { error: roomError } = await supabase.from('rooms').insert(roomInsertObj);
+    if (roomError && roomError.message && roomError.message.includes('decision_mode')) {
+      delete roomInsertObj.decision_mode;
+      const retry = await supabase.from('rooms').insert(roomInsertObj);
+      roomError = retry.error;
+    }
     if (roomError) {
       console.error('Supabase DB room insert error:', roomError.message);
       return res.status(503).json({ error: '회의실을 DB에 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
