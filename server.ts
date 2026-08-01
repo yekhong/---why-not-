@@ -3317,7 +3317,8 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   const allCompletedUsers = new Set<string>([...ideaCompletedSet, ...uniqueSubmitters]);
   const completedParticipantsCount = allCompletedUsers.size;
   const participantCount = Math.max(1, roomParticipants?.size || 1);
-  const ideasRevealed = room.status !== 'IDEA_SUBMISSION';
+  const ideasRevealed =
+    room.status !== 'IDEA_SUBMISSION' || completedParticipantsCount >= participantCount;
   const visibleIdeas = (ideasRevealed
     ? roomIdeas
     : roomIdeas.filter(idea => idea.submitterId === userId)

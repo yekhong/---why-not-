@@ -4092,38 +4092,31 @@ export default function App() {
                           </div>
                         )}
 
-                        {(() => {
-                          const myIdeas = (roomDetails.ideas || []).filter(idea =>
-                            Boolean((idea.submitterId && userId && idea.submitterId === userId) || idea.submitterName === '내 아이디어')
-                          );
+                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                          <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                            제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
+                          </h2>
+                          <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                            🔒 100% 익명 보장
+                          </span>
+                        </div>
 
-                          return (
-                            <>
-                              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                                <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                                  내 아이디어 목록 ({myIdeas.length}개)
-                                </h2>
-                                <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
-                                  🔒 타 참여자에게 작성 전 비공개 (100% 익명)
-                                </span>
-                              </div>
-
-                              {/* Empty State Prompt */}
-                              {myIdeas.length === 0 ? (
-                                <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
-                                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
-                                    💡
-                                  </div>
-                                  <h3 className="text-base font-bold text-slate-900">아직 등록한 내 아이디어가 없습니다!</h3>
-                                  <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-                                    우측 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. 다른 사람의 생각에 영향을 주지 않도록 등록 중에는 내 아이디어만 보입니다.
-                                  </p>
-                                </div>
-                              ) : (
-                                <div className="space-y-4">
-                                  {myIdeas.map((idea, idx) => {
-                                    const isMyIdea = true;
-                                    const isEditingThis = editingIdeaId === idea.id;
+                        {/* Empty State Prompt */}
+                        {(roomDetails.ideas || []).length === 0 ? (
+                          <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
+                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
+                              💡
+                            </div>
+                            <h3 className="text-base font-bold text-slate-900">아직 등록된 아이디어가 없습니다!</h3>
+                            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                              우측의 등록 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. (참여자당 1개~최대 5개 등록 가능)
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {roomDetails.ideas.map((idea, idx) => {
+                              const isMyIdea = Boolean(idea.submitterId && userId && idea.submitterId === userId);
+                              const isEditingThis = editingIdeaId === idea.id;
 
                               if (isEditingThis) {
                                 return (
@@ -4298,14 +4291,12 @@ export default function App() {
                                       )}
                                     </div>
                                   )}
-                                );
-                              })}
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
+                                </motion.div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
 
                       {/* Right: Submission Form & Admin Gate */}
                       <div className="lg:col-span-5 space-y-6">
