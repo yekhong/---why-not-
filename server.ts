@@ -2456,52 +2456,6 @@ app.post('/api/rooms/:id/status', async (req, res) => {
   res.json({ success: true, status: room.status });
 });
 
-/**
- * Fast-Track Quick Decision Room: Transition directly from IDEA_SUBMISSION to Anonymous Voting Phase (FINAL_VOTE / ELIMINATION)
- */
-app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, res) => {
-  const { id } = req.params;
-  const room = await hydrateRoomFromSupabase(id);
-  if (!room) {
-    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
-  }
-
-  const activeIdeas = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
-  if (activeIdeas.length < 2) {
-    return res.status(400).json({ error: '투표를 시작하려면 최소 2개 이상의 선택지(아이디어)가 등록되어야 합니다.' });
-  }
-
-  const targetStatus: RoomStatus = 'ELIMINATION';
-  room.status = targetStatus;
-  room.finalVoteStatus = 'VOTING';
-  room.tieCandidateIdeaIds = [];
-  room.tieSlots = 0;
-
-  if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase
-      .from('rooms')
-      .update({
-        status: targetStatus,
-        final_vote_status: 'VOTING',
-        tie_candidate_idea_ids: [],
-        tie_slots: 0
-      })
-      .eq('id', id);
-    if (error) {
-      console.warn('Supabase quick/start-vote status update notice:', error.message);
-    }
-  }
-
-  rooms.set(id, room);
-  const round = await ensureDecisionRound(room, activeIdeas);
-  await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${round.id}`);
-
-  res.json({
-    success: true,
-    status: room.status,
-    message: '빠른 결정 익명 투표 단계가 시작되었습니다.'
-  });
-});
 
 /**
  * 5. Submit an Idea (Public)
@@ -4685,17 +4639,33 @@ app.post('/api/rooms/:id/seed-evaluations', (req, res) => {
 
 async function persistFinalVoteRoomState(room: Room): Promise<void> {
   if (!SUPABASE_CONFIGURED) return;
-  const { error } = await supabase
-    .from('rooms')
-    .update({
-      status: room.status,
-      final_vote_status: room.finalVoteStatus,
-      tie_candidate_idea_ids: room.tieCandidateIdeaIds || [],
-      tie_slots: room.tieSlots || 0,
-      current_round_id: room.currentRoundId || null
-    })
-    .eq('id', room.id);
-  if (error) throw new Error('최종 투표 상태를 저장하지 못했습니다.');
+  try {
+    let { error } = await supabase
+      .from('rooms')
+      .update({
+        status: room.status,
+        final_vote_status: room.finalVoteStatus,
+        tie_candidate_idea_ids: room.tieCandidateIdeaIds || [],
+        tie_slots: room.tieSlots || 0,
+        current_round_id: room.currentRoundId || null
+      })
+      .eq('id', room.id);
+
+    if (error) {
+      console.warn('Supabase persistFinalVoteRoomState detailed update failed, retrying with status update:', error.message);
+      const retry = await supabase
+        .from('rooms')
+        .update({
+          status: room.status
+        })
+        .eq('id', room.id);
+      if (retry.error) {
+        console.error('Supabase persistFinalVoteRoomState retry error:', retry.error.message);
+      }
+    }
+  } catch (err) {
+    console.error('Supabase persistFinalVoteRoomState exception:', err);
+  }
 }
 
 async function finalizeDecisionWinners(
@@ -4745,9 +4715,11 @@ app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, re
     const { id } = req.params;
     const room = await hydrateRoomFromSupabase(id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
-    if (room.decisionMode !== 'QUICK') {
+    const isQuickMode = room.decisionMode === 'QUICK' || roomDecisionModesMap.get(id) === 'QUICK';
+    if (!isQuickMode) {
       return res.status(409).json({ error: '빠른 결정 방에서만 사용할 수 있습니다.' });
     }
+    room.decisionMode = 'QUICK';
     if (room.status !== 'IDEA_SUBMISSION') {
       return res.status(409).json({ error: '현재 단계에서는 익명 투표를 시작할 수 없습니다.' });
     }

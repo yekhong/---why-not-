@@ -1448,6 +1448,7 @@ export default function App() {
     setFetchRoomError(false);
     setIsReEditingEvaluation(false);
     setShowIdeaSubmissionGate(false);
+    localStorage.removeItem(`why_not_idea_step_gate_${id}`);
     localStorage.setItem('why_not_active_room_id', id);
     const nick = customNickname || currentSavedNickname || nickname;
     if (nick && nick !== nickname) setNickname(nick);
@@ -3900,7 +3901,9 @@ export default function App() {
                           );
 
                           const ideasCountMet = (roomDetails.ideas || []).length >= 2;
-                          const participantQuorumMet = ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1);
+                          const participantQuorumMet = roomDetails.room.decisionMode === 'QUICK'
+                            ? (ideaCompletedCount >= (roomDetails.participants || []).length && ideaCompletedCount > 0)
+                            : (ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1));
                           const isIdeaGateMinMet = ideasCountMet && participantQuorumMet;
 
                           return (
