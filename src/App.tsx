@@ -1189,10 +1189,15 @@ export default function App() {
             }
           });
 
+          const incomingCriteria = (data.criteria && data.criteria.length > 0)
+            ? data.criteria
+            : (prev && prev.room.id === data.room.id && prev.criteria && prev.criteria.length > 0 ? prev.criteria : []);
+
           // If previous roomDetails exists and incoming status is invalid/missing, preserve previous valid status
           if (prev && prev.room.id === data.room.id && (!data.room || !data.room.status)) {
             return {
               ...data,
+              criteria: incomingCriteria,
               proposals: combined,
               proposalsCount: combined.length,
               room: {
@@ -1203,13 +1208,19 @@ export default function App() {
           }
           return {
             ...data,
+            criteria: incomingCriteria,
             proposals: combined,
             proposalsCount: combined.length
           };
         });
 
         if (data?.room?.status === 'CRITERIA_REVIEW') {
-          setEditableCriteria(data.criteria || []);
+          const validCriteriaList = (data.criteria && data.criteria.length > 0)
+            ? data.criteria
+            : (editableCriteria.length > 0 ? editableCriteria : []);
+          if (validCriteriaList.length > 0) {
+            setEditableCriteria(validCriteriaList);
+          }
         }
         const isWinnerState = data?.room?.status === 'CLOSED';
         if (isWinnerState && !hasShownWinnerModalRef.current.has(data.room.id)) {

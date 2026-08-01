@@ -86,8 +86,13 @@ CREATE TABLE IF NOT EXISTS public.criteria (
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
     weight NUMERIC DEFAULT 1.0,
+    confirmed BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.criteria
+  ADD COLUMN IF NOT EXISTS confirmed BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS weight NUMERIC DEFAULT 1.0;
 
 -- Criterion Proposals Table
 CREATE TABLE IF NOT EXISTS public.criterion_proposals (
