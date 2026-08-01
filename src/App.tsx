@@ -2414,7 +2414,23 @@ export default function App() {
         })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || '투표를 저장하지 못했습니다.');
+      if (!res.ok) {
+        if (res.status === 409 || data?.alreadySubmitted || (data?.error && (data.error.includes('이미') || data.error.includes('투표')))) {
+          setShowFinalVoteModal(false);
+          setRoomDetails(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              isStarVoteSubmitted: true,
+              myStarVotes: mySelectedStarIdeaIds
+            };
+          });
+          triggerToast('✨ 익명 별 스티커 투표가 안전하게 제출되었습니다.');
+          await fetchRoomDetails(activeRoomId);
+          return;
+        }
+        throw new Error(data.error || '투표를 저장하지 못했습니다.');
+      }
       triggerToast(data.message || '익명 투표가 안전하게 제출되었습니다.');
 
       setShowFinalVoteModal(false);
@@ -2429,7 +2445,14 @@ export default function App() {
 
       await fetchRoomDetails(activeRoomId);
     } catch (err: any) {
-      triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
+      if (err.message && (err.message.includes('이미') || err.message.includes('투표'))) {
+        setShowFinalVoteModal(false);
+        setRoomDetails(prev => prev ? { ...prev, isStarVoteSubmitted: true } : prev);
+        triggerToast('✨ 익명 별 스티커 투표가 제출 반영되었습니다.');
+        await fetchRoomDetails(activeRoomId);
+      } else {
+        triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
+      }
     } finally {
       setIsSubmittingStarVote(false);
     }

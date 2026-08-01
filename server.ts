@@ -4906,16 +4906,26 @@ app.post('/api/rooms/:id/star-vote', async (req: AuthenticatedRequest, res) => {
     if (!room) {
       return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
     }
-    if (room.status !== 'ELIMINATION' || (room.finalVoteStatus && room.finalVoteStatus !== 'VOTING')) {
-      return res.status(409).json({ error: '현재는 최종 익명 투표 단계가 아닙니다.' });
+    if (room.status !== 'ELIMINATION' && room.status !== 'CLOSED') {
+      return res.status(400).json({ error: '현재는 최종 익명 투표 단계가 아닙니다.' });
     }
-    if (!room.finalVoteStatus) room.finalVoteStatus = 'VOTING';
     if (!Array.isArray(selectedIdeaIds)) {
       return res.status(400).json({ error: '올바르지 않은 투표 정보입니다.' });
     }
-
     const targetWinners = room.targetWinnerCount || 1;
     const uniqueSelectedIds = Array.from(new Set(selectedIdeaIds.map(String)));
+
+    if (room.status === 'CLOSED' || (room.finalVoteStatus && room.finalVoteStatus !== 'VOTING')) {
+      const transitionResult = await checkAndAutoTransitionStarVotes(id);
+      return res.json({
+        success: true,
+        count: uniqueSelectedIds.length,
+        alreadySubmitted: true,
+        message: '이미 투표 집계가 시작되거나 최종 완료되었습니다.',
+        ...transitionResult
+      });
+    }
+    if (!room.finalVoteStatus) room.finalVoteStatus = 'VOTING';
     if (uniqueSelectedIds.length !== targetWinners) {
       return res.status(400).json({ error: `별 스티커 ${targetWinners}개를 모두 사용해 주세요.` });
     }
@@ -4927,7 +4937,11 @@ app.post('/api/rooms/:id/star-vote', async (req: AuthenticatedRequest, res) => {
     const round = await ensureDecisionRound(room, (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE'));
     const eligibleVoters = await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${round.id}`);
     if (!eligibleVoters.has(userId)) {
-      return res.status(403).json({ error: '투표 시작 시 확정된 참여자만 투표할 수 있습니다.' });
+      if (await isRoomMember(id, userId)) {
+        eligibleVoters.add(userId);
+      } else {
+        return res.status(403).json({ error: '투표 시작 시 확정된 참여자만 투표할 수 있습니다.' });
+      }
     }
 
     let rStarVotes = starVotesMap.get(id);
@@ -4936,7 +4950,14 @@ app.post('/api/rooms/:id/star-vote', async (req: AuthenticatedRequest, res) => {
       starVotesMap.set(id, rStarVotes);
     }
     if (rStarVotes.has(userId)) {
-      return res.status(409).json({ error: '이미 제출한 최종 투표는 다른 사람의 판단을 보호하기 위해 수정할 수 없습니다.' });
+      const transitionResult = await checkAndAutoTransitionStarVotes(id);
+      return res.json({
+        success: true,
+        count: (rStarVotes.get(userId) || []).length,
+        alreadySubmitted: true,
+        message: '이미 별 스티커 투표 제출이 안전하게 반영되었습니다.',
+        ...transitionResult
+      });
     }
     if (SUPABASE_CONFIGURED) {
       const { error } = await supabase.from('decision_votes').insert({
@@ -4947,7 +4968,17 @@ app.post('/api/rooms/:id/star-vote', async (req: AuthenticatedRequest, res) => {
         selected_idea_ids: uniqueSelectedIds
       });
       if (error) {
-        if (error.code === '23505') return res.status(409).json({ error: '이미 최종 투표를 제출했습니다.' });
+        if (error.code === '23505') {
+          rStarVotes.set(userId, uniqueSelectedIds);
+          const transitionResult = await checkAndAutoTransitionStarVotes(id);
+          return res.json({
+            success: true,
+            count: uniqueSelectedIds.length,
+            alreadySubmitted: true,
+            message: '이미 별 스티커 투표가 저장되어 반영되었습니다.',
+            ...transitionResult
+          });
+        }
         return res.status(503).json({ error: '최종 투표를 안전하게 저장하지 못했습니다.' });
       }
     }
