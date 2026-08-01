@@ -97,7 +97,7 @@ function SafeMarkdown({ content }: { content: string }) {
   );
 }
 
-import { getSingleExamplePlaceholder } from './prompts/roomPlaceholderPrompt';
+import { getSingleExamplePlaceholder, getCriteriaPlaceholder, getIdeaTitlePlaceholder, getIdeaDescPlaceholder } from './prompts/roomPlaceholderPrompt';
 
 export default function App() {
   // ----------------------------------------------------------------
@@ -484,14 +484,23 @@ export default function App() {
     }
   };
 
-  // Automatically open voting modal for participants when voting is active
+  // Automatically open voting modal for participants when voting is active and they haven't voted yet
   useEffect(() => {
-    const isVotingActive = (roomDetails?.room?.status === 'FINAL_VOTE' || roomDetails?.room?.status === 'ELIMINATION') &&
-      (roomDetails?.room?.finalVoteStatus === 'VOTING' || roomDetails?.room?.decisionMode === 'QUICK');
-    if (isVotingActive && !roomDetails?.isStarVoteSubmitted) {
+    if (!roomDetails) return;
+    const targetWinners = roomDetails.room?.targetWinnerCount || 1;
+    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+    const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+    const isSubmitted = Boolean(
+      roomDetails.isStarVoteSubmitted ||
+      validMyStarVotes.length >= targetWinners
+    );
+    const isVotingActive = (roomDetails.room?.status === 'FINAL_VOTE' || roomDetails.room?.status === 'ELIMINATION') &&
+      (roomDetails.room?.finalVoteStatus === 'VOTING' || roomDetails.room?.decisionMode === 'QUICK');
+
+    if (isVotingActive && !isSubmitted) {
       setShowFinalVoteModal(true);
     }
-  }, [roomDetails?.room?.status, roomDetails?.room?.finalVoteStatus, roomDetails?.room?.decisionMode, roomDetails?.isStarVoteSubmitted]);
+  }, [roomDetails?.room?.status, roomDetails?.room?.finalVoteStatus, roomDetails?.room?.decisionMode, roomDetails?.isStarVoteSubmitted, roomDetails?.myStarVotes?.length]);
 
   // 4단계 수동 소거 확인 팝업 modal state
   const [pendingEliminationIdea, setPendingEliminationIdea] = useState<Idea | null>(null);
@@ -1425,7 +1434,7 @@ export default function App() {
       const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: nextStatus })
+        body: JSON.stringify({ status: nextStatus, isForce: true })
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -1957,12 +1966,14 @@ export default function App() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || 'AI 보완안을 만들지 못했습니다.');
-      setIdeaAiSuggestion({
-        originalDescription: data.originalDescription || ideaDesc,
-        revisedDescription: data.revisedDescription || data.enhancedDescription || ideaDesc,
-        reviewQuestions: Array.isArray(data.reviewQuestions) ? data.reviewQuestions.slice(0, 3) : [],
-        aiAvailable: data.aiAvailable !== false
-      });
+      const newDesc = data.revisedDescription || data.enhancedDescription || ideaDesc;
+      if (newDesc && newDesc.trim() !== ideaDesc.trim()) {
+        setIdeaDesc(newDesc);
+        triggerToast('✨ AI 표현 보완 내용이 본문에 자동 적용되었습니다!');
+      } else {
+        triggerToast('이미 문맥이 깔끔하게 정리되어 원문이 유지되었습니다.');
+      }
+      setIdeaAiSuggestion(null);
     } catch (error) {
       triggerToast(error instanceof Error ? error.message : 'AI 보완안을 만들지 못했습니다.', 'error');
     } finally {
@@ -2360,12 +2371,9 @@ export default function App() {
     if (!roomDetails) return;
 
     const targetWinners = roomDetails.room.targetWinnerCount || 1;
-    const activeIdeaIds = (roomDetails.ideas || []).filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
     const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-    const isSubmittedByMe = Boolean(
-      (roomDetails.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
-      validMyStarVotes.length >= targetWinners
-    );
+    const isSubmittedByMe = Boolean(validMyStarVotes.length >= targetWinners);
 
     if (isSubmittedByMe) {
       triggerToast('이미 4단계 2차 투표를 제출하셨습니다.', 'error');
@@ -2408,6 +2416,17 @@ export default function App() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || '투표를 저장하지 못했습니다.');
       triggerToast(data.message || '익명 투표가 안전하게 제출되었습니다.');
+
+      setShowFinalVoteModal(false);
+      setRoomDetails(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          isStarVoteSubmitted: true,
+          myStarVotes: mySelectedStarIdeaIds
+        };
+      });
+
       await fetchRoomDetails(activeRoomId);
     } catch (err: any) {
       triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
@@ -3212,12 +3231,63 @@ export default function App() {
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
-                        if (!inputJoinCode.trim()) {
-                          triggerToast('초대 코드를 입력해 주세요.', 'error');
+                        const rawInput = inputJoinCode.trim();
+                        if (!rawInput) {
+                          triggerToast('초대 코드 또는 링크를 입력해 주세요.', 'error');
                           return;
                         }
-                        const targetId = inputJoinCode.trim().replace('http://', '').replace('https://', '').split('/').pop() || inputJoinCode.trim();
-                        handleSelectRoom(targetId);
+
+                        let targetRoomId: string | undefined;
+                        let targetInviteToken: string | undefined;
+
+                        try {
+                          let urlString = rawInput;
+                          if (!rawInput.startsWith('http://') && !rawInput.startsWith('https://')) {
+                            urlString = `http://${rawInput}`;
+                          }
+                          const url = new URL(urlString);
+                          const roomParam = url.searchParams.get('room');
+                          if (roomParam) {
+                            targetRoomId = roomParam.trim();
+                          } else {
+                            const pathParts = url.pathname.split('/').filter(Boolean);
+                            if (pathParts.length >= 2 && pathParts[0] === 'invite') {
+                              targetInviteToken = pathParts[1].trim();
+                            } else if (pathParts.length >= 2 && (pathParts[0] === 'room' || pathParts[0] === 'rooms')) {
+                              targetRoomId = pathParts[1].trim();
+                            } else if (pathParts.length === 1 && pathParts[0].startsWith('room-')) {
+                              targetRoomId = pathParts[0].trim();
+                            }
+                          }
+                        } catch (err) {
+                          // Ignore URL parse error, proceed to fallback inspection
+                        }
+
+                        if (!targetRoomId && !targetInviteToken) {
+                          if (rawInput.includes('?room=')) {
+                            const match = rawInput.match(/[?&]room=([^&]+)/);
+                            if (match && match[1]) targetRoomId = match[1].trim();
+                          } else if (rawInput.includes('/invite/')) {
+                            const parts = rawInput.split('/invite/');
+                            if (parts[1]) targetInviteToken = parts[1].split('/')[0].split('?')[0].trim();
+                          } else if (rawInput.startsWith('invite-') || rawInput.startsWith('inv-')) {
+                            targetInviteToken = rawInput;
+                          } else {
+                            targetRoomId = rawInput;
+                          }
+                        }
+
+                        if (targetInviteToken) {
+                          setLandingInviteToken(targetInviteToken);
+                          fetchInviteLandingDetails(targetInviteToken);
+                          triggerToast('초대 링크 정보를 확인하여 회의실로 연결합니다...');
+                        } else if (targetRoomId) {
+                          handleSelectRoom(targetRoomId);
+                        } else {
+                          triggerToast('유효하지 않은 회의실 코드 또는 링크입니다.', 'error');
+                          return;
+                        }
+
                         setIsJoinCodeModalOpen(false);
                         setInputJoinCode('');
                       }}
@@ -3723,15 +3793,21 @@ export default function App() {
                 </div>
                 <div className="space-y-1">
                   <h3 className="text-base font-extrabold text-slate-900">회의 정보를 불러오지 못했습니다.</h3>
-                  <p className="text-xs text-slate-500">기존 데이터는 유지되어 있습니다. 다시 시도해 주세요.</p>
+                  <p className="text-xs text-slate-500">세션이 만료되었거나 회의실 정보 동기화에 실패했습니다.</p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => activeRoomId && fetchRoomDetails(activeRoomId)}
+                  onClick={() => {
+                    if (!isLoggedIn) {
+                      setShowLoginModal(true);
+                    } else if (activeRoomId) {
+                      fetchRoomDetails(activeRoomId);
+                    }
+                  }}
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  <span>다시 시도</span>
+                  <span>{isLoggedIn ? '다시 시도' : '로그인 후 시도'}</span>
                 </button>
               </div>
             )}
@@ -3998,31 +4074,56 @@ export default function App() {
 
                       {/* Left: Ideas List (Anonymous Labels) */}
                       <div className="lg:col-span-7 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                          <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
-                            제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
-                          </h2>
-                          <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
-                            🔒 100% 익명 보장
-                          </span>
-                        </div>
-
-                        {/* Empty State Prompt */}
-                        {(roomDetails.ideas || []).length === 0 ? (
-                          <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
-                            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
-                              💡
+                        {/* Host stage 2 trigger banner when ideas >= 2 */}
+                        {roomDetails.room.hostId === userId && (roomDetails.ideas || []).length >= 2 && (
+                          <div className="bg-gradient-to-r from-amber-400 to-amber-300 text-slate-950 p-4 rounded-2xl shadow-xs flex flex-wrap items-center justify-between gap-3 border border-amber-300">
+                            <div className="flex items-center gap-2 text-xs font-black">
+                              <Sparkles className="w-4 h-4 text-slate-950 shrink-0" />
+                              <span>등록 완료 현황: 모든 선택지(아이디어 {(roomDetails.ideas || []).length}개) 등록이 준비되었습니다!</span>
                             </div>
-                            <h3 className="text-base font-bold text-slate-900">아직 등록된 아이디어가 없습니다!</h3>
-                            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
-                              우측의 등록 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. (참여자당 1개~최대 5개 등록 가능)
-                            </p>
+                            <button
+                              type="button"
+                              onClick={handleConfirmIdeaGateToStage2}
+                              className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-amber-400 rounded-xl text-xs font-black transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <span>{roomDetails.room.decisionMode === 'QUICK' ? '2단계: 익명 투표 시작하기' : '2단계 진행하기'}</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
                           </div>
-                        ) : (
-                          <div className="space-y-4">
-                            {roomDetails.ideas.map((idea, idx) => {
-                              const isMyIdea = Boolean(idea.submitterId && userId && idea.submitterId === userId);
-                              const isEditingThis = editingIdeaId === idea.id;
+                        )}
+
+                        {(() => {
+                          const myIdeas = (roomDetails.ideas || []).filter(idea =>
+                            Boolean((idea.submitterId && userId && idea.submitterId === userId) || idea.submitterName === '내 아이디어')
+                          );
+
+                          return (
+                            <>
+                              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                                <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+                                  내 아이디어 목록 ({myIdeas.length}개)
+                                </h2>
+                                <span className="text-xs text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                                  🔒 타 참여자에게 작성 전 비공개 (100% 익명)
+                                </span>
+                              </div>
+
+                              {/* Empty State Prompt */}
+                              {myIdeas.length === 0 ? (
+                                <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-indigo-200 p-8 space-y-3">
+                                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto text-xl font-bold">
+                                    💡
+                                  </div>
+                                  <h3 className="text-base font-bold text-slate-900">아직 등록한 내 아이디어가 없습니다!</h3>
+                                  <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+                                    우측 양식을 사용하여 팀을 위한 첫 번째 아이디어를 익명으로 발제해 보세요. 다른 사람의 생각에 영향을 주지 않도록 등록 중에는 내 아이디어만 보입니다.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  {myIdeas.map((idea, idx) => {
+                                    const isMyIdea = true;
+                                    const isEditingThis = editingIdeaId === idea.id;
 
                               if (isEditingThis) {
                                 return (
@@ -4197,12 +4298,14 @@ export default function App() {
                                       )}
                                     </div>
                                   )}
-                                </motion.div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
 
                       {/* Right: Submission Form & Admin Gate */}
                       <div className="lg:col-span-5 space-y-6">
@@ -4224,7 +4327,7 @@ export default function App() {
                                 required
                                 value={ideaTitle}
                                 onChange={e => setIdeaTitle(e.target.value)}
-                                placeholder="예: 숏폼 영상 제작 가요 챌린지"
+                                placeholder={getIdeaTitlePlaceholder(roomDetails?.room.title, roomDetails?.room.category)}
                                 className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                               />
                             </div>
@@ -4246,7 +4349,7 @@ export default function App() {
                                 required
                                 value={ideaDesc}
                                 onChange={e => setIdeaDesc(e.target.value)}
-                                placeholder="아이디어의 핵심 프로세스, 기대 효과, 팀이 준비해야 하는 범위를 상세하게 작성하십시오."
+                                placeholder={getIdeaDescPlaceholder(roomDetails?.room.title, roomDetails?.room.category)}
                                 rows={4}
                                 className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                               />
@@ -5092,28 +5195,7 @@ export default function App() {
                   {(roomDetails.room.status === 'ELIMINATION' || roomDetails.room.status === 'FINAL_VOTE') && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-                      {/* Top Banner when 2차 별 스티커 투표가 진행 중일 때 */}
-                      {(roomDetails.room.finalVoteStatus === 'VOTING' || roomDetails.room.finalVoteStatus === 'TIE_PENDING') && (
-                        <div className="lg:col-span-12 p-4 bg-gradient-to-r from-amber-400 via-amber-500 to-indigo-600 rounded-2xl text-slate-950 shadow-md flex items-center justify-between gap-3 font-bold border border-amber-300">
-                          <div className="flex items-center gap-2 text-xs md:text-sm text-slate-950">
-                            <Sparkles className="w-5 h-5 text-slate-950 animate-bounce" />
-                            <span>
-                              {roomDetails.room.finalVoteStatus === 'TIE_PENDING'
-                                ? '모든 투표가 끝났고 최종 채택 경계에서 동률이 발생했습니다.'
-                                : '다른 사람의 선택과 중간 집계는 모두 숨겨져 있습니다. 생존 후보 중 최종 결과로 채택할 아이디어를 선택해 주세요.'}
-                            </span>
-                          </div>
-                          {roomDetails.room.finalVoteStatus === 'VOTING' && (
-                            <button
-                              type="button"
-                              onClick={() => setShowFinalVoteModal(true)}
-                              className="px-4.5 py-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 rounded-xl text-xs font-black transition shrink-0 cursor-pointer shadow-sm flex items-center gap-1.5"
-                            >
-                              <span>⭐ 익명 최종 투표하기</span>
-                            </button>
-                          )}
-                        </div>
-                      )}
+
 
                       {/* Left: Active Candidates & Scoring statistics */}
                       <div className="lg:col-span-8 space-y-6">
@@ -6353,11 +6435,11 @@ export default function App() {
               <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1 text-left">
                 {(() => {
                   const allIdeas = roomDetails?.ideas || [];
-                  const winners = allIdeas.filter(i => i.status === 'WINNER' || (roomDetails?.room.status === 'CLOSED' && i.status === 'ACTIVE'));
+                  const winners = allIdeas.filter(i => i.status === 'WINNER');
                   const targetCount = roomDetails?.room.targetWinnerCount || 1;
                   const displayWinners = winners.length > 0
                     ? winners
-                    : allIdeas.filter(i => i.status === 'ACTIVE').slice(0, targetCount);
+                    : allIdeas.filter(i => i.status === 'ACTIVE' || !i.status).slice(0, targetCount);
 
                   if (displayWinners.length === 0) {
                     return <p className="text-xs text-slate-400 text-center py-4">선정된 최종 아이디어가 없습니다.</p>;
@@ -6365,6 +6447,9 @@ export default function App() {
 
                   return displayWinners.map((winner, idx) => {
                     const stats = roomDetails?.aggregatedScores?.[winner.id];
+                    const starCount = roomDetails?.starVotes?.[winner.id] || 0;
+                    const isQuick = roomDetails?.room.decisionMode === 'QUICK';
+
                     return (
                       <div key={winner.id} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-3 shadow-xs">
                         <div className="flex items-start justify-between gap-2 border-b border-slate-200/60 pb-2">
@@ -6374,7 +6459,11 @@ export default function App() {
                             </span>
                             <h3 className="text-base font-bold text-slate-900">{winner.title}</h3>
                           </div>
-                          {stats && (
+                          {isQuick || starCount > 0 || !stats || (stats.score === 0 && stats.keepCount === 0) ? (
+                            <span className="text-xs font-black text-amber-700 bg-amber-50 px-2.5 py-1 rounded-xl border border-amber-200 shrink-0 flex items-center gap-1">
+                              ⭐ {starCount}표 득표
+                            </span>
+                          ) : (
                             <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-100 shrink-0">
                               {stats.score}점 ({stats.keepCount}표 찬성)
                             </span>
@@ -6541,13 +6630,10 @@ export default function App() {
               <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeas = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE');
+                  const activeIdeas = (roomDetails?.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
                   const activeIdeaIds = activeIdeas.map(i => i.id);
                   const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                  const isSubmittedByMe = Boolean(
-                    (roomDetails?.isStarVoteSubmitted || validMyStarVotes.length > 0) &&
-                    validMyStarVotes.length >= targetWinners
-                  );
+                  const isSubmittedByMe = Boolean(validMyStarVotes.length >= targetWinners);
 
                   if (activeIdeas.length === 0) {
                     return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
@@ -6637,19 +6723,21 @@ export default function App() {
 
                 return (
                   <div className="p-4 md:px-6 border-t border-slate-100 bg-slate-50 shrink-0 flex items-center justify-between gap-3">
-                    <div className="text-xs font-bold text-slate-600 hidden sm:block">
+                    <div className="text-xs font-bold text-slate-600 hidden md:block max-w-xs lg:max-w-sm">
                       {isSubmitted ? (
                         <span className="text-emerald-600 flex items-center gap-1">
                           <Check className="w-4 h-4" />
                           이미 투표가 제출되었습니다
                         </span>
                       ) : remainingStars > 0 ? (
-                        <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
-                          ⚠️ 평가 기준을 확인한 뒤 최종 후보로 선택할 아이디어 {targetWinners}개에 1위부터 {targetWinners}위까지 순위를 모두 지정해 주세요.
+                        <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 block text-[11px] leading-tight">
+                          {targetWinners === 1
+                            ? '⚠️ 최종 채택할 아이디어 1개에 별 스티커를 붙여주세요.'
+                            : `⚠️ 최종 후보로 선택할 아이디어 ${targetWinners}개에 1위부터 ${targetWinners}위까지 별 스티커를 모두 지정해 주세요.`}
                         </span>
                       ) : (
-                        <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-                          ✓ 별 스티커 순위 지정 완료! 투표를 제출할 수 있습니다.
+                        <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 block text-[11px] leading-tight">
+                          ✓ 별 스티커 지정 완료! 투표를 제출할 수 있습니다.
                         </span>
                       )}
                     </div>

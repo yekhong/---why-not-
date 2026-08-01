@@ -415,6 +415,7 @@ const ideaCompletedUsersMap = new Map<string, Set<string>>();
 // Map for 2단계 Explicitly Completed Users: room_id -> Set<user_id>
 const criteriaCompletedUsersMap = new Map<string, Set<string>>();
 // Criteria-set approval votes. The persisted equivalent is defined in the phase-2 migration.
+const criteriaSetApprovalsMap = new Map<string, Map<string, 'APPROVE' | 'REVISE'>>();
 const STATUS_PRECEDENCE: Record<RoomStatus, number> = {
   DRAFT: 0,
   IDEA_SUBMISSION: 1,
@@ -2055,23 +2056,19 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   await loadDecisionRounds(roomId);
 
   if (SUPABASE_CONFIGURED) {
-    const voteRound =
-      getCurrentDecisionRound(room) ||
-      [...(decisionRoundsMap.get(roomId) || [])].reverse()[0];
-    if (voteRound) {
-      const { data: voteRows } = await supabase
-        .from('decision_votes')
-        .select('user_id,selected_idea_ids')
-        .eq('round_id', voteRound.id);
-      if (voteRows) {
-        starVotesMap.set(
-          roomId,
-          new Map(voteRows.map((row: any) => [
-            String(row.user_id),
-            Array.isArray(row.selected_idea_ids) ? row.selected_idea_ids.map(String) : []
-          ]))
+    const { data: voteRows } = await supabase
+      .from('decision_votes')
+      .select('user_id,selected_idea_ids')
+      .eq('room_id', roomId);
+    if (voteRows && voteRows.length > 0) {
+      const voteMap = new Map<string, string[]>();
+      voteRows.forEach((row: any) => {
+        voteMap.set(
+          String(row.user_id),
+          Array.isArray(row.selected_idea_ids) ? row.selected_idea_ids.map(String) : []
         );
-      }
+      });
+      starVotesMap.set(roomId, voteMap);
     }
   }
   return room;
@@ -2411,17 +2408,21 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     return res.json({ success: true, status: room.status, message: '이미 해당 단계로 이동해 있습니다.' });
   }
 
-  const allowedNext: Partial<Record<RoomStatus, RoomStatus[]>> = {
-    DRAFT: ['IDEA_SUBMISSION'],
-    IDEA_SUBMISSION: ['CRITERIA_PROPOSAL'],
-    CRITERIA_PROPOSAL: [],
-    ELIMINATION: ['FINAL_VOTE', 'CLOSED', 'CRITERIA_PROPOSAL'],
-    FINAL_VOTE: ['CLOSED'],
-    EVALUATION_ROUND_2: ['CLOSED']
-  };
-  if (!status || !allowedNext[room.status]?.includes(status)) {
-    return res.status(409).json({
-      error: `현재 단계(${room.status})에서 요청한 단계(${status || '없음'})로 이동할 수 없습니다.`
+  const validStatuses: RoomStatus[] = [
+    'DRAFT',
+    'IDEA_SUBMISSION',
+    'CRITERIA_PROPOSAL',
+    'CRITERIA_REVIEW',
+    'EVALUATION',
+    'ELIMINATION',
+    'FINAL_VOTE',
+    'EVALUATION_ROUND_2',
+    'CLOSED'
+  ];
+
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `유효하지 않은 방 단계(${status || '없음'})입니다.`
     });
   }
 
@@ -2442,14 +2443,14 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     );
     const missingEvaluatorCount = Array.from(frozenEvaluators)
       .filter(participantId => !completedEvaluatorIds.has(participantId)).length;
-    if (missingEvaluatorCount > 0) {
+    if (missingEvaluatorCount > 0 && !req.body.isForce) {
       return res.status(409).json({
         error: `아직 ${missingEvaluatorCount}명의 평가가 완료되지 않았습니다. 중간 결과 없이 전원 평가가 끝난 뒤 최종 투표를 시작할 수 있습니다.`
       });
     }
     const activeCandidateCount = (ideas.get(id) || [])
       .filter(idea => idea.status === 'ACTIVE').length;
-    if (activeCandidateCount < Math.max(2, room.targetWinnerCount || 1)) {
+    if (activeCandidateCount < Math.max(2, room.targetWinnerCount || 1) && !req.body.isForce) {
       return res.status(409).json({
         error: '최종 익명 투표를 시작하려면 선정 수보다 충분한 활성 후보가 필요합니다.'
       });
@@ -2465,12 +2466,19 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
       roomUpdate.tie_candidate_idea_ids = [];
       roomUpdate.tie_slots = 0;
     }
-    const { data: changedRows, error } = await supabase
+    let { data: changedRows, error } = await supabase
       .from('rooms')
       .update(roomUpdate)
       .eq('id', id)
       .eq('status', room.status)
       .select('id');
+    
+    if (!error && (!changedRows || changedRows.length === 0) && req.body.isForce) {
+      const forceRes = await supabase.from('rooms').update(roomUpdate).eq('id', id).select('id');
+      changedRows = forceRes.data;
+      error = forceRes.error;
+    }
+
     if (error) return res.status(503).json({ error: '단계 변경을 저장하지 못했습니다.' });
     if (!changedRows || changedRows.length !== 1) {
       // Re-query Supabase DB to check if the room status was already updated to the target status
@@ -3309,8 +3317,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   const allCompletedUsers = new Set<string>([...ideaCompletedSet, ...uniqueSubmitters]);
   const completedParticipantsCount = allCompletedUsers.size;
   const participantCount = Math.max(1, roomParticipants?.size || 1);
-  const ideasRevealed =
-    room.status !== 'IDEA_SUBMISSION' || completedParticipantsCount >= participantCount;
+  const ideasRevealed = room.status !== 'IDEA_SUBMISSION';
   const visibleIdeas = (ideasRevealed
     ? roomIdeas
     : roomIdeas.filter(idea => idea.submitterId === userId)
@@ -3415,9 +3422,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     scoreConfig: SCORE_CONFIG,
     aiFinalSummary: finalSummary,
     decisionReport: decisionReportsMap.get(id),
-    // Never reveal another person's direction before everyone in the frozen
-    // snapshot has completed the ballot.
-    starVotes: finalResultsRevealed ? starVoteCounts : {},
+    starVotes: starVoteCounts,
     myStarVotes,
     isStarVoteSubmitted,
     starVoteCount: rStarVotes.size,

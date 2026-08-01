@@ -175,3 +175,72 @@ export function getSingleExamplePlaceholder(
     return decisionMode === 'QUICK' ? DEFAULT_FALLBACK_QUICK : DEFAULT_FALLBACK_STRUCTURED;
   }
 }
+
+/**
+ * Context-Aware Dynamic Criteria Placeholder Engine (Stage 2)
+ */
+export function getCriteriaPlaceholder(roomTitle?: string | null, roomCategory?: string | null): string {
+  try {
+    const safeCat = (roomCategory || '').toLowerCase();
+    const safeTitle = (roomTitle || '').toLowerCase();
+
+    if (safeCat.includes('마케팅') || safeCat.includes('홍보') || safeTitle.includes('마케팅') || safeTitle.includes('이벤트')) {
+      return '예: 1개월 이내 집행 가능 여부 / 예상 ROAS 및 신규 고객 유입 효과';
+    }
+    if (safeCat.includes('개발') || safeCat.includes('it') || safeTitle.includes('개발') || safeTitle.includes('버그')) {
+      return '예: 기존 서비스 DB 구조와의 연동성 / 2주 이내 개발 및 QA 완료 가능 여부';
+    }
+    if (safeCat.includes('디자인') || safeCat.includes('ux') || safeTitle.includes('디자인')) {
+      return '예: 타겟 고객 가용성 및 브랜드 디자인 시스템 가이드라인 준수 여부';
+    }
+    if (safeCat.includes('조직') || safeCat.includes('인사') || safeTitle.includes('회식') || safeTitle.includes('워크숍')) {
+      return '예: 팀원 전원의 자유로운 참여 가능 여부 / 배정된 부서 예산 한계 이내 여부';
+    }
+    return '예: 내부 예산 한계 내 집행 가능 여부 / 초대된 팀원들의 1달 이내 실행 가능성';
+  } catch {
+    return '예: 예산 한계 내로 준비가 가능한지 여부 / 팀원의 기술 역량으로 1달 이내 구현이 가능한지';
+  }
+}
+
+/**
+ * Context-Aware Dynamic Idea Title Placeholder Engine (Stage 1)
+ */
+export function getIdeaTitlePlaceholder(roomTitle?: string | null, roomCategory?: string | null): string {
+  try {
+    const safeCat = (roomCategory || '').toLowerCase();
+    const safeTitle = (roomTitle || '').toLowerCase();
+
+    if (safeCat.includes('마케팅') || safeTitle.includes('이벤트')) {
+      return '예: 숏폼 영상 제작 및 소셜 미디어 바이럴 챌린지';
+    }
+    if (safeCat.includes('개발') || safeTitle.includes('버그')) {
+      return '예: 실시간 알림 메시지 큐 응답 속도 성능 개선';
+    }
+    if (safeCat.includes('기획') || safeTitle.includes('피처')) {
+      return '예: 신규 가입자 3초 온보딩 튜토리얼 개편안';
+    }
+    return '예: 초대된 팀원들과 추진할 핵심 프로젝트 아이디어';
+  } catch {
+    return '예: 숏폼 영상 제작 가요 챌린지';
+  }
+}
+
+/**
+ * Context-Aware Dynamic Idea Description Placeholder Engine (Stage 1)
+ */
+export function getIdeaDescPlaceholder(roomTitle?: string | null, roomCategory?: string | null): string {
+  try {
+    const safeCat = (roomCategory || '').toLowerCase();
+
+    if (safeCat.includes('마케팅')) {
+      return '예: 타겟 채널, 기대 유입 수치, 캠페인 예산 범위 및 2주 이내 준비 절차를 구체적으로 적어주세요.';
+    }
+    if (safeCat.includes('개발')) {
+      return '예: 핵심 수정 시스템 범위, 예상 개발 공수(M/D), 팀 영향도 및 리스크 방지책을 기술해 주세요.';
+    }
+    return '예: 아이디어의 핵심 프로세스, 기대 효과, 초대된 팀원들이 준비해야 하는 범위를 상세히 작성하십시오.';
+  } catch {
+    return '아이디어의 핵심 프로세스, 기대 효과, 팀이 준비해야 하는 범위를 상세하게 작성하십시오.';
+  }
+}
+
