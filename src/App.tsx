@@ -1328,6 +1328,7 @@ export default function App() {
 
       // Select newly created room, open share modal and refresh dashboard list
       setActiveRoomId(createdRoomId);
+      setRoomDetails(null);
       setShowShareModal(true);
       await handleGenerateNewInviteToken(createdRoomId);
       await fetchRoomDetails(createdRoomId);

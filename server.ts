@@ -477,16 +477,20 @@ async function loadOrCreatePhaseParticipants(roomId: string, phase: string): Pro
 
   const snapshot = getPhaseParticipants(roomId, phase);
   if (SUPABASE_CONFIGURED && snapshot.size > 0) {
-    const { error } = await supabase.from('room_phase_participants').upsert(
-      Array.from(snapshot).map(userId => ({
-        room_id: roomId,
-        phase,
-        user_id: userId
-      })),
-      { onConflict: 'room_id,phase,user_id' }
-    );
-    if (error && IS_PRODUCTION) {
-      throw new Error('단계 참여자 스냅샷을 안전하게 저장하지 못했습니다.');
+    try {
+      const { error } = await supabase.from('room_phase_participants').upsert(
+        Array.from(snapshot).map(userId => ({
+          room_id: roomId,
+          phase,
+          user_id: userId
+        })),
+        { onConflict: 'room_id,phase,user_id' }
+      );
+      if (error) {
+        console.warn('room_phase_participants upsert notice:', error.message);
+      }
+    } catch (e) {
+      console.warn('room_phase_participants exception:', e);
     }
   }
   return snapshot;
