@@ -4679,8 +4679,8 @@ export default function App() {
                         </div>
 
                         <div className="space-y-4">
-                          {editableCriteria.map((crit, idx) => (
-                            <div key={crit.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                          {(editableCriteria.length > 0 ? editableCriteria : (roomDetails?.criteria || [])).map((crit, idx) => (
+                            <div key={crit.id || `crit-${idx}`} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
                               <div className="flex items-center justify-between gap-4">
                                 <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase tracking-wider">
                                   기준 #{idx + 1}
