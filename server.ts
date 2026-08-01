@@ -2449,7 +2449,7 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     );
     const missingEvaluatorCount = Array.from(frozenEvaluators)
       .filter(participantId => !completedEvaluatorIds.has(participantId)).length;
-    if (missingEvaluatorCount > 0 && !req.body.isForce) {
+    if (missingEvaluatorCount > 0 && !req.body.isForce && room.hostId !== reqUserId) {
       return res.status(409).json({
         error: `아직 ${missingEvaluatorCount}명의 평가가 완료되지 않았습니다. 중간 결과 없이 전원 평가가 끝난 뒤 최종 투표를 시작할 수 있습니다.`
       });
