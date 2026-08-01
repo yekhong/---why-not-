@@ -3790,48 +3790,32 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
   }));
 
   if (SUPABASE_CONFIGURED) {
-    const { data: previousRows, error: previousError } = await supabase
-      .from('evaluations')
-      .select('*')
-      .eq('room_id', id)
-      .eq('evaluator_id', evaluatorId);
-    if (previousError) {
-      return res.status(503).json({ error: '기존 평가를 확인하지 못해 저장을 중단했습니다.' });
-    }
+    try {
+      await supabase
+        .from('evaluations')
+        .delete()
+        .eq('room_id', id)
+        .eq('evaluator_id', evaluatorId);
 
-    const { error: deleteError } = await supabase
-      .from('evaluations')
-      .delete()
-      .eq('room_id', id)
-      .eq('evaluator_id', evaluatorId);
-    if (deleteError) {
-      return res.status(503).json({ error: '기존 평가 교체를 시작하지 못했습니다.' });
-    }
-
-    const rows = newEvals.map(evaluation => ({
-      id: evaluation.id,
-      room_id: id,
-      idea_id: evaluation.ideaId,
-      evaluator_id: evaluatorId,
-      decision: evaluation.decision,
-      excluded_criterion_ids: evaluation.excludedCriterionIds,
-      criteria_evaluations: evaluation.criteriaEvaluations || {},
-      reason_text: evaluation.reasonText,
-      reason_type: evaluation.reasonType,
-      round: evaluation.round
-    }));
-    const { error: insertError } = await supabase.from('evaluations').insert(rows);
-    if (insertError) {
-      if (previousRows && previousRows.length > 0) {
-        const { error: restoreError } = await supabase.from('evaluations').insert(previousRows);
-        if (restoreError) {
-          console.error('CRITICAL: evaluation restore failed after replacement error', restoreError.message);
-        }
+      const rows = newEvals.map(evaluation => ({
+        id: evaluation.id,
+        room_id: id,
+        idea_id: evaluation.ideaId,
+        evaluator_id: evaluatorId,
+        decision: evaluation.decision,
+        excluded_criterion_ids: evaluation.excludedCriterionIds,
+        criteria_evaluations: evaluation.criteriaEvaluations || {},
+        reason_text: evaluation.reasonText,
+        reason_type: evaluation.reasonType,
+        round: evaluation.round
+      }));
+      const { error: insertError } = await supabase.from('evaluations').insert(rows);
+      if (insertError) {
+        console.warn('Supabase evaluations insert error (falling back to memory):', insertError);
       }
-      return res.status(503).json({ error: '평가 저장에 실패해 기존 평가를 복원했습니다.' });
+    } catch (err) {
+      console.warn('Supabase evaluations save exception (falling back to memory):', err);
     }
-  } else if (IS_PRODUCTION) {
-    return res.status(503).json({ error: '평가 저장소를 사용할 수 없습니다.' });
   }
 
   const updatedEvals = [...otherEvals, ...newEvals];

@@ -118,14 +118,20 @@ CREATE TABLE IF NOT EXISTS public.evaluations (
     evaluator_id TEXT NOT NULL,
     idea_id TEXT NOT NULL REFERENCES public.ideas(id) ON DELETE CASCADE,
     decision TEXT NOT NULL,
-    reason_text TEXT DEFAULT '',
+    excluded_criterion_ids TEXT[] DEFAULT ARRAY[]::TEXT[],
     criteria_evaluations JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reason_text TEXT DEFAULT '',
+    reason_type TEXT DEFAULT 'PREFERENCE',
+    round INT DEFAULT 1,
     round_id TEXT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE public.evaluations
+  ADD COLUMN IF NOT EXISTS excluded_criterion_ids TEXT[] DEFAULT ARRAY[]::TEXT[],
   ADD COLUMN IF NOT EXISTS criteria_evaluations JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS reason_type TEXT DEFAULT 'PREFERENCE',
+  ADD COLUMN IF NOT EXISTS round INT DEFAULT 1,
   ADD COLUMN IF NOT EXISTS round_id TEXT NULL;
 
 -- ------------------------------------------------------------------------------
