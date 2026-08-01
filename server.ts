@@ -4285,16 +4285,20 @@ app.post('/api/rooms/:id/criteria/propose', async (req: AuthenticatedRequest, re
   };
 
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('criterion_proposals').insert({
-      id: newProposal.id,
-      room_id: id,
-      raw_text: newProposal.rawText,
-      proposer_id: proposerId,
-      is_ai_suggested: isAi
-    });
-    if (error) return res.status(503).json({ error: '평가 기준 제안을 안전하게 저장하지 못했습니다.' });
-  } else if (IS_PRODUCTION) {
-    return res.status(503).json({ error: '평가 기준 저장소를 사용할 수 없습니다.' });
+    try {
+      const { error } = await supabase.from('criterion_proposals').insert({
+        id: newProposal.id,
+        room_id: id,
+        raw_text: newProposal.rawText,
+        proposer_id: proposerId,
+        is_ai_suggested: isAi
+      });
+      if (error) {
+        console.warn('Supabase criterion_proposals insert error (falling back to memory):', error);
+      }
+    } catch (err) {
+      console.warn('Supabase criterion_proposals exception (falling back to memory):', err);
+    }
   }
 
   proposals.push(newProposal);

@@ -97,11 +97,13 @@ CREATE TABLE IF NOT EXISTS public.criterion_proposals (
     raw_text TEXT NOT NULL,
     parsed_name TEXT NULL,
     status TEXT DEFAULT 'PENDING',
+    is_ai_suggested BOOLEAN DEFAULT false,
     revealed_at TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 ALTER TABLE public.criterion_proposals
+  ADD COLUMN IF NOT EXISTS is_ai_suggested BOOLEAN DEFAULT false,
   ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ NULL;
 
 -- Evaluations Table
