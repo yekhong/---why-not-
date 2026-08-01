@@ -1901,9 +1901,11 @@ function mapRoomRow(row: any): Room {
     row.final_vote_status === 'TIE_PENDING' ||
     row.final_vote_status === 'FINALIZED'
       ? row.final_vote_status
-      : row.status === 'CLOSED'
-        ? 'FINALIZED'
-        : 'NOT_STARTED';
+      : (row.status === 'ELIMINATION' || rooms.get(row.id)?.status === 'ELIMINATION')
+        ? 'VOTING'
+        : row.status === 'CLOSED'
+          ? 'FINALIZED'
+          : 'NOT_STARTED';
   return {
     id: row.id,
     title: row.title,

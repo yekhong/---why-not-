@@ -482,12 +482,14 @@ export default function App() {
     }
   };
 
-  // Automatically open 4단계 2차 별 스티커 투표 modal for all participants when room.status === 'FINAL_VOTE'
+  // Automatically open voting modal for participants when voting is active
   useEffect(() => {
-    if (roomDetails?.room?.status === 'FINAL_VOTE' && !roomDetails.isStarVoteSubmitted) {
+    const isVotingActive = (roomDetails?.room?.status === 'FINAL_VOTE' || roomDetails?.room?.status === 'ELIMINATION') &&
+      (roomDetails?.room?.finalVoteStatus === 'VOTING' || roomDetails?.room?.decisionMode === 'QUICK');
+    if (isVotingActive && !roomDetails?.isStarVoteSubmitted) {
       setShowFinalVoteModal(true);
     }
-  }, [roomDetails?.room?.status, roomDetails?.isStarVoteSubmitted]);
+  }, [roomDetails?.room?.status, roomDetails?.room?.finalVoteStatus, roomDetails?.room?.decisionMode, roomDetails?.isStarVoteSubmitted]);
 
   // 4단계 수동 소거 확인 팝업 modal state
   const [pendingEliminationIdea, setPendingEliminationIdea] = useState<Idea | null>(null);
@@ -5345,10 +5347,12 @@ export default function App() {
                           <div className="bg-gradient-to-br from-amber-400 via-amber-500 to-amber-600 text-slate-950 p-5 rounded-2xl space-y-3 shadow-md border border-amber-300">
                             <h3 className="text-sm font-extrabold text-slate-950 flex items-center gap-1.5">
                               <Sparkles className="w-4 h-4 text-slate-950" />
-                              4단계 2차 별 스티커 투표
+                              {roomDetails.room.decisionMode === 'QUICK' ? '2단계 익명 투표' : '4단계 2차 별 스티커 투표'}
                             </h3>
                             <p className="text-xs font-bold text-slate-950 leading-relaxed">
-                              생존 후보 중 최종 우승작으로 채택할 아이디어에 별 스티커를 붙여주세요.
+                              {roomDetails.room.decisionMode === 'QUICK'
+                                ? '다른 사람의 선택을 보지 않고 진행하는 익명 투표입니다. 채택할 아이디어를 선택해 주세요.'
+                                : '생존 후보 중 최종 우승작으로 채택할 아이디어에 별 스티커를 붙여주세요.'}
                             </p>
                             <button
                               type="button"
@@ -5356,7 +5360,7 @@ export default function App() {
                               className="w-full py-3 bg-slate-950 text-amber-300 hover:bg-slate-900 transition rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md cursor-pointer border border-amber-400 active:scale-95"
                             >
                               <Sparkles className="w-4 h-4 text-amber-400" />
-                              <span>⭐ 4단계 2차 별 스티커 투표하기</span>
+                              <span>⭐ {roomDetails.room.decisionMode === 'QUICK' ? '2단계 익명 투표하기' : '4단계 2차 별 스티커 투표하기'}</span>
                             </button>
                           </div>
                         )}
