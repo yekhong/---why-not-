@@ -97,6 +97,8 @@ function SafeMarkdown({ content }: { content: string }) {
   );
 }
 
+import { getSingleExamplePlaceholder } from './prompts/roomPlaceholderPrompt';
+
 export default function App() {
   // ----------------------------------------------------------------
   // User Authentication / Email & Password Identity (AUTH-01 & Email Auth Spec)
@@ -3295,7 +3297,7 @@ export default function App() {
                       <textarea
                         value={newRoomDesc}
                         onChange={e => setNewRoomDesc(e.target.value)}
-                        placeholder="예: 마케팅 예산 총 1,500만원 내로 준비 및 실현할 수 있는 캠페인을 찾습니다."
+                        placeholder={getSingleExamplePlaceholder(newRoomTitle, newRoomCategory, newRoomDecisionMode, newRoomTargetWinners)}
                         rows={3}
                         className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                       />
@@ -6739,7 +6741,7 @@ export default function App() {
                     value={editRoomDesc}
                     onChange={e => setEditRoomDesc(e.target.value)}
                     rows={3}
-                    placeholder="회의 목적, 제약 사항 및 고려 조건을 입력해 주십시오."
+                    placeholder={getSingleExamplePlaceholder(editRoomTitle, editRoomCategory, roomDetails?.room.decisionMode || 'STRUCTURED', editRoomTargetWinnerCount)}
                     className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
