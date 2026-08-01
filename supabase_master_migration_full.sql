@@ -45,7 +45,7 @@ ALTER TABLE public.rooms
 
 -- Participants Table & Extension Columns
 CREATE TABLE IF NOT EXISTS public.participants (
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     user_id TEXT NOT NULL,
     nickname TEXT NOT NULL,
     joined_at TIMESTAMPTZ DEFAULT NOW(),
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS public.participants (
 );
 
 ALTER TABLE public.participants
-  ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ NULL;
+ADD COLUMN IF NOT EXISTS hidden_at TIMESTAMPTZ NULL;
 
 -- Ideas Table & Extension Columns
 CREATE TABLE IF NOT EXISTS public.ideas (
@@ -74,15 +74,15 @@ CREATE TABLE IF NOT EXISTS public.ideas (
 );
 
 ALTER TABLE public.ideas
-  ADD COLUMN IF NOT EXISTS pdf_attachment_url TEXT NULL,
-  ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ NULL;
+ADD COLUMN IF NOT EXISTS pdf_attachment_url TEXT NULL,
+ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS ideas_id_room_id_unique ON public.ideas(id, room_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ideas_id_room_id_unique ON public.ideas (id, room_id);
 
 -- Criteria Table
 CREATE TABLE IF NOT EXISTS public.criteria (
     id TEXT PRIMARY KEY,
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     description TEXT DEFAULT '',
     weight NUMERIC DEFAULT 1.0,
@@ -91,13 +91,13 @@ CREATE TABLE IF NOT EXISTS public.criteria (
 );
 
 ALTER TABLE public.criteria
-  ADD COLUMN IF NOT EXISTS confirmed BOOLEAN DEFAULT false,
-  ADD COLUMN IF NOT EXISTS weight NUMERIC DEFAULT 1.0;
+ADD COLUMN IF NOT EXISTS confirmed BOOLEAN DEFAULT false,
+ADD COLUMN IF NOT EXISTS weight NUMERIC DEFAULT 1.0;
 
 -- Criterion Proposals Table
 CREATE TABLE IF NOT EXISTS public.criterion_proposals (
     id TEXT PRIMARY KEY,
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     proposer_id TEXT NOT NULL,
     raw_text TEXT NOT NULL,
     parsed_name TEXT NULL,
@@ -108,8 +108,8 @@ CREATE TABLE IF NOT EXISTS public.criterion_proposals (
 );
 
 ALTER TABLE public.criterion_proposals
-  ADD COLUMN IF NOT EXISTS is_ai_suggested BOOLEAN DEFAULT false,
-  ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ NULL;
+ADD COLUMN IF NOT EXISTS is_ai_suggested BOOLEAN DEFAULT false,
+ADD COLUMN IF NOT EXISTS revealed_at TIMESTAMPTZ NULL;
 
 -- Evaluations Table
 CREATE TABLE IF NOT EXISTS public.evaluations (
@@ -139,30 +139,38 @@ ALTER TABLE public.evaluations
 -- ------------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS public.user_accounts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
     login_id TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     nickname TEXT NOT NULL,
     recovery_code_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED', 'DELETED')),
+    status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (
+        status IN (
+            'ACTIVE',
+            'SUSPENDED',
+            'DELETED'
+        )
+    ),
     failed_recovery_attempts INT DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS public.user_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES public.user_accounts(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    user_id UUID NOT NULL REFERENCES public.user_accounts (id) ON DELETE CASCADE,
     token_hash TEXT UNIQUE NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS public.user_registrations (
-    user_id UUID PRIMARY KEY REFERENCES public.user_accounts(id) ON DELETE CASCADE,
+    user_id UUID PRIMARY KEY REFERENCES public.user_accounts (id) ON DELETE CASCADE,
     login_id TEXT NOT NULL UNIQUE,
     nickname TEXT NOT NULL,
-    registration_status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (registration_status IN ('COMPLETED', 'CANCELLED')),
+    registration_status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (
+        registration_status IN ('COMPLETED', 'CANCELLED')
+    ),
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -172,8 +180,8 @@ CREATE TABLE IF NOT EXISTS public.user_registrations (
 
 -- Room Invites Table
 CREATE TABLE IF NOT EXISTS public.room_invites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     invite_token TEXT UNIQUE NULL,
     invite_token_hash TEXT UNIQUE NULL,
     created_by TEXT NOT NULL,
@@ -184,7 +192,7 @@ CREATE TABLE IF NOT EXISTS public.room_invites (
 
 -- Phase Completions Table
 CREATE TABLE IF NOT EXISTS public.phase_completions (
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     phase TEXT NOT NULL,
     user_id TEXT NOT NULL,
     completed_at TIMESTAMPTZ DEFAULT NOW(),
@@ -193,7 +201,7 @@ CREATE TABLE IF NOT EXISTS public.phase_completions (
 
 -- Room Phase Participants Table (Snapshot)
 CREATE TABLE IF NOT EXISTS public.room_phase_participants (
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     phase TEXT NOT NULL,
     user_id TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -202,13 +210,17 @@ CREATE TABLE IF NOT EXISTS public.room_phase_participants (
 
 -- Criterion Approvals Table
 CREATE TABLE IF NOT EXISTS public.criterion_approvals (
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     criteria_set_version INT NOT NULL DEFAULT 1,
     user_id TEXT NOT NULL,
     vote TEXT NOT NULL CHECK (vote IN ('APPROVE', 'REVISE')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (room_id, criteria_set_version, user_id)
+    PRIMARY KEY (
+        room_id,
+        criteria_set_version,
+        user_id
+    )
 );
 
 -- Evaluation Rounds Table
@@ -228,14 +240,19 @@ CREATE TABLE IF NOT EXISTS public.evaluation_rounds (
 -- Round Candidates Table
 CREATE TABLE IF NOT EXISTS public.round_candidates (
     id TEXT PRIMARY KEY,
-    room_id TEXT NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+    room_id TEXT NOT NULL REFERENCES public.rooms (id) ON DELETE CASCADE,
     round_id TEXT NOT NULL,
     idea_id TEXT NOT NULL,
-    outcome TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (outcome IN ('ACTIVE', 'ELIMINATED', 'WINNER')),
+    outcome TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (
+        outcome IN (
+            'ACTIVE',
+            'ELIMINATED',
+            'WINNER'
+        )
+    ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (round_id, idea_id),
-    CONSTRAINT round_candidates_round_room_fk
-      FOREIGN KEY (round_id, room_id) REFERENCES public.evaluation_rounds(id, room_id) ON DELETE CASCADE
+    CONSTRAINT round_candidates_round_room_fk FOREIGN KEY (round_id, room_id) REFERENCES public.evaluation_rounds (id, room_id) ON DELETE CASCADE
 );
 
 -- Decision Votes Table
@@ -271,60 +288,92 @@ CREATE TABLE IF NOT EXISTS public.ai_reports (
 -- 4. INDEXES & RLS POLICIES
 -- ------------------------------------------------------------------------------
 
-CREATE INDEX IF NOT EXISTS idx_rooms_host_id ON public.rooms(host_id);
-CREATE INDEX IF NOT EXISTS idx_participants_user_id ON public.participants(user_id);
-CREATE INDEX IF NOT EXISTS idx_ideas_room_id ON public.ideas(room_id);
-CREATE INDEX IF NOT EXISTS idx_phase_completions_room_phase ON public.phase_completions(room_id, phase);
-CREATE INDEX IF NOT EXISTS idx_room_phase_participants_room_phase ON public.room_phase_participants(room_id, phase);
-CREATE INDEX IF NOT EXISTS idx_user_accounts_login_id ON public.user_accounts(login_id);
-CREATE INDEX IF NOT EXISTS idx_room_invites_token ON public.room_invites(invite_token);
-CREATE INDEX IF NOT EXISTS evaluation_rounds_room_order_idx ON public.evaluation_rounds(room_id, round_number DESC);
+CREATE INDEX IF NOT EXISTS idx_rooms_host_id ON public.rooms (host_id);
+
+CREATE INDEX IF NOT EXISTS idx_participants_user_id ON public.participants (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_ideas_room_id ON public.ideas (room_id);
+
+CREATE INDEX IF NOT EXISTS idx_phase_completions_room_phase ON public.phase_completions (room_id, phase);
+
+CREATE INDEX IF NOT EXISTS idx_room_phase_participants_room_phase ON public.room_phase_participants (room_id, phase);
+
+CREATE INDEX IF NOT EXISTS idx_user_accounts_login_id ON public.user_accounts (login_id);
+
+CREATE INDEX IF NOT EXISTS idx_room_invites_token ON public.room_invites (invite_token);
+
+CREATE INDEX IF NOT EXISTS evaluation_rounds_room_order_idx ON public.evaluation_rounds (room_id, round_number DESC);
 
 -- Enable Row Level Security (RLS) on all tables
 ALTER TABLE public.rooms ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.participants ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.ideas ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.criteria ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.criterion_proposals ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.evaluations ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.user_accounts ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.user_registrations ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.room_invites ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.phase_completions ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.room_phase_participants ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.criterion_approvals ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.evaluation_rounds ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.round_candidates ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.decision_votes ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.ai_reports ENABLE ROW LEVEL SECURITY;
 
 -- Permissive public policies for app interaction
 DROP POLICY IF EXISTS "Public access on rooms" ON public.rooms;
+
 CREATE POLICY "Public access on rooms" ON public.rooms FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on participants" ON public.participants;
+
 CREATE POLICY "Public access on participants" ON public.participants FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on ideas" ON public.ideas;
+
 CREATE POLICY "Public access on ideas" ON public.ideas FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on criteria" ON public.criteria;
+
 CREATE POLICY "Public access on criteria" ON public.criteria FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on criterion_proposals" ON public.criterion_proposals;
+
 CREATE POLICY "Public access on criterion_proposals" ON public.criterion_proposals FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on evaluations" ON public.evaluations;
+
 CREATE POLICY "Public access on evaluations" ON public.evaluations FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on room_invites" ON public.room_invites;
+
 CREATE POLICY "Public access on room_invites" ON public.room_invites FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on phase_completions" ON public.phase_completions;
+
 CREATE POLICY "Public access on phase_completions" ON public.phase_completions FOR ALL USING (true);
 
 DROP POLICY IF EXISTS "Public access on room_phase_participants" ON public.room_phase_participants;
+
 CREATE POLICY "Public access on room_phase_participants" ON public.room_phase_participants FOR ALL USING (true);
 
 COMMIT;
