@@ -3716,7 +3716,10 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
 
   const allowedDecisions = new Set(['KEEP', 'NEUTRAL', 'EXCLUDE']);
   const allowedReasonTypes = new Set(['OBJECTIVE_CONSTRAINT', 'PREFERENCE']);
-  const confirmedCriteria = (criteria.get(id) || []).filter(criterion => criterion.confirmed);
+  const roomCriteria = criteria.get(id) || [];
+  const confirmedCriteria = roomCriteria.some(c => c.confirmed)
+    ? roomCriteria.filter(c => c.confirmed)
+    : roomCriteria;
   const validCriteriaIds = new Set(confirmedCriteria.map(criterion => criterion.id));
   const allowedCriteriaValues = new Set<CriteriaEvaluationValue>(['MET', 'PARTIAL', 'NOT_MET', 'UNSURE']);
   const usesStructuredCriteria = true;
