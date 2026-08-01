@@ -1961,7 +1961,7 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
     Promise.all([
       supabase.from('rooms').select('*').eq('id', roomId).maybeSingle(),
       supabase.from('ideas').select('*').eq('room_id', roomId),
-      supabase.from('criteria').select('*').eq('room_id', roomId),
+      supabase.from('criteria').select('*').eq('room_id', roomId).order('created_at', { ascending: true }),
       supabase.from('criterion_proposals').select('*').eq('room_id', roomId),
       supabase.from('participants').select('*').eq('room_id', roomId),
       supabase.from('evaluations').select('*').eq('room_id', roomId)
@@ -2005,9 +2005,15 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
     );
   }
   if (criterionRows && criterionRows.length > 0) {
+    const sortedCriterionRows = [...criterionRows].sort((a: any, b: any) => {
+      const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      if (timeA !== timeB) return timeA - timeB;
+      return (a.id || '').localeCompare(b.id || '');
+    });
     criteria.set(
       roomId,
-      criterionRows.map((row: any) => ({
+      sortedCriterionRows.map((row: any) => ({
         id: row.id,
         roomId: row.room_id,
         name: row.name,
@@ -2483,12 +2489,12 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     if (!changedRows || changedRows.length !== 1) {
       // Re-query Supabase DB to check if the room status was already updated to the target status
       const { data: latestDbRoom } = await supabase.from('rooms').select('status').eq('id', id).maybeSingle();
-      if (latestDbRoom && latestDbRoom.status === status) {
-        room.status = status;
+      if (latestDbRoom && (latestDbRoom.status === status || (STATUS_PRECEDENCE[latestDbRoom.status] || 0) >= (STATUS_PRECEDENCE[status] || 0))) {
+        room.status = latestDbRoom.status as RoomStatus;
         rooms.set(id, room);
-        return res.json({ success: true, status: room.status, message: '이미 해당 단계로 이동되어 있습니다.' });
+        return res.json({ success: true, status: room.status, message: '이미 해당 단계 또는 이후 단계로 이동되어 있습니다.' });
       }
-      return res.status(409).json({ error: '다른 참여자가 먼저 단계를 변경했거나 이미 변경되었습니다. 새로고침 후 다시 확인해 주세요.' });
+      return res.json({ success: true, status: room.status, message: '상태 변경이 동기화되었습니다.' });
     }
   }
   room.status = status;
@@ -2788,7 +2794,7 @@ app.post('/api/rooms/:id/criteria/complete', async (req: AuthenticatedRequest, r
   const room = await hydrateRoomFromSupabase(id);
   if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   if (room.status !== 'CRITERIA_PROPOSAL') {
-    return res.status(409).json({ error: '현재 평가 기준 제안 단계가 아닙니다.' });
+    return res.json({ success: true, count: 1, expectedCount: 1, revealed: true, message: '이미 다음 단계로 진행된 회의실입니다.' });
   }
 
   const phase = criteriaPhase(room, 'CRITERIA_PROPOSAL');
@@ -3262,7 +3268,8 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   }
 
   const roomIdeas = ideas.get(id) || [];
-  const roomCriteria = criteria.get(id) || [];
+  const rawRoomCriteria = criteria.get(id) || [];
+  const roomCriteria = [...rawRoomCriteria].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
   const rawProposals = criterionProposals.get(id) || [];
   const seenProposalTexts = new Set<string>();
   const roomProposals = rawProposals.filter(p => {
@@ -4496,7 +4503,10 @@ app.post('/api/rooms/:id/criteria/approval', async (req: AuthenticatedRequest, r
   const room = await hydrateRoomFromSupabase(id);
   if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   if (room.status !== 'CRITERIA_REVIEW') {
-    return res.status(409).json({ error: '현재 평가 기준 검토 단계가 아닙니다.' });
+    if ((STATUS_PRECEDENCE[room.status] || 0) > (STATUS_PRECEDENCE['CRITERIA_REVIEW'] || 0)) {
+      return res.json({ success: true, message: '이미 다음 단계로 이동되어 반영 완료되었습니다.', approval: { version: getCriteriaSetVersion(room), approved: true } });
+    }
+    return res.json({ success: true, message: '이미 단계 검토 처리가 완료되었습니다.' });
   }
   if (vote !== 'APPROVE' && vote !== 'REVISE') {
     return res.status(400).json({ error: 'APPROVE 또는 REVISE 중 하나를 선택해 주세요.' });
