@@ -1314,6 +1314,8 @@ export default function App() {
         throw new Error(createdRoom?.error || '회의실을 저장하지 못했습니다.');
       }
       const createdRoomId = createdRoom.id;
+      const finalDecisionMode = createdRoom.decisionMode || newRoomDecisionMode;
+      localStorage.setItem(`why_not_room_decision_mode_${createdRoomId}`, finalDecisionMode);
 
       triggerToast(`회의실이 성공적으로 생성되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
