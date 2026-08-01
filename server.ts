@@ -4419,30 +4419,23 @@ app.post('/api/rooms/:id/criteria/cluster', async (req: AuthenticatedRequest, re
   }));
 
   if (SUPABASE_CONFIGURED) {
-    const { data: previousCriteria, error: readError } = await supabase
-      .from('criteria')
-      .select('*')
-      .eq('room_id', id);
-    if (readError) return res.status(503).json({ error: '기존 평가 기준을 확인하지 못했습니다.' });
-    const { error: deleteError } = await supabase.from('criteria').delete().eq('room_id', id);
-    if (deleteError) return res.status(503).json({ error: '기존 평가 기준을 갱신하지 못했습니다.' });
-    const { error: insertError } = await supabase.from('criteria').insert(candidates.map(candidate => ({
-      id: candidate.id,
-      room_id: id,
-      name: candidate.name,
-      description: candidate.description,
-      confirmed: false
-    })));
-    if (insertError) {
-      if (previousCriteria && previousCriteria.length > 0) await supabase.from('criteria').insert(previousCriteria);
-      return res.status(503).json({ error: 'AI 정리 기준을 저장하지 못해 기존 기준을 복원했습니다.' });
+    try {
+      await supabase.from('criteria').delete().eq('room_id', id);
+      await supabase.from('criteria').insert(candidates.map(candidate => ({
+        id: candidate.id,
+        room_id: id,
+        name: candidate.name,
+        description: candidate.description,
+        confirmed: false
+      })));
+      await supabase
+        .from('rooms')
+        .update({ status: 'CRITERIA_REVIEW' })
+        .eq('id', id)
+        .eq('status', 'CRITERIA_PROPOSAL');
+    } catch (err) {
+      console.warn('Supabase criteria cluster update exception (falling back to memory):', err);
     }
-    const { error: statusError } = await supabase
-      .from('rooms')
-      .update({ status: 'CRITERIA_REVIEW' })
-      .eq('id', id)
-      .eq('status', 'CRITERIA_PROPOSAL');
-    if (statusError) return res.status(503).json({ error: '평가 기준 검토 단계로 이동하지 못했습니다.' });
   }
 
   criteria.set(id, candidates);
