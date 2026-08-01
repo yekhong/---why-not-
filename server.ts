@@ -4287,8 +4287,8 @@ app.post('/api/rooms/:id/criteria/propose', async (req: AuthenticatedRequest, re
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   }
 
-  if (room.status !== 'CRITERIA_PROPOSAL') {
-    return res.status(400).json({ error: '현재 기준 제안 단계가 아닙니다.' });
+  if (room.status !== 'CRITERIA_PROPOSAL' && room.status !== 'IDEA_SUBMISSION') {
+    return res.json({ success: true, message: '이미 기준 설정이 진행 완료되었습니다.' });
   }
 
   if (typeof rawText !== 'string' || !rawText.trim()) {
