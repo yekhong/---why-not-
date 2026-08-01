@@ -1447,6 +1447,7 @@ export default function App() {
     }
 
     setActiveRoomId(id);
+    setRoomDetails(null);
     setLoading(true);
     setFetchRoomError(false);
     setIsReEditingEvaluation(false);

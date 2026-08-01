@@ -2360,10 +2360,19 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
 /**
  * Update Room Status (Milestone Transition)
  */
-app.post('/api/rooms/:id/status', async (req, res) => {
+app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
+  const reqUserId = req.auth?.userId;
   const status = req.body.status as RoomStatus;
   const room = await hydrateRoomFromSupabase(id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (room.hostId !== reqUserId) {
+    return res.status(403).json({ error: '방장만 방 단계를 변경할 수 있습니다.' });
+  }
+
   if (room.status === status) {
     return res.json({ success: true, status: room.status, message: '이미 해당 단계로 이동해 있습니다.' });
   }
@@ -3098,11 +3107,16 @@ app.post('/api/demo/seed', (_req, res) => {
 /**
  * Update room settings (Host only)
  */
-app.patch('/api/rooms/:id', async (req, res) => {
+app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
+  const reqUserId = req.auth?.userId;
   const room = await hydrateRoomFromSupabase(id);
   if (!room) {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (room.hostId !== reqUserId) {
+    return res.status(403).json({ error: '방장만 회의실 설정을 수정할 수 있습니다.' });
   }
 
   const { title, description, category, maxParticipants, targetWinnerCount, minResponseThreshold } = req.body;
