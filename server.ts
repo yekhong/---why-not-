@@ -2795,7 +2795,19 @@ app.post('/api/rooms/:id/criteria/complete', async (req: AuthenticatedRequest, r
   const completionKey = criteriaCompletionCacheKey(room);
   const snapshot = await loadOrCreatePhaseParticipants(id, phase);
   if (!snapshot.has(userId)) {
-    return res.status(403).json({ error: '이 단계의 참여 대상이 아닙니다.' });
+    if (await isRoomMember(id, userId)) {
+      snapshot.add(userId);
+      if (SUPABASE_CONFIGURED) {
+        try {
+          await supabase.from('room_phase_participants').upsert(
+            { room_id: id, phase, user_id: userId },
+            { onConflict: 'room_id,phase,user_id' }
+          );
+        } catch (e) {}
+      }
+    } else {
+      return res.status(403).json({ error: '이 단계의 참여 대상이 아닙니다.' });
+    }
   }
 
   let completed = criteriaCompletedUsersMap.get(completionKey);
