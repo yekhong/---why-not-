@@ -1193,24 +1193,24 @@ export default function App() {
             ? data.criteria
             : (prev && prev.room.id === data.room.id && prev.criteria && prev.criteria.length > 0 ? prev.criteria : []);
 
-          // If previous roomDetails exists and incoming status is invalid/missing, preserve previous valid status
-          if (prev && prev.room.id === data.room.id && (!data.room || !data.room.status)) {
-            return {
-              ...data,
-              criteria: incomingCriteria,
-              proposals: combined,
-              proposalsCount: combined.length,
-              room: {
-                ...data.room,
-                status: prev.room.status
-              }
-            };
-          }
+          const STATUS_ORDER: Record<string, number> = {
+            DRAFT: 0, IDEA_SUBMISSION: 1, CRITERIA_PROPOSAL: 2, CRITERIA_REVIEW: 3,
+            EVALUATION: 4, EVALUATION_ROUND_2: 5, ELIMINATION: 6, FINAL_VOTE: 7, CLOSED: 8
+          };
+
+          const targetStatus = (prev && prev.room.id === data.room.id && (STATUS_ORDER[prev.room.status] || 0) > (STATUS_ORDER[data.room.status] || 0))
+            ? prev.room.status
+            : data.room.status;
+
           return {
             ...data,
             criteria: incomingCriteria,
             proposals: combined,
-            proposalsCount: combined.length
+            proposalsCount: combined.length,
+            room: {
+              ...data.room,
+              status: targetStatus
+            }
           };
         });
 

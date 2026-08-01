@@ -415,7 +415,18 @@ const ideaCompletedUsersMap = new Map<string, Set<string>>();
 // Map for 2단계 Explicitly Completed Users: room_id -> Set<user_id>
 const criteriaCompletedUsersMap = new Map<string, Set<string>>();
 // Criteria-set approval votes. The persisted equivalent is defined in the phase-2 migration.
-const criteriaSetApprovalsMap = new Map<string, Map<string, 'APPROVE' | 'REVISE'>>();
+const STATUS_PRECEDENCE: Record<RoomStatus, number> = {
+  DRAFT: 0,
+  IDEA_SUBMISSION: 1,
+  CRITERIA_PROPOSAL: 2,
+  CRITERIA_REVIEW: 3,
+  EVALUATION: 4,
+  EVALUATION_ROUND_2: 5,
+  ELIMINATION: 6,
+  FINAL_VOTE: 7,
+  CLOSED: 8
+};
+
 function getCriteriaSetVersion(room: Room): number {
   return Math.max(1, Number(room.criteriaSetVersion || 1));
 }
@@ -1959,7 +1970,20 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   );
   if (!roomRow) return null;
 
+  const existingMemoryRoom = rooms.get(roomId);
   const room = mapRoomRow(roomRow);
+
+  // Status Precedence Guard: Prevent DB latency from regressing a higher in-memory room status
+  if (
+    existingMemoryRoom &&
+    (STATUS_PRECEDENCE[existingMemoryRoom.status] || 0) > (STATUS_PRECEDENCE[room.status] || 0)
+  ) {
+    room.status = existingMemoryRoom.status;
+    if (SUPABASE_CONFIGURED) {
+      supabase.from('rooms').update({ status: existingMemoryRoom.status }).eq('id', roomId).then(() => {}).catch(() => {});
+    }
+  }
+
   rooms.set(roomId, room);
   if (ideaRows && ideaRows.length > 0) {
     ideas.set(
@@ -4513,44 +4537,43 @@ app.post('/api/rooms/:id/criteria/approval', async (req: AuthenticatedRequest, r
     if (finalized.length === 0) {
       return res.status(409).json({ error: '확정할 평가 기준이 없습니다.' });
     }
-    if (SUPABASE_CONFIGURED) {
-      const { error: criteriaError } = await supabase
-        .from('criteria')
-        .update({ confirmed: true })
-        .eq('room_id', id);
-      if (criteriaError) {
-        votes.delete(userId);
-        return res.status(503).json({ error: '기준 동의 결과를 저장하지 못했습니다.' });
-      }
-      const { error: roomError } = await supabase
-        .from('rooms')
-        .update({ status: 'EVALUATION' })
-        .eq('id', id)
-        .eq('status', 'CRITERIA_REVIEW');
-      if (roomError) {
-        votes.delete(userId);
-        return res.status(503).json({ error: '평가 단계로 이동하지 못했습니다.' });
-      }
-    }
     criteria.set(id, finalized);
     room.status = 'EVALUATION';
+    rooms.set(id, room);
+
+    if (SUPABASE_CONFIGURED) {
+      try {
+        await supabase
+          .from('criteria')
+          .update({ confirmed: true })
+          .eq('room_id', id);
+        await supabase
+          .from('rooms')
+          .update({ status: 'EVALUATION' })
+          .eq('id', id);
+      } catch (err) {
+        console.warn('Supabase criteria approval status update notice:', err);
+      }
+    }
   } else if (allEligibleParticipantsVoted) {
     const nextVersion = approvalVersion + 1;
-    if (SUPABASE_CONFIGURED) {
-      const { data: changedRows, error } = await supabase
-        .from('rooms')
-        .update({
-          status: 'CRITERIA_PROPOSAL',
-          criteria_set_version: nextVersion
-        })
-        .eq('id', id)
-        .eq('status', 'CRITERIA_REVIEW')
-        .eq('criteria_set_version', approvalVersion)
-        .select('id');
-      if (error) return res.status(503).json({ error: '기준 보완 단계로 이동하지 못했습니다.' });
-    }
     room.criteriaSetVersion = nextVersion;
     room.status = 'CRITERIA_PROPOSAL';
+    rooms.set(id, room);
+
+    if (SUPABASE_CONFIGURED) {
+      try {
+        await supabase
+          .from('rooms')
+          .update({
+            status: 'CRITERIA_PROPOSAL',
+            criteria_set_version: nextVersion
+          })
+          .eq('id', id);
+      } catch (err) {
+        console.warn('Supabase criteria revision status update notice:', err);
+      }
+    }
     await loadOrCreatePhaseParticipants(id, criteriaPhase(room, 'CRITERIA_PROPOSAL'));
   }
 
