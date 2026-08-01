@@ -4731,8 +4731,21 @@ app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, re
     }
 
     const eligible = await loadOrCreatePhaseParticipants(id, 'IDEA_SUBMISSION');
-    const completed = ideaCompletedUsersMap.get(id) || new Set<string>();
-    const completedEligibleCount = Array.from(completed).filter(userId => eligible.has(userId)).length;
+    const roomIdeasForCheck = ideas.get(id) || [];
+    const uniqueSubmitters = new Set(roomIdeasForCheck.map(i => i.submitterId || (i as any).participantId || (i as any).userId || (i as any).email || (i as any).createdBy).filter(Boolean));
+    if (SUPABASE_CONFIGURED) {
+      const { data: completionRows } = await supabase
+        .from('phase_completions')
+        .select('user_id')
+        .eq('room_id', id)
+        .eq('phase', 'IDEA_SUBMISSION');
+      if (completionRows) {
+        ideaCompletedUsersMap.set(id, new Set(completionRows.map((row: any) => row.user_id)));
+      }
+    }
+    const ideaCompletedSet = ideaCompletedUsersMap.get(id) || new Set<string>();
+    const allCompletedUsers = new Set<string>([...ideaCompletedSet, ...uniqueSubmitters]);
+    const completedEligibleCount = Array.from(allCompletedUsers).filter(userId => eligible.has(userId)).length;
     if (eligible.size === 0 || completedEligibleCount < eligible.size) {
       return res.status(409).json({
         error: `모든 참여자가 선택지 작성을 완료한 뒤 시작할 수 있습니다. (${completedEligibleCount}/${eligible.size}명 완료)`
