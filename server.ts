@@ -1961,63 +1961,73 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
 
   const room = mapRoomRow(roomRow);
   rooms.set(roomId, room);
-  ideas.set(
-    roomId,
-    (ideaRows || []).map((row: any) => ({
-      id: row.id,
-      roomId: row.room_id,
-      title: row.title,
-      description: row.description || '',
-      submitterId: row.submitter_id,
-      submitterName: row.submitter_name || '익명 아이디어',
-      attachmentUrl: row.attachment_url || undefined,
-      pdfAttachmentUrl: row.pdf_attachment_url || undefined,
-      tags: row.tags || [],
-      status: row.status || 'ACTIVE',
-      eliminatedRound: row.eliminated_round || undefined
-    }))
-  );
-  criteria.set(
-    roomId,
-    (criterionRows || []).map((row: any) => ({
-      id: row.id,
-      roomId: row.room_id,
-      name: row.name,
-      description: row.description || '',
-      sourceClusterId: row.source_cluster_id || undefined,
-      confirmed: Boolean(row.confirmed)
-    }))
-  );
-  criterionProposals.set(
-    roomId,
-    (proposalRows || []).map((row: any) => ({
-      id: row.id,
-      roomId: row.room_id,
-      rawText: row.raw_text,
-      proposerId: row.proposer_id || undefined,
-      clusterId: row.cluster_id || undefined,
-      isAiSuggested: Boolean(row.is_ai_suggested)
-    }))
-  );
-  const participantMap = new Map<string, string>();
-  (participantRows || []).forEach((row: any) => participantMap.set(row.user_id, row.nickname || '참여자'));
-  participants.set(roomId, participantMap);
-  evaluations.set(
-    roomId,
-    (evaluationRows || []).map((row: any) => ({
-      id: row.id,
-      roomId: row.room_id,
-      ideaId: row.idea_id,
-      evaluatorId: row.evaluator_id,
-      decision: row.decision,
-      excludedCriterionIds: row.excluded_criterion_ids || [],
-      criteriaEvaluations: row.criteria_evaluations || {},
-      reasonText: row.reason_text || '',
-      reasonType: row.reason_type || 'PREFERENCE',
-      round: row.round || 1,
-      roundId: row.round_id || undefined
-    }))
-  );
+  if (ideaRows && ideaRows.length > 0) {
+    ideas.set(
+      roomId,
+      ideaRows.map((row: any) => ({
+        id: row.id,
+        roomId: row.room_id,
+        title: row.title,
+        description: row.description || '',
+        submitterId: row.submitter_id,
+        submitterName: row.submitter_name || '익명 아이디어',
+        attachmentUrl: row.attachment_url || undefined,
+        pdfAttachmentUrl: row.pdf_attachment_url || undefined,
+        tags: row.tags || [],
+        status: row.status || 'ACTIVE',
+        eliminatedRound: row.eliminated_round || undefined
+      }))
+    );
+  }
+  if (criterionRows && criterionRows.length > 0) {
+    criteria.set(
+      roomId,
+      criterionRows.map((row: any) => ({
+        id: row.id,
+        roomId: row.room_id,
+        name: row.name,
+        description: row.description || '',
+        sourceClusterId: row.source_cluster_id || undefined,
+        confirmed: Boolean(row.confirmed)
+      }))
+    );
+  }
+  if (proposalRows && proposalRows.length > 0) {
+    criterionProposals.set(
+      roomId,
+      proposalRows.map((row: any) => ({
+        id: row.id,
+        roomId: row.room_id,
+        rawText: row.raw_text,
+        proposerId: row.proposer_id || undefined,
+        clusterId: row.cluster_id || undefined,
+        isAiSuggested: Boolean(row.is_ai_suggested)
+      }))
+    );
+  }
+  if (participantRows && participantRows.length > 0) {
+    const participantMap = new Map<string, string>();
+    participantRows.forEach((row: any) => participantMap.set(row.user_id, row.nickname || '참여자'));
+    participants.set(roomId, participantMap);
+  }
+  if (evaluationRows && evaluationRows.length > 0) {
+    evaluations.set(
+      roomId,
+      evaluationRows.map((row: any) => ({
+        id: row.id,
+        roomId: row.room_id,
+        ideaId: row.idea_id,
+        evaluatorId: row.evaluator_id,
+        decision: row.decision,
+        excludedCriterionIds: row.excluded_criterion_ids || [],
+        criteriaEvaluations: row.criteria_evaluations || {},
+        reasonText: row.reason_text || '',
+        reasonType: row.reason_type || 'PREFERENCE',
+        round: row.round || 1,
+        roundId: row.round_id || undefined
+      }))
+    );
+  }
   await loadDecisionRounds(roomId);
 
   if (SUPABASE_CONFIGURED) {
