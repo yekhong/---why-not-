@@ -536,6 +536,115 @@ function getCurrentDecisionRound(room: Room): DecisionRound | undefined {
   return [...rounds].reverse().find(round => round.status === 'ACTIVE');
 }
 
+async function updateDecisionRoundStage(
+  room: Room,
+  stage: 'FEEDBACK' | 'REVISION' | 'EVALUATION' | 'FINAL_VOTE'
+): Promise<void> {
+  const round = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+  if (!round) throw new Error('현재 평가 회차를 찾을 수 없습니다.');
+  round.stage = stage;
+  if (SUPABASE_CONFIGURED) {
+    const { error } = await supabase
+      .from('evaluation_rounds')
+      .update({ stage })
+      .eq('id', round.id)
+      .eq('room_id', room.id);
+    if (error) throw new Error('보완 단계 상태를 저장하지 못했습니다.');
+  }
+}
+
+async function buildRefinementState(room: Room, userId: string) {
+  await loadDecisionRounds(room.id);
+  const rounds = decisionRoundsMap.get(room.id) || [];
+  const refinementRounds = rounds.filter(
+    round => (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT'
+  ) as RefinementAwareDecisionRound[];
+  const current = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+  const activeRefinement = current?.roundKind === 'REFINEMENT' ? current : undefined;
+  const settings = getRefinementSettings(room);
+
+  const base = {
+    enabled: settings.enabled,
+    used: refinementRounds.length > 0,
+    stage: activeRefinement?.stage || null,
+    roundId: activeRefinement?.id || null,
+    roundNumber: activeRefinement?.roundNumber || null,
+    feedbackSubmittedCount: 0,
+    feedbackExpectedCount: 0,
+    myFeedbackSubmitted: false,
+    revisionSubmittedCount: 0,
+    revisionExpectedCount: 0,
+    myRevisions: [] as Array<Record<string, unknown>>,
+    feedbackForMyIdeas: {} as Record<string, Array<Record<string, unknown>>>
+  };
+  if (!SUPABASE_CONFIGURED || !activeRefinement) return base;
+
+  const roomIdeas = ideas.get(room.id) || [];
+  const candidates = roomIdeas.filter(idea => idea.status === 'ACTIVE' || idea.status === 'WINNER');
+  const candidateIds = candidates.map(idea => idea.id);
+  if (candidateIds.length === 0) return base;
+
+  const [{ data: participantRows }, { data: feedbackRows }, { data: versionRows }] = await Promise.all([
+    supabase
+      .from('evaluation_round_participants')
+      .select('user_id')
+      .eq('round_id', activeRefinement.id)
+      .eq('is_required', true),
+    supabase
+      .from('candidate_feedback')
+      .select('idea_id,evaluator_id,response_type,question_text,concern_text,suggestion_text,is_final')
+      .eq('round_id', activeRefinement.id)
+      .eq('is_final', true),
+    supabase
+      .from('idea_versions')
+      .select('id,idea_id,title,description,approval_status,approved_at')
+      .eq('round_id', activeRefinement.id)
+      .eq('version_type', 'REFINED')
+      .eq('approval_status', 'APPROVED')
+  ]);
+
+  const requiredUsers = new Set((participantRows || []).map((row: any) => String(row.user_id)));
+  const submittedByUser = new Map<string, Set<string>>();
+  (feedbackRows || []).forEach((row: any) => {
+    const evaluatorId = String(row.evaluator_id);
+    if (!submittedByUser.has(evaluatorId)) submittedByUser.set(evaluatorId, new Set());
+    submittedByUser.get(evaluatorId)!.add(String(row.idea_id));
+  });
+  const completedUsers = Array.from(requiredUsers).filter(requiredUserId =>
+    candidateIds.every(candidateId => submittedByUser.get(requiredUserId)?.has(candidateId))
+  );
+  base.feedbackExpectedCount = requiredUsers.size;
+  base.feedbackSubmittedCount = completedUsers.length;
+  base.myFeedbackSubmitted = completedUsers.includes(userId);
+  base.revisionExpectedCount = candidateIds.length;
+  base.revisionSubmittedCount = new Set((versionRows || []).map((row: any) => String(row.idea_id))).size;
+
+  const myIdeaIds = new Set(candidates.filter(idea => idea.submitterId === userId).map(idea => idea.id));
+  base.myRevisions = (versionRows || [])
+    .filter((row: any) => myIdeaIds.has(String(row.idea_id)))
+    .map((row: any) => ({
+      id: row.id,
+      ideaId: row.idea_id,
+      title: row.title,
+      description: row.description,
+      approvedAt: row.approved_at
+    }));
+  if (activeRefinement.stage === 'REVISION' || activeRefinement.stage === 'EVALUATION') {
+    (feedbackRows || []).forEach((row: any) => {
+      const ideaId = String(row.idea_id);
+      if (!myIdeaIds.has(ideaId)) return;
+      if (!base.feedbackForMyIdeas[ideaId]) base.feedbackForMyIdeas[ideaId] = [];
+      base.feedbackForMyIdeas[ideaId].push({
+        responseType: row.response_type,
+        questionText: row.question_text || '',
+        concernText: row.concern_text || '',
+        suggestionText: row.suggestion_text || ''
+      });
+    });
+  }
+  return base;
+}
+
 async function loadDecisionRounds(roomId: string): Promise<DecisionRound[]> {
   const cached = decisionRoundsMap.get(roomId);
   if (cached) return cached;
@@ -1891,6 +2000,7 @@ function isHostOnlyRoomMutation(req: Request): boolean {
     suffix === 'elimination/next' ||
     suffix === 'quick/start-vote' ||
     suffix === 'star-vote/resolve-tie' ||
+    suffix === 'refinement/start' ||
     suffix === 'review/restart' ||
     suffix === 'close' ||
     suffix.startsWith('seed-')
@@ -2026,7 +2136,7 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   ) {
     room.status = existingMemoryRoom.status;
     if (SUPABASE_CONFIGURED) {
-      supabase.from('rooms').update({ status: existingMemoryRoom.status }).eq('id', roomId).then(() => {}).catch(() => {});
+      supabase.from('rooms').update({ status: existingMemoryRoom.status }).eq('id', roomId).then(() => {}, () => {});
     }
   }
 
@@ -3501,6 +3611,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     tieSlots: room.tieSlots || 0,
     finalVoteExpectedCount: starVoteThreshold
   };
+  (result as any).refinement = await buildRefinementState(room, userId);
 
   // ---------------------------------------------------------------
   // SECURITY GATE
@@ -5097,15 +5208,244 @@ app.post('/api/rooms/:id/star-vote/resolve-tie', async (req: AuthenticatedReques
   }
 });
 
+/** Start the single agreed refinement flow before the final ballot. */
+app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const room = await hydrateRoomFromSupabase(id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const settings = getRefinementSettings(room);
+    if (!settings.enabled || settings.maxRounds < 1) {
+      return res.status(409).json({ error: '이 회의실은 후보 보완·재평가를 사용하지 않습니다.' });
+    }
+    if (room.decisionMode === 'QUICK') {
+      return res.status(409).json({ error: '빠른 결정방에서는 후보 보완·재평가를 진행하지 않습니다.' });
+    }
+    if (room.status !== 'EVALUATION') {
+      return res.status(409).json({ error: '1차 익명 평가가 끝난 뒤에만 후보 보완을 시작할 수 있습니다.' });
+    }
+
+    const roomIdeas = ideas.get(id) || [];
+    const candidates = roomIdeas.filter(idea => idea.status === 'ACTIVE');
+    if (candidates.length < 2) {
+      return res.status(409).json({ error: '최종 투표 전까지 생존 후보가 2개 이상 필요합니다.' });
+    }
+    await loadDecisionRounds(id);
+    const rounds = decisionRoundsMap.get(id) || [];
+    if (rounds.some(round => (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT')) {
+      return res.status(409).json({ error: '후보 보완·재평가는 방마다 한 번만 진행할 수 있습니다.' });
+    }
+    const sourceRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+    if (!sourceRound || sourceRound.roundKind === 'REFINEMENT') {
+      return res.status(409).json({ error: '최초 평가 회차를 확인할 수 없습니다.' });
+    }
+    const currentEvaluators = new Set(
+      (evaluations.get(id) || [])
+        .filter(evaluation => !evaluation.roundId || evaluation.roundId === sourceRound.id)
+        .map(evaluation => String(evaluation.evaluatorId))
+    );
+    if (currentEvaluators.size < Math.max(1, room.minResponseThreshold || 1)) {
+      return res.status(409).json({ error: '먼저 1차 익명 평가의 최소 응답 수를 충족해 주세요.' });
+    }
+
+    await completeDecisionRound(room, roomIdeas, {
+      outcome: 'REFINEMENT_STARTED',
+      requestedAt: new Date().toISOString()
+    });
+    room.currentRoundId = undefined;
+    const refinementRound = await ensureDecisionRound(room, candidates, {
+      roundKind: 'REFINEMENT',
+      parentRoundId: sourceRound.id,
+      criteriaSetVersion: sourceRound.criteriaSetVersion || getCriteriaSetVersion(room),
+      stage: 'FEEDBACK'
+    }) as RefinementAwareDecisionRound;
+
+    const eligibleUsers = new Set(participants.get(id)?.keys() || []);
+    eligibleUsers.add(room.hostId);
+    if (SUPABASE_CONFIGURED) {
+      const snapshotRows = Array.from(eligibleUsers).map(userId => ({
+        round_id: refinementRound.id,
+        room_id: id,
+        user_id: userId,
+        is_required: true,
+        submission_status: 'NOT_STARTED'
+      }));
+      const { error } = await supabase
+        .from('evaluation_round_participants')
+        .upsert(snapshotRows, { onConflict: 'round_id,user_id' });
+      if (error) throw new Error('보완 회차 참여자 명단을 저장하지 못했습니다.');
+    }
+    room.status = 'EVALUATION';
+    room.finalVoteStatus = 'NOT_STARTED';
+    starVotesMap.set(id, new Map());
+    await persistFinalVoteRoomState(room);
+    rooms.set(id, room);
+    res.json({ success: true, roundId: refinementRound.id, stage: 'FEEDBACK' });
+  } catch (error) {
+    console.error('Refinement start error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : '후보 보완을 시작하지 못했습니다.' });
+  }
+});
+
+/** Finalize anonymous feedback for every surviving candidate. */
+app.post('/api/rooms/:id/refinement/feedback', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.auth!.userId;
+    const room = await hydrateRoomFromSupabase(id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const round = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+    if (!round || round.roundKind !== 'REFINEMENT' || round.stage !== 'FEEDBACK') {
+      return res.status(409).json({ error: '현재는 익명 피드백 제출 단계가 아닙니다.' });
+    }
+    if (!SUPABASE_CONFIGURED) return res.status(503).json({ error: '피드백 저장소가 연결되지 않았습니다.' });
+    const candidates = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    if (items.length !== candidates.length || candidates.some(candidate => !items.some((item: any) => item.ideaId === candidate.id))) {
+      return res.status(400).json({ error: '모든 생존 후보에 대해 피드백 유형을 선택해 주세요.' });
+    }
+    const allowedTypes = new Set(['FEEDBACK', 'NO_COMMENT', 'UNSURE']);
+    const rows = items.map((item: any) => {
+      const responseType = String(item.responseType || '');
+      if (!allowedTypes.has(responseType)) throw new Error('피드백 유형이 올바르지 않습니다.');
+      const questionText = String(item.questionText || '').trim().slice(0, 2000);
+      const concernText = String(item.concernText || '').trim().slice(0, 2000);
+      const suggestionText = String(item.suggestionText || '').trim().slice(0, 2000);
+      if (responseType === 'FEEDBACK' && !questionText && !concernText && !suggestionText) {
+        throw new Error('피드백을 선택한 후보에는 질문·우려·제안 중 하나를 입력해 주세요.');
+      }
+      return {
+        room_id: id,
+        round_id: round.id,
+        idea_id: String(item.ideaId),
+        evaluator_id: userId,
+        response_type: responseType,
+        question_text: questionText || null,
+        concern_text: concernText || null,
+        suggestion_text: suggestionText || null,
+        is_final: true,
+        finalized_at: new Date().toISOString()
+      };
+    });
+    const { error } = await supabase.from('candidate_feedback').upsert(rows, {
+      onConflict: 'round_id,idea_id,evaluator_id'
+    });
+    if (error) throw new Error(error.message.includes('immutable') ? '이미 최종 제출한 피드백은 수정할 수 없습니다.' : '익명 피드백을 저장하지 못했습니다.');
+    await supabase
+      .from('evaluation_round_participants')
+      .update({ submission_status: 'FINAL', finalized_at: new Date().toISOString() })
+      .eq('round_id', round.id)
+      .eq('user_id', userId);
+
+    const state = await buildRefinementState(room, userId);
+    if (state.feedbackExpectedCount > 0 && state.feedbackSubmittedCount >= state.feedbackExpectedCount) {
+      await updateDecisionRoundStage(room, 'REVISION');
+    }
+    res.json({ success: true, stage: (getCurrentDecisionRound(room) as RefinementAwareDecisionRound).stage });
+  } catch (error) {
+    console.error('Refinement feedback error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : '익명 피드백을 제출하지 못했습니다.' });
+  }
+});
+
+/** Author approves one refined version of their own surviving candidate. */
+app.post('/api/rooms/:id/refinement/revision', async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.auth!.userId;
+    const room = await hydrateRoomFromSupabase(id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const round = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+    if (!round || round.roundKind !== 'REFINEMENT' || round.stage !== 'REVISION') {
+      return res.status(409).json({ error: '현재는 작성자 보완안 승인 단계가 아닙니다.' });
+    }
+    if (!SUPABASE_CONFIGURED) return res.status(503).json({ error: '보완안 저장소가 연결되지 않았습니다.' });
+    const ideaId = String(req.body.ideaId || '');
+    const roomIdeas = ideas.get(id) || [];
+    const idea = roomIdeas.find(candidate => candidate.id === ideaId && candidate.status === 'ACTIVE');
+    if (!idea) return res.status(404).json({ error: '생존 후보를 찾을 수 없습니다.' });
+    if (idea.submitterId !== userId) {
+      return res.status(403).json({ error: '자신이 작성한 후보만 보완하고 승인할 수 있습니다.' });
+    }
+    const title = String(req.body.title || '').trim().slice(0, 200);
+    const description = String(req.body.description || '').trim().slice(0, 5000);
+    if (!title) return res.status(400).json({ error: '보완안 제목을 입력해 주세요.' });
+    const { data: existing } = await supabase
+      .from('idea_versions')
+      .select('id')
+      .eq('round_id', round.id)
+      .eq('idea_id', ideaId)
+      .eq('version_type', 'REFINED')
+      .eq('approval_status', 'APPROVED')
+      .maybeSingle();
+    if (existing) return res.status(409).json({ error: '이 후보의 보완안은 이미 승인·제출되었습니다.' });
+    const { data: latestVersion } = await supabase
+      .from('idea_versions')
+      .select('version_number')
+      .eq('idea_id', ideaId)
+      .order('version_number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const versionId = crypto.randomUUID();
+    const approvedAt = new Date().toISOString();
+    const { error: versionError } = await supabase.from('idea_versions').insert({
+      id: versionId,
+      room_id: id,
+      idea_id: ideaId,
+      round_id: round.id,
+      version_number: Math.max(1, Number(latestVersion?.version_number || 0) + 1),
+      version_type: 'REFINED',
+      title,
+      description,
+      source_snapshot: { previousTitle: idea.title, previousDescription: idea.description },
+      approval_status: 'APPROVED',
+      created_by: userId,
+      approved_by: userId,
+      approved_at: approvedAt
+    });
+    if (versionError) throw new Error('보완안 버전을 저장하지 못했습니다.');
+    const { error: ideaError } = await supabase
+      .from('ideas')
+      .update({ title, description, current_version_id: versionId })
+      .eq('id', ideaId)
+      .eq('room_id', id)
+      .eq('submitter_id', userId);
+    if (ideaError) throw new Error('승인된 보완안을 후보에 반영하지 못했습니다.');
+    idea.title = title;
+    idea.description = description;
+    ideas.set(id, roomIdeas);
+
+    const { count } = await supabase
+      .from('idea_versions')
+      .select('idea_id', { count: 'exact', head: true })
+      .eq('round_id', round.id)
+      .eq('version_type', 'REFINED')
+      .eq('approval_status', 'APPROVED');
+    const candidateCount = roomIdeas.filter(candidate => candidate.status === 'ACTIVE').length;
+    if ((count || 0) >= candidateCount) {
+      await updateDecisionRoundStage(room, 'EVALUATION');
+      room.status = 'EVALUATION';
+      await persistFinalVoteRoomState(room);
+    }
+    res.json({ success: true, stage: (getCurrentDecisionRound(room) as RefinementAwareDecisionRound).stage });
+  } catch (error) {
+    console.error('Refinement revision error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : '보완안을 승인·제출하지 못했습니다.' });
+  }
+});
+
 /**
- * Start a new immutable review round with the same candidates and, for a
- * structured room, the already agreed criteria. Previous votes stay in history.
+ * Legacy restart endpoint for rooms that do not use the agreed V4 refinement.
  */
 app.post('/api/rooms/:id/review/restart', async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
     const room = await hydrateRoomFromSupabase(id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const refinementSettings = getRefinementSettings(room);
+    if (refinementSettings.enabled) {
+      return res.status(409).json({ error: 'V4 회의실은 최종 투표 전에 후보 보완 절차를 진행해 주세요.' });
+    }
     if (room.finalVoteStatus === 'TIE_PENDING') {
       return res.status(409).json({ error: '먼저 현재 회차의 동률 결정을 완료해 주세요.' });
     }

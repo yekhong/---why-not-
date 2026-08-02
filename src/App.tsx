@@ -47,6 +47,31 @@ import {
   InviteDetailsResponse
 } from './types';
 
+type RefinementFeedbackDraft = {
+  responseType: '' | 'FEEDBACK' | 'NO_COMMENT' | 'UNSURE';
+  questionText: string;
+  concernText: string;
+  suggestionText: string;
+};
+
+type RefinementState = {
+  enabled: boolean;
+  used: boolean;
+  stage: 'FEEDBACK' | 'REVISION' | 'EVALUATION' | 'FINAL_VOTE' | null;
+  feedbackSubmittedCount: number;
+  feedbackExpectedCount: number;
+  myFeedbackSubmitted: boolean;
+  revisionSubmittedCount: number;
+  revisionExpectedCount: number;
+  myRevisions: Array<{ ideaId: string; title: string; description: string }>;
+  feedbackForMyIdeas: Record<string, Array<{
+    responseType: string;
+    questionText: string;
+    concernText: string;
+    suggestionText: string;
+  }>>;
+};
+
 
 // Custom lightweight Markdown-to-JSX Parser for the AI reports
 function SafeMarkdown({ content }: { content: string }) {
@@ -308,6 +333,9 @@ export default function App() {
   const [fetchRoomError, setFetchRoomError] = useState(false);
   const [showIdeaSubmissionGate, setShowIdeaSubmissionGate] = useState(false);
   const isFetchingRoomRef = useRef(false);
+  const [refinementFeedbackDrafts, setRefinementFeedbackDrafts] = useState<Record<string, RefinementFeedbackDraft>>({});
+  const [refinementRevisionDrafts, setRefinementRevisionDrafts] = useState<Record<string, { title: string; description: string }>>({});
+  const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -723,6 +751,96 @@ export default function App() {
       await fetchRoomDetails(activeRoomId);
     } catch (error: any) {
       triggerToast(error.message || '재검토 회차를 시작하지 못했습니다.', 'error');
+    }
+  };
+
+  const handleStartRefinement = async () => {
+    if (!activeRoomId) return;
+    if (activeIdeasCount < 2) {
+      triggerToast('최종 투표 전까지 생존 후보가 2개 이상 필요합니다.', 'error');
+      return;
+    }
+    if (!window.confirm('기존 1차 평가 결과를 보존하고 후보 피드백·보완을 시작하시겠습니까?')) return;
+    setIsSubmittingRefinement(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '후보 보완을 시작하지 못했습니다.');
+      setRefinementFeedbackDrafts({});
+      triggerToast('익명 피드백 단계가 시작되었습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error: any) {
+      triggerToast(error.message || '후보 보완을 시작하지 못했습니다.', 'error');
+    } finally {
+      setIsSubmittingRefinement(false);
+    }
+  };
+
+  const handleSubmitRefinementFeedback = async () => {
+    if (!activeRoomId || !roomDetails) return;
+    const candidates = roomDetails.ideas.filter(idea => idea.status === 'ACTIVE');
+    const missing = candidates.some(idea => !refinementFeedbackDrafts[idea.id]?.responseType);
+    if (missing) {
+      triggerToast('모든 생존 후보의 피드백 유형을 선택해 주세요.', 'error');
+      return;
+    }
+    const invalid = candidates.some(idea => {
+      const draft = refinementFeedbackDrafts[idea.id];
+      return draft.responseType === 'FEEDBACK' &&
+        !draft.questionText.trim() && !draft.concernText.trim() && !draft.suggestionText.trim();
+    });
+    if (invalid) {
+      triggerToast('피드백을 선택한 후보에는 질문·우려·제안 중 하나를 입력해 주세요.', 'error');
+      return;
+    }
+    if (!window.confirm('최종 제출한 익명 피드백은 수정할 수 없습니다. 제출하시겠습니까?')) return;
+    setIsSubmittingRefinement(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: candidates.map(idea => ({ ideaId: idea.id, ...refinementFeedbackDrafts[idea.id] }))
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '익명 피드백을 제출하지 못했습니다.');
+      triggerToast('모든 후보의 익명 피드백을 최종 제출했습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error: any) {
+      triggerToast(error.message || '익명 피드백을 제출하지 못했습니다.', 'error');
+    } finally {
+      setIsSubmittingRefinement(false);
+    }
+  };
+
+  const handleSubmitRefinementRevision = async (idea: Idea) => {
+    if (!activeRoomId) return;
+    const draft = refinementRevisionDrafts[idea.id] || { title: idea.title, description: idea.description || '' };
+    if (!draft.title.trim()) {
+      triggerToast('보완안 제목을 입력해 주세요.', 'error');
+      return;
+    }
+    if (!window.confirm('이 보완안을 작성자 승인본으로 확정하시겠습니까? 승인 후에는 수정할 수 없습니다.')) return;
+    setIsSubmittingRefinement(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/revision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ideaId: idea.id, title: draft.title, description: draft.description })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '보완안을 승인·제출하지 못했습니다.');
+      triggerToast('작성자 승인 보완안을 제출했습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error: any) {
+      triggerToast(error.message || '보완안을 승인·제출하지 못했습니다.', 'error');
+    } finally {
+      setIsSubmittingRefinement(false);
     }
   };
 
@@ -2604,6 +2722,7 @@ export default function App() {
     if (!roomDetails || !Array.isArray(roomDetails.ideas)) return 0;
     return roomDetails.ideas.filter(i => i && i.status === 'ACTIVE').length;
   }, [roomDetails]);
+  const refinement = ((roomDetails as any)?.refinement || null) as RefinementState | null;
 
   // Find objective constraint removal candidates (those with high objective exclusions)
   const objectiveCandidates = useMemo(() => {
@@ -4866,10 +4985,145 @@ export default function App() {
                     </div>
                   )}
 
+                  {roomDetails.room.status === 'EVALUATION' && refinement?.stage === 'FEEDBACK' && (
+                    <div className="bg-white p-5 md:p-7 rounded-2xl border border-indigo-200 shadow-sm space-y-6">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                            <Sparkles className="w-5 h-5 text-indigo-600" /> 후보별 익명 피드백
+                          </h2>
+                          <p className="text-xs text-slate-500 mt-1">
+                            모든 생존 후보를 같은 방식으로 검토합니다. 최종 제출 후에는 수정할 수 없습니다.
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-3 py-2 rounded-xl">
+                          제출 {refinement.feedbackSubmittedCount} / {refinement.feedbackExpectedCount}명
+                        </span>
+                      </div>
+
+                      {refinement.myFeedbackSubmitted ? (
+                        <div className="p-8 text-center bg-emerald-50 border border-emerald-200 rounded-2xl space-y-2">
+                          <CheckCircle className="w-8 h-8 text-emerald-600 mx-auto" />
+                          <h3 className="font-extrabold text-emerald-900">내 익명 피드백 제출 완료</h3>
+                          <p className="text-xs text-emerald-700">다른 참여자의 최종 제출을 기다리고 있습니다.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-5">
+                          {roomDetails.ideas.filter(idea => idea.status === 'ACTIVE').map((idea, index) => {
+                            const draft = refinementFeedbackDrafts[idea.id] || {
+                              responseType: '', questionText: '', concernText: '', suggestionText: ''
+                            };
+                            const updateDraft = (change: Partial<RefinementFeedbackDraft>) =>
+                              setRefinementFeedbackDrafts(previous => ({
+                                ...previous,
+                                [idea.id]: { ...draft, ...change }
+                              }));
+                            return (
+                              <div key={idea.id} className="p-4 md:p-5 border border-slate-200 rounded-2xl space-y-4">
+                                <div>
+                                  <span className="text-[10px] font-bold text-indigo-600">생존 후보 #{index + 1}</span>
+                                  <h3 className="font-extrabold text-slate-900">{idea.title}</h3>
+                                  <p className="text-xs text-slate-500 mt-1 whitespace-pre-line">{idea.description}</p>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                  {([
+                                    ['FEEDBACK', '보완 의견 있음'],
+                                    ['NO_COMMENT', '의견 없음'],
+                                    ['UNSURE', '판단 어려움']
+                                  ] as const).map(([value, label]) => (
+                                    <button key={value} type="button" onClick={() => updateDraft({ responseType: value })}
+                                      className={`px-3 py-2 rounded-xl border text-xs font-bold transition ${draft.responseType === value ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300'}`}>
+                                      {label}
+                                    </button>
+                                  ))}
+                                </div>
+                                {draft.responseType === 'FEEDBACK' && (
+                                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <textarea value={draft.questionText} onChange={event => updateDraft({ questionText: event.target.value })}
+                                      placeholder="확인할 질문" className="min-h-24 p-3 border border-slate-200 rounded-xl text-xs resize-y" />
+                                    <textarea value={draft.concernText} onChange={event => updateDraft({ concernText: event.target.value })}
+                                      placeholder="우려되는 점" className="min-h-24 p-3 border border-slate-200 rounded-xl text-xs resize-y" />
+                                    <textarea value={draft.suggestionText} onChange={event => updateDraft({ suggestionText: event.target.value })}
+                                      placeholder="보완 제안" className="min-h-24 p-3 border border-slate-200 rounded-xl text-xs resize-y" />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          <button type="button" disabled={isSubmittingRefinement} onClick={handleSubmitRefinementFeedback}
+                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-2xl text-sm font-extrabold transition">
+                            모든 후보 피드백 최종 제출
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {roomDetails.room.status === 'EVALUATION' && refinement?.stage === 'REVISION' && (
+                    <div className="bg-white p-5 md:p-7 rounded-2xl border border-amber-200 shadow-sm space-y-6">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                            <Edit2 className="w-5 h-5 text-amber-600" /> 작성자 보완안 작성·승인
+                          </h2>
+                          <p className="text-xs text-slate-500 mt-1">
+                            작성자는 자신의 후보만 보완할 수 있습니다. 원문을 유지하려면 내용을 바꾸지 않고 승인하면 됩니다.
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-2 rounded-xl">
+                          승인 {refinement.revisionSubmittedCount} / {refinement.revisionExpectedCount}개
+                        </span>
+                      </div>
+                      {roomDetails.ideas.filter(idea => idea.status === 'ACTIVE' && idea.submitterId === userId).length === 0 ? (
+                        <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-2xl">
+                          <p className="font-bold text-slate-700">작성자가 보완안을 승인하는 중입니다.</p>
+                          <p className="text-xs text-slate-500 mt-1">모든 생존 후보의 승인본이 준비되면 동일 기준 재평가가 자동으로 시작됩니다.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-5">
+                          {roomDetails.ideas.filter(idea => idea.status === 'ACTIVE' && idea.submitterId === userId).map(idea => {
+                            const alreadySubmitted = refinement.myRevisions.some(revision => revision.ideaId === idea.id);
+                            const draft = refinementRevisionDrafts[idea.id] || { title: idea.title, description: idea.description || '' };
+                            const feedback = refinement.feedbackForMyIdeas[idea.id] || [];
+                            return (
+                              <div key={idea.id} className="p-4 md:p-5 border border-slate-200 rounded-2xl space-y-4">
+                                <div>
+                                  <h3 className="font-extrabold text-slate-900">{idea.title}</h3>
+                                  <p className="text-[11px] text-slate-500">익명 피드백 {feedback.length}건</p>
+                                </div>
+                                {feedback.length > 0 && (
+                                  <div className="space-y-2 p-3 bg-slate-50 border border-slate-100 rounded-xl">
+                                    {feedback.map((item, feedbackIndex) => (
+                                      <div key={feedbackIndex} className="text-xs text-slate-700 border-b last:border-b-0 border-slate-200 pb-2 last:pb-0">
+                                        {[item.questionText, item.concernText, item.suggestionText].filter(Boolean).join(' · ') ||
+                                          (item.responseType === 'NO_COMMENT' ? '별도 의견 없음' : '판단 어려움')}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <input value={draft.title} disabled={alreadySubmitted}
+                                  onChange={event => setRefinementRevisionDrafts(previous => ({ ...previous, [idea.id]: { ...draft, title: event.target.value } }))}
+                                  className="w-full p-3 border border-slate-200 rounded-xl text-sm font-bold disabled:bg-slate-100" />
+                                <textarea value={draft.description} disabled={alreadySubmitted}
+                                  onChange={event => setRefinementRevisionDrafts(previous => ({ ...previous, [idea.id]: { ...draft, description: event.target.value } }))}
+                                  className="w-full min-h-32 p-3 border border-slate-200 rounded-xl text-sm resize-y disabled:bg-slate-100" />
+                                <button type="button" disabled={alreadySubmitted || isSubmittingRefinement}
+                                  onClick={() => handleSubmitRefinementRevision(idea)}
+                                  className="w-full py-3 bg-amber-400 hover:bg-amber-300 disabled:bg-slate-300 text-slate-950 rounded-xl text-sm font-extrabold transition">
+                                  {alreadySubmitted ? '작성자 승인·제출 완료' : '이 보완안을 승인하고 제출'}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* -----------------------------------------------------------
                     VIEW 4: EVALUATION
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'EVALUATION' && (() => {
+                  {roomDetails.room.status === 'EVALUATION' && refinement?.stage !== 'FEEDBACK' && refinement?.stage !== 'REVISION' && (() => {
                     const currentEvaluatorsCount = Math.max(0, (roomDetails.evaluatorsCount || 0) - (isReEditingEvaluation ? 1 : 0));
                     const minThreshold = roomDetails.room.minResponseThreshold || 1;
                     const isMinMet = currentEvaluatorsCount >= minThreshold;
@@ -4947,11 +5201,16 @@ export default function App() {
                             {roomDetails.room.hostId === userId && (
                               <button
                                 type="button"
-                                onClick={() => handleForceChangeStatus('ELIMINATION')}
+                                onClick={refinement?.enabled && !refinement.used
+                                  ? handleStartRefinement
+                                  : () => handleForceChangeStatus('ELIMINATION')}
+                                disabled={isSubmittingRefinement}
                                 className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
                               >
                                 <Sparkles className="w-4 h-4 text-slate-950" />
-                                <span>피드백 보러가기 & 2차 투표 하러가기</span>
+                                <span>{refinement?.enabled && !refinement.used
+                                  ? '후보 피드백 및 보완 시작'
+                                  : '2차 최종 투표 하러가기'}</span>
                                 <ArrowRight className="w-4 h-4" />
                               </button>
                             )}
@@ -5503,6 +5762,7 @@ export default function App() {
 
                         {/* Host Option: Restart Stage 2 with Surviving Ideas */}
                         {roomDetails.room.hostId === userId &&
+                          !refinement?.enabled &&
                           roomDetails.room.finalVoteStatus !== 'VOTING' &&
                           roomDetails.room.finalVoteStatus !== 'TIE_PENDING' && (
                           <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-3 shadow-md border border-slate-800">
@@ -5834,7 +6094,7 @@ export default function App() {
                           <p className="text-xs text-slate-500">기존 방식으로 완료된 방이라 별도 회차 기록이 없습니다.</p>
                         )}
 
-                        {roomDetails.room.hostId === userId && (
+                        {roomDetails.room.hostId === userId && !refinement?.enabled && (
                           <button
                             type="button"
                             onClick={handleRestartStage2WithSurvivingIdeas}
