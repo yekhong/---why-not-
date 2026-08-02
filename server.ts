@@ -416,6 +416,26 @@ const ideaCompletedUsersMap = new Map<string, Set<string>>();
 const criteriaCompletedUsersMap = new Map<string, Set<string>>();
 // Criteria-set approval votes. The persisted equivalent is defined in the phase-2 migration.
 const criteriaSetApprovalsMap = new Map<string, Map<string, 'APPROVE' | 'REVISE'>>();
+
+type RefinementAwareRoom = Room & {
+  refinementEnabled?: boolean;
+  maxRefinementRounds?: number;
+};
+
+type RefinementAwareDecisionRound = DecisionRound & {
+  roundKind?: 'INITIAL' | 'REFINEMENT';
+  parentRoundId?: string;
+  criteriaSetVersion?: number;
+  stage?: 'FEEDBACK' | 'REVISION' | 'EVALUATION' | 'FINAL_VOTE';
+};
+
+function getRefinementSettings(room: Room): { enabled: boolean; maxRounds: number } {
+  const refinementRoom = room as RefinementAwareRoom;
+  return {
+    enabled: Boolean(refinementRoom.refinementEnabled) && (room.engineVersion || 1) >= 4,
+    maxRounds: Math.min(1, Math.max(0, Number(refinementRoom.maxRefinementRounds || 0)))
+  };
+}
 const STATUS_PRECEDENCE: Record<RoomStatus, number> = {
   DRAFT: 0,
   IDEA_SUBMISSION: 1,
@@ -524,7 +544,7 @@ async function loadDecisionRounds(roomId: string): Promise<DecisionRound[]> {
   if (SUPABASE_CONFIGURED) {
     const { data, error } = await supabase
       .from('evaluation_rounds')
-      .select('id,room_id,round_number,decision_mode,status,started_at,completed_at')
+      .select('id,room_id,round_number,decision_mode,status,started_at,completed_at,round_kind,parent_round_id,criteria_set_version,stage')
       .eq('room_id', roomId)
       .order('round_number', { ascending: true });
     if (!error && data) {
@@ -535,27 +555,46 @@ async function loadDecisionRounds(roomId: string): Promise<DecisionRound[]> {
         decisionMode: row.decision_mode === 'QUICK' ? 'QUICK' : 'STRUCTURED',
         status: row.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
         startedAt: row.started_at || new Date().toISOString(),
-        completedAt: row.completed_at || undefined
-      }));
+        completedAt: row.completed_at || undefined,
+        roundKind: row.round_kind === 'REFINEMENT' ? 'REFINEMENT' : 'INITIAL',
+        parentRoundId: row.parent_round_id || undefined,
+        criteriaSetVersion: Math.max(1, Number(row.criteria_set_version || 1)),
+        stage: ['FEEDBACK', 'REVISION', 'FINAL_VOTE'].includes(row.stage)
+          ? row.stage
+          : 'EVALUATION'
+      } as RefinementAwareDecisionRound));
     }
   }
   decisionRoundsMap.set(roomId, rounds);
   return rounds;
 }
 
-async function ensureDecisionRound(room: Room, candidateIdeas: Idea[]): Promise<DecisionRound> {
+async function ensureDecisionRound(
+  room: Room,
+  candidateIdeas: Idea[],
+  options: {
+    roundKind?: 'INITIAL' | 'REFINEMENT';
+    parentRoundId?: string;
+    criteriaSetVersion?: number;
+    stage?: 'FEEDBACK' | 'REVISION' | 'EVALUATION' | 'FINAL_VOTE';
+  } = {}
+): Promise<DecisionRound> {
   await loadDecisionRounds(room.id);
   const existing = getCurrentDecisionRound(room);
   if (existing) return existing;
 
   const roomRounds = decisionRoundsMap.get(room.id) || [];
-  const round: DecisionRound = {
+  const round: RefinementAwareDecisionRound = {
     id: `decision-round-${crypto.randomUUID()}`,
     roomId: room.id,
     roundNumber: roomRounds.length + 1,
     decisionMode: room.decisionMode || 'STRUCTURED',
     status: 'ACTIVE',
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    roundKind: options.roundKind || 'INITIAL',
+    parentRoundId: options.parentRoundId,
+    criteriaSetVersion: options.criteriaSetVersion || getCriteriaSetVersion(room),
+    stage: options.stage || (room.decisionMode === 'QUICK' ? 'FINAL_VOTE' : 'EVALUATION')
   };
 
   if (SUPABASE_CONFIGURED) {
@@ -566,7 +605,11 @@ async function ensureDecisionRound(room: Room, candidateIdeas: Idea[]): Promise<
         round_number: round.roundNumber,
         decision_mode: round.decisionMode,
         status: round.status,
-        started_at: round.startedAt
+        started_at: round.startedAt,
+        round_kind: round.roundKind,
+        parent_round_id: round.parentRoundId || null,
+        criteria_set_version: round.criteriaSetVersion,
+        stage: round.stage
       });
       if (candidateIdeas.length > 0) {
         await supabase.from('round_candidates').insert(
@@ -1939,8 +1982,10 @@ function mapRoomRow(row: any): Room {
     tieCandidateIdeaIds: Array.isArray(row.tie_candidate_idea_ids) ? row.tie_candidate_idea_ids : [],
     tieSlots: Number(row.tie_slots || 0),
     currentRoundId: row.current_round_id || undefined,
-    criteriaSetVersion: Math.max(1, Number(row.criteria_set_version || 1))
-  };
+    criteriaSetVersion: Math.max(1, Number(row.criteria_set_version || 1)),
+    refinementEnabled: Boolean(row.refinement_enabled),
+    maxRefinementRounds: Math.min(1, Math.max(0, Number(row.max_refinement_rounds || 0)))
+  } as RefinementAwareRoom;
 }
 
 async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
@@ -3079,7 +3124,7 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   }
 
   const newId = `room-${Math.random().toString(36).substr(2, 9)}`;
-  const newRoom: Room = {
+  const newRoom: RefinementAwareRoom = {
     id: newId,
     title,
     description: description || '',
@@ -3098,8 +3143,10 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
     },
     deadlines: deadlines || {},
     createdAt: new Date().toISOString(),
-    engineVersion: 2,
-    decisionMode: (decisionMode || 'STRUCTURED') as DecisionMode
+    engineVersion: 4,
+    decisionMode: (decisionMode || 'STRUCTURED') as DecisionMode,
+    refinementEnabled: true,
+    maxRefinementRounds: 1
   };
 
   if (SUPABASE_CONFIGURED) {
@@ -3117,7 +3164,10 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
       min_response_threshold: newRoom.minResponseThreshold,
       elimination_config: newRoom.eliminationConfig,
       deadlines: newRoom.deadlines,
-      decision_mode: newRoom.decisionMode
+      engine_version: newRoom.engineVersion,
+      decision_mode: newRoom.decisionMode,
+      refinement_enabled: newRoom.refinementEnabled,
+      max_refinement_rounds: newRoom.maxRefinementRounds
     };
 
     let { error: roomError } = await supabase.from('rooms').insert(roomInsertObj);
@@ -4780,6 +4830,7 @@ app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, re
     const { id } = req.params;
     const room = await hydrateRoomFromSupabase(id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const refinementSettings = getRefinementSettings(room);
     const isQuickMode = room.decisionMode === 'QUICK' || roomDecisionModesMap.get(id) === 'QUICK';
     if (!isQuickMode) {
       return res.status(409).json({ error: '빠른 결정 방에서만 사용할 수 있습니다.' });
@@ -5073,7 +5124,24 @@ app.post('/api/rooms/:id/review/restart', async (req: AuthenticatedRequest, res)
       return res.status(409).json({ error: '재검토할 생존 후보가 2개 이상 필요합니다.' });
     }
 
+    await loadDecisionRounds(id);
+    const roomDecisionRounds = decisionRoundsMap.get(id) || [];
     const existingRound = getCurrentDecisionRound(room);
+    const sourceRound = (existingRound || [...roomDecisionRounds].reverse()[0]) as
+      | RefinementAwareDecisionRound
+      | undefined;
+
+    if (refinementSettings.enabled) {
+      const refinementRoundCount = roomDecisionRounds.filter(round =>
+        (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT'
+      ).length;
+      if (refinementSettings.maxRounds < 1 || refinementRoundCount >= refinementSettings.maxRounds) {
+        return res.status(409).json({ error: '후보 보완·재평가는 방마다 최대 1회만 진행할 수 있습니다.' });
+      }
+      if (!sourceRound || sourceRound.roundKind !== 'INITIAL') {
+        return res.status(409).json({ error: '최초 평가 회차를 확인할 수 없어 보완·재평가를 시작할 수 없습니다.' });
+      }
+    }
     if (existingRound) {
       await completeDecisionRound(room, roomIdeas, {
         outcome: 'REVIEW_REQUESTED',
@@ -5093,7 +5161,18 @@ app.post('/api/rooms/:id/review/restart', async (req: AuthenticatedRequest, res)
     room.tieCandidateIdeaIds = [];
     room.tieSlots = 0;
 
-    const newRound = await ensureDecisionRound(room, candidates);
+    const newRound = await ensureDecisionRound(
+      room,
+      candidates,
+      refinementSettings.enabled
+        ? {
+            roundKind: 'REFINEMENT',
+            parentRoundId: sourceRound!.id,
+            criteriaSetVersion: sourceRound!.criteriaSetVersion || getCriteriaSetVersion(room),
+            stage: room.decisionMode === 'QUICK' ? 'FINAL_VOTE' : 'EVALUATION'
+          }
+        : undefined
+    );
     if (room.decisionMode === 'QUICK') {
       room.status = 'ELIMINATION';
       await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${newRound.id}`);
