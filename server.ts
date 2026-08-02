@@ -4686,8 +4686,7 @@ app.post('/api/rooms/:id/criteria/confirm', async (req: AuthenticatedRequest, re
     const { error: roomError } = await supabase
       .from('rooms')
       .update({ status: 'EVALUATION' })
-      .eq('id', id)
-      .eq('status', 'CRITERIA_REVIEW');
+      .eq('id', id);
     if (roomError) return res.status(503).json({ error: '다음 단계 상태를 안전하게 저장하지 못했습니다.' });
   }
 
@@ -5146,10 +5145,6 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
     if (room.decisionMode === 'QUICK') {
       return res.status(409).json({ error: '빠른 결정방에서는 후보 보완·재평가를 진행하지 않습니다.' });
     }
-    if (room.status !== 'EVALUATION') {
-      return res.status(409).json({ error: '1차 익명 평가가 끝난 뒤에만 후보 보완을 시작할 수 있습니다.' });
-    }
-
     const roomIdeas = ideas.get(id) || [];
     const candidates = roomIdeas.filter(idea => idea.status === 'ACTIVE');
     if (candidates.length < 2) {
@@ -5171,6 +5166,16 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
     );
     if (currentEvaluators.size < Math.max(1, room.minResponseThreshold || 1)) {
       return res.status(409).json({ error: '먼저 1차 익명 평가의 최소 응답 수를 충족해 주세요.' });
+    }
+    if (room.status !== 'EVALUATION') {
+      const recoverableStaleStatus = room.status === 'CRITERIA_PROPOSAL' || room.status === 'CRITERIA_REVIEW';
+      if (!recoverableStaleStatus) {
+        return res.status(409).json({ error: '1차 익명 평가가 끝난 뒤에만 후보 보완을 시작할 수 있습니다.' });
+      }
+      // A previous serverless request may have completed evaluation while the
+      // persisted room status lagged behind. The completed evaluation records
+      // are authoritative, so repair the room state before refinement starts.
+      room.status = 'EVALUATION';
     }
 
     await completeDecisionRound(room, roomIdeas, {
