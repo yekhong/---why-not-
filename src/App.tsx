@@ -1355,7 +1355,11 @@ export default function App() {
             setEditableCriteria(validCriteriaList);
           }
         }
-        const isWinnerState = data?.room?.status === 'CLOSED';
+        const hasFinalWinner = (data?.ideas || []).some((idea: Idea) => idea.status === 'WINNER');
+        const isWinnerState =
+          data?.room?.status === 'CLOSED' &&
+          data?.room?.finalVoteStatus !== 'TIE_PENDING' &&
+          hasFinalWinner;
         if (isWinnerState && !hasShownWinnerModalRef.current.has(data.room.id)) {
           hasShownWinnerModalRef.current.add(data.room.id);
           setShowWinnerModal(true);
@@ -2623,7 +2627,6 @@ export default function App() {
       triggerToast(data.message || '최종 후보 투표가 완료되었습니다!');
       setShowFinalVoteModal(false);
       await fetchRoomDetails(activeRoomId);
-      setShowWinnerModal(true);
     } catch (err: any) {
       triggerToast(err?.message || '최종 후보 투표 실패', 'error');
     } finally {
@@ -6644,7 +6647,9 @@ export default function App() {
 
       {/* Winner Announcement Popup Modal ("최종 아이디어가 선정되었습니다") */}
       <AnimatePresence>
-        {showWinnerModal && (
+        {showWinnerModal &&
+          roomDetails?.room.finalVoteStatus !== 'TIE_PENDING' &&
+          (roomDetails?.ideas || []).some(idea => idea.status === 'WINNER') && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
@@ -6679,10 +6684,7 @@ export default function App() {
                 {(() => {
                   const allIdeas = roomDetails?.ideas || [];
                   const winners = allIdeas.filter(i => i.status === 'WINNER');
-                  const targetCount = roomDetails?.room.targetWinnerCount || 1;
-                  const displayWinners = winners.length > 0
-                    ? winners
-                    : allIdeas.filter(i => i.status === 'ACTIVE' || !i.status).slice(0, targetCount);
+                  const displayWinners = winners;
 
                   if (displayWinners.length === 0) {
                     return <p className="text-xs text-slate-400 text-center py-4">선정된 최종 아이디어가 없습니다.</p>;
