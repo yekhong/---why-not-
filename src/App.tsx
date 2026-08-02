@@ -484,6 +484,12 @@ export default function App() {
     }
   };
 
+  // Reset local final-vote state when moving to another room.
+  useEffect(() => {
+    setMySelectedStarIdeaIds([]);
+    setShowFinalVoteModal(false);
+  }, [activeRoomId]);
+
   // Automatically open voting modal for participants when voting is active and they haven't voted yet
   useEffect(() => {
     if (!roomDetails) return;
