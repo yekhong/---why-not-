@@ -2217,10 +2217,17 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   await loadDecisionRounds(roomId);
 
   if (SUPABASE_CONFIGURED) {
-    const { data: voteRows } = await supabase
+    // Final votes are immutable per decision round. Loading every vote from the
+    // room mixes an earlier round with the current refinement round and can
+    // overwrite a participant's current selection in the in-memory map.
+    const roomRounds = decisionRoundsMap.get(roomId) || [];
+    const voteRoundId = room.currentRoundId || roomRounds[roomRounds.length - 1]?.id;
+    let voteQuery = supabase
       .from('decision_votes')
       .select('user_id,selected_idea_ids')
       .eq('room_id', roomId);
+    if (voteRoundId) voteQuery = voteQuery.eq('round_id', voteRoundId);
+    const { data: voteRows } = await voteQuery;
     if (voteRows && voteRows.length > 0) {
       const voteMap = new Map<string, string[]>();
       voteRows.forEach((row: any) => {
@@ -2230,6 +2237,8 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
         );
       });
       starVotesMap.set(roomId, voteMap);
+    } else {
+      starVotesMap.set(roomId, new Map());
     }
   }
   return room;
