@@ -5155,10 +5155,23 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
     if (rounds.some(round => (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT')) {
       return res.status(409).json({ error: '후보 보완·재평가는 방마다 한 번만 진행할 수 있습니다.' });
     }
-    const sourceRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
-    if (!sourceRound || sourceRound.roundKind === 'REFINEMENT') {
+    let sourceRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+    if (!sourceRound) {
+      sourceRound = [...rounds].reverse().find(
+        round => (round as RefinementAwareDecisionRound).roundKind !== 'REFINEMENT'
+      ) as RefinementAwareDecisionRound | undefined;
+    }
+    if (!sourceRound) {
+      sourceRound = await ensureDecisionRound(room, candidates, {
+        roundKind: 'INITIAL',
+        criteriaSetVersion: getCriteriaSetVersion(room),
+        stage: 'EVALUATION'
+      }) as RefinementAwareDecisionRound;
+    }
+    if (sourceRound.roundKind === 'REFINEMENT') {
       return res.status(409).json({ error: '최초 평가 회차를 확인할 수 없습니다.' });
     }
+    room.currentRoundId = sourceRound.id;
     const currentEvaluators = new Set(
       (evaluations.get(id) || [])
         .filter(evaluation => !evaluation.roundId || evaluation.roundId === sourceRound.id)
