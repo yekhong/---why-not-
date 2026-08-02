@@ -2122,31 +2122,6 @@ export default function App() {
     }
   };
 
-  const handleCriteriaApproval = async (vote: 'APPROVE' | 'REVISE') => {
-    if (!activeRoomId) return;
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/approval`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vote })
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.error || '기준 동의 제출에 실패했습니다.');
-      triggerToast(
-        data.approval?.approved
-          ? '팀 동의 기준을 충족하여 익명 평가 단계로 이동했습니다.'
-          : data.approval?.needsRevision
-            ? '팀 동의 기준에 미달하여 새 보완 회차를 시작합니다. 이전 의견과 투표는 기록으로 보존됩니다.'
-          : vote === 'APPROVE'
-            ? '이 기준으로 평가 진행에 동의했습니다.'
-            : '보완이 필요하다는 의견을 익명으로 제출했습니다.'
-      );
-      await fetchRoomDetails(activeRoomId, true);
-    } catch (error) {
-      triggerToast(error instanceof Error ? error.message : '기준 동의 제출에 실패했습니다.', 'error');
-    }
-  };
-
   // Trigger AI Clustering (Host only)
   const handleTriggerClustering = async () => {
     setIsClusteringLoading(true);
@@ -4949,37 +4924,25 @@ export default function App() {
                         </div>
 
                         <div className="pt-4 border-t border-slate-100 space-y-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="text-xs font-bold text-slate-700">
-                              팀 동의 현황: {roomDetails.criteriaApproval?.approveCount || 0}
-                              /{roomDetails.criteriaApproval?.requiredApproveCount || 1}명 동의 필요
+                          {roomDetails.room.hostId === userId ? (
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs text-slate-500">
+                                기준을 확인한 뒤 다음 단계를 시작해 주세요. 모든 참여자가 함께 이동합니다.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={handleConfirmCriteria}
+                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 shrink-0"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                다음 단계로 진행
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-xs font-bold text-slate-500 text-center py-2">
+                              기준 정리가 완료되었습니다. 방장이 다음 단계를 시작하기를 기다리고 있습니다.
                             </p>
-                            {roomDetails.criteriaApproval?.myVote && (
-                              <span className="text-[11px] font-bold text-indigo-600">
-                                내 선택: {roomDetails.criteriaApproval.myVote === 'APPROVE' ? '이 기준으로 진행' : '보완 필요'}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-slate-500">
-                            방장도 다른 참여자와 같은 한 표만 가집니다. 참여 대상의 80%가 동의하면 자동으로 익명 평가를 시작합니다.
-                          </p>
-                          <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleCriteriaApproval('REVISE')}
-                              className="px-4 py-2 text-xs font-semibold text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition"
-                            >
-                              보완 필요
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleCriteriaApproval('APPROVE')}
-                              className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              이 기준으로 평가 진행
-                            </button>
-                          </div>
+                          )}
                         </div>
                       </div>
                     </div>

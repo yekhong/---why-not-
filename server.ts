@@ -4652,121 +4652,46 @@ app.post('/api/rooms/:id/criteria/cluster', async (req: AuthenticatedRequest, re
   res.json({ success: true, candidates });
 });
 
-/**
- * Every eligible participant independently approves the same criteria set.
- * Reaching 80% approval moves the room forward without giving the host a
- * stronger vote.
- */
-app.post('/api/rooms/:id/criteria/approval', async (req: AuthenticatedRequest, res) => {
+/** Confirm the agreed criteria and move the whole room to evaluation. */
+app.post('/api/rooms/:id/criteria/confirm', async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
   const userId = req.auth!.userId;
-  const vote = req.body?.vote;
   const room = await hydrateRoomFromSupabase(id);
   if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  if (room.hostId !== userId) {
+    return res.status(403).json({ error: '방장만 다음 단계를 시작할 수 있습니다.' });
+  }
   if (room.status !== 'CRITERIA_REVIEW') {
     if ((STATUS_PRECEDENCE[room.status] || 0) > (STATUS_PRECEDENCE['CRITERIA_REVIEW'] || 0)) {
-      return res.json({ success: true, message: '이미 다음 단계로 이동되어 반영 완료되었습니다.', approval: { version: getCriteriaSetVersion(room), approved: true } });
+      return res.json({ success: true, message: '이미 다음 단계로 이동했습니다.', status: room.status });
     }
-    return res.json({ success: true, message: '이미 단계 검토 처리가 완료되었습니다.' });
-  }
-  if (vote !== 'APPROVE' && vote !== 'REVISE') {
-    return res.status(400).json({ error: 'APPROVE 또는 REVISE 중 하나를 선택해 주세요.' });
+    return res.status(409).json({ error: '기준 정리가 완료된 뒤 진행할 수 있습니다.' });
   }
 
-  const approvalVersion = getCriteriaSetVersion(room);
-  const snapshot = await loadOrCreatePhaseParticipants(
-    id,
-    criteriaPhase(room, 'CRITERIA_REVIEW')
-  );
-  if (!snapshot.has(userId)) {
-    return res.status(403).json({ error: '이 기준 세트의 동의 대상이 아닙니다.' });
+  const finalized = (criteria.get(id) || []).map(criterion => ({ ...criterion, confirmed: true }));
+  if (finalized.length === 0) {
+    return res.status(409).json({ error: '확정할 평가 기준이 없습니다.' });
   }
-  const votes = await loadCriteriaApprovalVotes(id, approvalVersion);
-  votes.set(userId, vote);
+  criteria.set(id, finalized);
+  room.status = 'EVALUATION';
+  rooms.set(id, room);
+
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('criterion_approvals').upsert(
-      {
-        room_id: id,
-        criteria_set_version: approvalVersion,
-        user_id: userId,
-        vote,
-        updated_at: new Date().toISOString()
-      },
-      { onConflict: 'room_id,criteria_set_version,user_id' }
-    );
-    if (error && IS_PRODUCTION) {
-      votes.delete(userId);
-      return res.status(503).json({ error: '기준 동의 결과를 안전하게 저장하지 못했습니다.' });
-    }
+    const { error: criteriaError } = await supabase
+      .from('criteria')
+      .update({ confirmed: true })
+      .eq('room_id', id);
+    if (criteriaError) return res.status(503).json({ error: '평가 기준을 안전하게 확정하지 못했습니다.' });
+
+    const { error: roomError } = await supabase
+      .from('rooms')
+      .update({ status: 'EVALUATION' })
+      .eq('id', id)
+      .eq('status', 'CRITERIA_REVIEW');
+    if (roomError) return res.status(503).json({ error: '다음 단계 상태를 안전하게 저장하지 못했습니다.' });
   }
 
-  const eligibleCount = Math.max(1, snapshot.size);
-  const requiredApproveCount = Math.max(1, Math.ceil(eligibleCount * 0.8));
-  const approveCount = Array.from(votes.values()).filter(value => value === 'APPROVE').length;
-  const reviseCount = Array.from(votes.values()).filter(value => value === 'REVISE').length;
-  const approved = approveCount >= requiredApproveCount;
-  const allEligibleParticipantsVoted =
-    Array.from(snapshot).every(participantId => votes.has(participantId));
-
-  if (approved) {
-    const finalized = (criteria.get(id) || []).map(criterion => ({ ...criterion, confirmed: true }));
-    if (finalized.length === 0) {
-      return res.status(409).json({ error: '확정할 평가 기준이 없습니다.' });
-    }
-    criteria.set(id, finalized);
-    room.status = 'EVALUATION';
-    rooms.set(id, room);
-
-    if (SUPABASE_CONFIGURED) {
-      try {
-        await supabase
-          .from('criteria')
-          .update({ confirmed: true })
-          .eq('room_id', id);
-        await supabase
-          .from('rooms')
-          .update({ status: 'EVALUATION' })
-          .eq('id', id);
-      } catch (err) {
-        console.warn('Supabase criteria approval status update notice:', err);
-      }
-    }
-  } else if (allEligibleParticipantsVoted) {
-    const nextVersion = approvalVersion + 1;
-    room.criteriaSetVersion = nextVersion;
-    room.status = 'CRITERIA_PROPOSAL';
-    rooms.set(id, room);
-
-    if (SUPABASE_CONFIGURED) {
-      try {
-        await supabase
-          .from('rooms')
-          .update({
-            status: 'CRITERIA_PROPOSAL',
-            criteria_set_version: nextVersion
-          })
-          .eq('id', id);
-      } catch (err) {
-        console.warn('Supabase criteria revision status update notice:', err);
-      }
-    }
-    await loadOrCreatePhaseParticipants(id, criteriaPhase(room, 'CRITERIA_PROPOSAL'));
-  }
-
-  res.json({
-    success: true,
-    approval: {
-      version: approvalVersion,
-      approveCount,
-      reviseCount,
-      eligibleCount,
-      requiredApproveCount,
-      myVote: vote,
-      approved,
-      needsRevision: !approved && allEligibleParticipantsVoted
-    },
-    status: room.status
-  });
+  res.json({ success: true, status: room.status });
 });
 
 /**
