@@ -5152,7 +5152,10 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
     }
     await loadDecisionRounds(id);
     const rounds = decisionRoundsMap.get(id) || [];
-    if (rounds.some(round => (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT')) {
+    const existingRefinementRound = rounds.find(
+      round => (round as RefinementAwareDecisionRound).roundKind === 'REFINEMENT'
+    ) as RefinementAwareDecisionRound | undefined;
+    if (existingRefinementRound && existingRefinementRound.stage !== 'FEEDBACK') {
       return res.status(409).json({ error: '후보 보완·재평가는 방마다 한 번만 진행할 수 있습니다.' });
     }
     let sourceRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
@@ -5191,6 +5194,31 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
       room.status = 'EVALUATION';
     }
 
+    // A previous request may have created the refinement round before its
+    // participant snapshot failed. Resume that round instead of creating a
+    // second one, and rebuild eligibility from actual first-round evaluators.
+    if (existingRefinementRound) {
+      room.currentRoundId = existingRefinementRound.id;
+      if (SUPABASE_CONFIGURED) {
+        const snapshotRows = Array.from(currentEvaluators).map(userId => ({
+          round_id: existingRefinementRound.id,
+          room_id: id,
+          user_id: userId,
+          is_required: true,
+          submission_status: 'NOT_STARTED'
+        }));
+        const { error } = await supabase
+          .from('evaluation_round_participants')
+          .upsert(snapshotRows, { onConflict: 'round_id,user_id' });
+        if (error) throw new Error(`보완 회차 참여자 명단을 저장하지 못했습니다: ${error.message}`);
+      }
+      room.status = 'EVALUATION';
+      room.finalVoteStatus = 'NOT_STARTED';
+      await persistFinalVoteRoomState(room);
+      rooms.set(id, room);
+      return res.json({ success: true, roundId: existingRefinementRound.id, stage: 'FEEDBACK', resumed: true });
+    }
+
     await completeDecisionRound(room, roomIdeas, {
       outcome: 'REFINEMENT_STARTED',
       requestedAt: new Date().toISOString()
@@ -5203,8 +5231,7 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
       stage: 'FEEDBACK'
     }) as RefinementAwareDecisionRound;
 
-    const eligibleUsers = new Set(participants.get(id)?.keys() || []);
-    eligibleUsers.add(room.hostId);
+    const eligibleUsers = currentEvaluators;
     if (SUPABASE_CONFIGURED) {
       const snapshotRows = Array.from(eligibleUsers).map(userId => ({
         round_id: refinementRound.id,
@@ -5216,7 +5243,7 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
       const { error } = await supabase
         .from('evaluation_round_participants')
         .upsert(snapshotRows, { onConflict: 'round_id,user_id' });
-      if (error) throw new Error('보완 회차 참여자 명단을 저장하지 못했습니다.');
+      if (error) throw new Error(`보완 회차 참여자 명단을 저장하지 못했습니다: ${error.message}`);
     }
     room.status = 'EVALUATION';
     room.finalVoteStatus = 'NOT_STARTED';
