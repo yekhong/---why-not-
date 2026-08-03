@@ -2701,6 +2701,9 @@ export default function App() {
     return roomDetails.ideas.filter(i => i && i.status === 'ACTIVE').length;
   }, [roomDetails]);
   const refinement = ((roomDetails as any)?.refinement || null) as RefinementState | null;
+  const isRefinementReevaluation = Boolean(
+    refinement?.used && refinement?.stage === 'EVALUATION'
+  );
 
   // Find objective constraint removal candidates (those with high objective exclusions)
   const objectiveCandidates = useMemo(() => {
@@ -2969,7 +2972,7 @@ export default function App() {
                   {roomDetails.room.status === 'IDEA_SUBMISSION' && '1단계: 아이디어 등록 중'}
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && '2단계: 기준 익명제안 중'}
                   {roomDetails.room.status === 'CRITERIA_REVIEW' && '3단계: 기준 확정 진행 중'}
-                  {roomDetails.room.status === 'EVALUATION' && '4단계: 익명 스크리닝 평가 중'}
+                  {roomDetails.room.status === 'EVALUATION' && (isRefinementReevaluation ? '보완 후보 재평가 진행 중' : '4단계: 익명 스크리닝 평가 중')}
                   {roomDetails.room.status === 'ELIMINATION' && `${(roomDetails.rounds?.length || 0) + 1}라운드 소거 진행 중`}
                   {roomDetails.room.status === 'CLOSED' && '종료 (최종 선정 완료)'}
                 </span>
@@ -5109,12 +5112,12 @@ export default function App() {
                               ) : (
                                 <span className="text-slate-900 flex items-center gap-1">
                                   <Lock className="w-4 h-4 text-slate-400" />
-                                  익명 스크리닝 평가 진행 중
+                                  {isRefinementReevaluation ? '보완 후보 재평가 진행 중' : '익명 스크리닝 평가 진행 중'}
                                 </span>
                               )}
                             </h2>
                             <p className="text-xs text-slate-500 mt-0.5">
-                              확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.
+                              {isRefinementReevaluation ? '수정·확정된 아이디어를 기존과 동일한 기준으로 다시 평가해 주세요.' : '확정된 기준들에 비추어 각 아이디어를 신중하게 심사해 주십시오.'}
                             </p>
                           </div>
 
@@ -5207,7 +5210,7 @@ export default function App() {
                           )}
 
                           <div className="border-b border-slate-200 pb-2">
-                            <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">스크리닝 진행할 아이디어 목록</h3>
+                            <h3 className="text-sm font-extrabold text-slate-500 uppercase tracking-wider">{isRefinementReevaluation ? '재평가할 보완 아이디어 목록' : '스크리닝 진행할 아이디어 목록'}</h3>
                           </div>
 
                           {(roomDetails.ideas || []).filter(i => i && i.status === 'ACTIVE').map((idea, ideaIdx) => {
@@ -5422,7 +5425,7 @@ export default function App() {
                                     }`}
                                 >
                                   <Sparkles className="w-4 h-4" />
-                                  {isAllEvaluated ? '4단계 2차 투표로 이동 (투표하기)' : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
+                                  {isAllEvaluated ? (isRefinementReevaluation ? '보완 후보 재평가 제출하기' : '1차 익명 평가 제출하기') : '투표하기 (모든 아이디어 평가 작성 시 활성화)'}
                                   <ArrowRight className="w-4 h-4" />
                                 </button>
                               </div>

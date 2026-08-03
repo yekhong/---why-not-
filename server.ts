@@ -3452,12 +3452,17 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   }
 
   const allRoomEvals = evaluations.get(id) || [];
-  const roomEvals = room.currentRoundId
-    ? allRoomEvals.filter(evaluation => !evaluation.roundId || evaluation.roundId === room.currentRoundId)
-    : allRoomEvals;
   const roomRounds = eliminationRounds.get(id) || [];
   const roomDecisionRounds = await loadDecisionRounds(id);
-  const activeDecisionRound = getCurrentDecisionRound(room);
+  const activeDecisionRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
+  const isRefinementRound = activeDecisionRound?.roundKind === 'REFINEMENT';
+  const roomEvals = room.currentRoundId
+    ? allRoomEvals.filter(evaluation =>
+        isRefinementRound
+          ? evaluation.roundId === room.currentRoundId
+          : !evaluation.roundId || evaluation.roundId === room.currentRoundId
+      )
+    : allRoomEvals;
 
   // Compute unique evaluators and dynamic target threshold (excluding evaluators currently re-editing)
   const allEvaluators = Array.from(new Set(roomEvals.map(e => String(e.evaluatorId)).filter(Boolean)));
@@ -3898,7 +3903,11 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
   }
 
   const activeIdeas = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
-  const decisionRound = { id: `round-${id}-1`, roundNumber: 1 };
+  await loadDecisionRounds(id);
+  const decisionRound = (
+    getCurrentDecisionRound(room) ||
+    await ensureDecisionRound(room, activeIdeas)
+  ) as RefinementAwareDecisionRound;
   const activeIdeaIds = new Set(activeIdeas.map(idea => idea.id));
   const submittedIdeaIds = submissions.map((submission: any) => submission?.ideaId);
   if (
@@ -3970,7 +3979,8 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
 
   // Invalidate previous evals by this evaluator
   const otherEvals = rEvals.filter(e =>
-    String(e.evaluatorId) !== String(evaluatorId)
+    String(e.evaluatorId) !== String(evaluatorId) ||
+    e.roundId !== decisionRound.id
   );
 
   const newEvals: Evaluation[] = submissions.map((sub: any) => ({
@@ -3993,7 +4003,8 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
         .from('evaluations')
         .delete()
         .eq('room_id', id)
-        .eq('evaluator_id', evaluatorId);
+        .eq('evaluator_id', evaluatorId)
+        .eq('round_id', decisionRound.id);
 
       const rows = newEvals.map(evaluation => ({
         id: evaluation.id,
@@ -4005,7 +4016,8 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
         criteria_evaluations: evaluation.criteriaEvaluations || {},
         reason_text: evaluation.reasonText,
         reason_type: evaluation.reasonType,
-        round: evaluation.round
+        round: evaluation.round,
+        round_id: evaluation.roundId
       }));
       const { error: insertError } = await supabase.from('evaluations').insert(rows);
       if (insertError) {
@@ -4019,6 +4031,59 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
   const updatedEvals = [...otherEvals, ...newEvals];
   evaluations.set(id, updatedEvals);
 
+  let responseStage = decisionRound.stage || 'EVALUATION';
+
+  if (
+    SUPABASE_CONFIGURED &&
+    decisionRound.roundKind === 'REFINEMENT' &&
+    decisionRound.stage === 'EVALUATION'
+  ) {
+    const [evaluationResult, participantResult] = await Promise.all([
+      supabase
+        .from('evaluations')
+        .select('evaluator_id, idea_id')
+        .eq('room_id', id)
+        .eq('round_id', decisionRound.id),
+      supabase
+        .from('evaluation_round_participants')
+        .select('user_id')
+        .eq('room_id', id)
+        .eq('round_id', decisionRound.id)
+        .eq('is_required', true)
+    ]);
+
+    if (evaluationResult.error || participantResult.error) {
+      return res.status(503).json({ error: 'Failed to verify reevaluation completion.' });
+    }
+
+    const evaluatedIdeasByUser = new Map<string, Set<string>>();
+    for (const row of evaluationResult.data || []) {
+      const userIdeas = evaluatedIdeasByUser.get(String(row.evaluator_id)) || new Set<string>();
+      userIdeas.add(String(row.idea_id));
+      evaluatedIdeasByUser.set(String(row.evaluator_id), userIdeas);
+    }
+
+    const requiredUsers = new Set(
+      (participantResult.data || []).map(row => String(row.user_id))
+    );
+    const allCompleted = requiredUsers.size > 0 && Array.from(requiredUsers).every(
+      userId => (evaluatedIdeasByUser.get(userId)?.size || 0) >= activeIdeas.length
+    );
+
+    if (allCompleted) {
+      await updateDecisionRoundStage(room, 'FINAL_VOTE');
+      room.status = 'ELIMINATION';
+      room.finalVoteStatus = 'VOTING';
+      room.tieCandidateIdeaIds = [];
+      room.tieSlots = 0;
+      starVotesMap.set(id, new Map());
+      await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${decisionRound.id}`);
+      await persistFinalVoteRoomState(room);
+      rooms.set(id, room);
+      responseStage = 'FINAL_VOTE';
+    }
+  }
+
   const uniqueEvaluatorsCount = new Set(updatedEvals.map(e => e.evaluatorId)).size;
 
   // Invalidate AI comment cache for fresh recalculation
@@ -4027,7 +4092,10 @@ app.post('/api/rooms/:id/evaluations', async (req: AuthenticatedRequest, res) =>
   res.status(201).json({
     success: true,
     evaluatorsCount: uniqueEvaluatorsCount,
-    evaluationsCount: updatedEvals.length
+    evaluationsCount: updatedEvals.length,
+    stage: responseStage,
+    status: room.status,
+    finalVoteStatus: room.finalVoteStatus
   });
 });
 
@@ -5184,11 +5252,31 @@ app.post('/api/rooms/:id/refinement/start', async (req: AuthenticatedRequest, re
       return res.status(409).json({ error: '최초 평가 회차를 확인할 수 없습니다.' });
     }
     room.currentRoundId = sourceRound.id;
-    const currentEvaluators = new Set(
-      (evaluations.get(id) || [])
-        .filter(evaluation => !evaluation.roundId || evaluation.roundId === sourceRound.id)
-        .map(evaluation => String(evaluation.evaluatorId))
-    );
+    let currentEvaluators: Set<string>;
+
+    if (SUPABASE_CONFIGURED) {
+      const { data: latestEvaluationRows, error: evaluationLoadError } = await supabase
+        .from('evaluations')
+        .select('evaluator_id, round_id')
+        .eq('room_id', id);
+
+      if (evaluationLoadError) {
+        throw evaluationLoadError;
+      }
+
+      currentEvaluators = new Set(
+        (latestEvaluationRows || [])
+          .filter(row => !row.round_id || row.round_id === sourceRound.id)
+          .map(row => String(row.evaluator_id))
+          .filter(Boolean)
+      );
+    } else {
+      currentEvaluators = new Set(
+        (evaluations.get(id) || [])
+          .filter(evaluation => !evaluation.roundId || evaluation.roundId === sourceRound.id)
+          .map(evaluation => String(evaluation.evaluatorId))
+      );
+    }
     if (currentEvaluators.size < Math.max(1, room.minResponseThreshold || 1)) {
       return res.status(409).json({ error: '먼저 1차 익명 평가의 최소 응답 수를 충족해 주세요.' });
     }
