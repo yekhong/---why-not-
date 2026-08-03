@@ -6100,7 +6100,7 @@ export default function App() {
       </main>
 
       {/* Email Authentication & Account Recovery Modal (user_accounts) */}
-      <AnimatePresence>
+      <AnimatePresence onExitComplete={() => setRecoveryCodeOutput(null)}>
         {showLoginModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
             <motion.div
@@ -6139,7 +6139,6 @@ export default function App() {
 
                   <button
                     onClick={() => {
-                      setRecoveryCodeOutput(null);
                       setShowLoginModal(false);
                     }}
                     className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-md cursor-pointer"
