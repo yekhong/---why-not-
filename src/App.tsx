@@ -333,6 +333,7 @@ export default function App() {
   const [fetchRoomError, setFetchRoomError] = useState(false);
   const [showIdeaSubmissionGate, setShowIdeaSubmissionGate] = useState(false);
   const isFetchingRoomRef = useRef(false);
+  const roomFetchSequenceRef = useRef(0);
   const [refinementFeedbackDrafts, setRefinementFeedbackDrafts] = useState<Record<string, RefinementFeedbackDraft>>({});
   const [refinementRevisionDrafts, setRefinementRevisionDrafts] = useState<Record<string, { title: string; description: string }>>({});
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
@@ -424,63 +425,42 @@ export default function App() {
       });
       setEvalSubmissions(prefilled);
     }
-    setIsReEditingEvaluation(true);
-
     if (activeRoomId && userId) {
       try {
-        await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+        const response = await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ isReEditing: true })
         });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || '평가 수정 상태를 저장하지 못했습니다.');
+        setIsReEditingEvaluation(true);
       } catch (err) {
-        console.warn('Re-edit status update error:', err);
+        triggerToast(err instanceof Error ? err.message : '평가 수정 상태를 저장하지 못했습니다.', 'error');
+        return;
       }
 
-      fetchRoomDetails(activeRoomId, true);
+      await fetchRoomDetails(activeRoomId, true);
     }
   };
 
   const handleCancelReEditingEvaluation = async () => {
-    setIsReEditingEvaluation(false);
     if (activeRoomId && userId) {
-      const activeIdeas = roomDetails?.ideas.filter(i => i.status === 'ACTIVE') || [];
-      const hasAllSubmissions = activeIdeas.every(i => evalSubmissions[i.id]?.decision);
-
-      if (hasAllSubmissions && activeIdeas.length > 0) {
-        const submissions = activeIdeas.map(i => ({
-          ideaId: i.id,
-          decision: evalSubmissions[i.id].decision,
-          excludedCriterionIds: evalSubmissions[i.id].excludedCriterionIds || [],
-          reasonText: evalSubmissions[i.id].reasonText || '',
-          reasonType: evalSubmissions[i.id].reasonType || 'PREFERENCE',
-        }));
-
-        try {
-          const response = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ submissions })
-          });
-          const data = await response.json().catch(() => null);
-          if (!response.ok) throw new Error(data?.error || '평가를 복원하지 못했습니다.');
-        } catch (err) {
-          console.warn('Cancel re-edit re-submission error:', err);
-          triggerToast(err instanceof Error ? err.message : '평가를 복원하지 못했습니다.', 'error');
-        }
-      } else {
-        try {
-          await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ isReEditing: false })
-          });
-        } catch (err) {
-          console.warn('Cancel re-edit status update error:', err);
-        }
+      try {
+        const response = await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isReEditing: false })
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || '평가 수정 취소 상태를 저장하지 못했습니다.');
+      } catch (err) {
+        triggerToast(err instanceof Error ? err.message : '평가 수정 취소 상태를 저장하지 못했습니다.', 'error');
+        return;
       }
 
-      fetchRoomDetails(activeRoomId, true);
+      setIsReEditingEvaluation(false);
+      await fetchRoomDetails(activeRoomId, true);
     }
   };
 
@@ -490,25 +470,25 @@ export default function App() {
 
   const handleStartFinalVote = async () => {
     const allIdeas = roomDetails?.ideas || [];
-    const activeIdeas = allIdeas.filter(i => i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
-    if (activeIdeas.length > 0 && !selectedFinalIdeaId) {
-      setSelectedFinalIdeaId(activeIdeas[0].id);
+    const activeIdeas = allIdeas.filter(i => !i.status || i.status === 'ACTIVE');
+    if (activeIdeas.length < 2) {
+      triggerToast('최종 익명 투표를 시작하려면 활성 후보가 2개 이상 필요합니다.', 'error');
+      return;
     }
-    setShowWinnerModal(false);
-    setShowFinalVoteModal(true);
-
-    if (activeRoomId) {
-      try {
-        await fetch(`/api/rooms/${activeRoomId}/status`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'FINAL_VOTE' })
-        });
-      } catch (err) {
-        console.warn('Status update API error:', err);
-      }
-
-      fetchRoomDetails(activeRoomId, true);
+    if (!activeRoomId) return;
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ELIMINATION', startFinalVote: true })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '최종 익명 투표를 시작하지 못했습니다.');
+      setShowWinnerModal(false);
+      setShowFinalVoteModal(true);
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (err) {
+      triggerToast(err instanceof Error ? err.message : '최종 익명 투표를 시작하지 못했습니다.', 'error');
     }
   };
 
@@ -522,7 +502,7 @@ export default function App() {
   useEffect(() => {
     if (!roomDetails) return;
     const targetWinners = roomDetails.room?.targetWinnerCount || 1;
-    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE').map(i => i.id);
     const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
     const isSubmitted = Boolean(
       roomDetails.isStarVoteSubmitted ||
@@ -549,8 +529,6 @@ export default function App() {
   const [showWinnerModal, setShowWinnerModal] = useState(false);
   const hasShownWinnerModalRef = useRef<Set<string>>(new Set());
   const [showFinalVoteModal, setShowFinalVoteModal] = useState(false);
-  const [selectedFinalIdeaId, setSelectedFinalIdeaId] = useState('');
-  const [isSubmittingFinalVote, setIsSubmittingFinalVote] = useState(false);
   const [inviteEmailInput, setInviteEmailInput] = useState('');
   // Roulette Preview Modal States (Test & Demo mode)
   const [showRouletteModal, setShowRouletteModal] = useState(false);
@@ -650,12 +628,13 @@ export default function App() {
   const handleSendEmailInvite = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmailInput.trim()) return;
-    triggerToast(`[${inviteEmailInput.trim()}] (으)로 초대 메일 발송이 완료되었습니다!`);
-    setInviteEmailInput('');
+    triggerToast('이메일 발송 기능은 아직 연결되지 않았습니다. 아래 초대 링크를 복사해 전달해 주세요.', 'error');
   };
 
   // Return to Lobby (Clean active room ID, role, local state, and URL query params)
   const handleLeaveRoom = () => {
+    roomFetchSequenceRef.current += 1;
+    isFetchingRoomRef.current = false;
     setActiveRoomId(null);
     setRoomDetails(null);
     setFetchRoomError(false);
@@ -673,43 +652,45 @@ export default function App() {
 
   // Stage 1 Gate helper functions
   const handleEnterIdeaGate = async () => {
-    setShowIdeaSubmissionGate(true);
     if (activeRoomId) {
-      localStorage.setItem(`why_not_idea_step_gate_${activeRoomId}`, 'true');
       try {
-        await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
+        const response = await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-        fetchRoomDetails(activeRoomId, false);
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || '아이디어 등록 완료 상태를 저장하지 못했습니다.');
+        setShowIdeaSubmissionGate(true);
+        localStorage.setItem(`why_not_idea_step_gate_${activeRoomId}`, 'true');
+        await fetchRoomDetails(activeRoomId, false);
       } catch (e) {
-        console.error(e);
+        triggerToast(e instanceof Error ? e.message : '아이디어 등록 완료 상태를 저장하지 못했습니다.', 'error');
       }
     }
   };
 
   const handleExitIdeaGate = async () => {
-    setShowIdeaSubmissionGate(false);
     if (activeRoomId) {
-      localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
       try {
-        await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
+        const response = await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
         });
-        fetchRoomDetails(activeRoomId, false);
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || '아이디어 등록 완료 상태를 취소하지 못했습니다.');
+        setShowIdeaSubmissionGate(false);
+        localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+        await fetchRoomDetails(activeRoomId, false);
       } catch (e) {
-        console.error(e);
+        triggerToast(e instanceof Error ? e.message : '아이디어 등록 완료 상태를 취소하지 못했습니다.', 'error');
       }
     }
   };
 
   const handleConfirmIdeaGateToStage2 = async () => {
     if (!activeRoomId || !roomDetails) return;
-    setShowIdeaSubmissionGate(false);
-    localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
     if (roomDetails.room.decisionMode === 'QUICK') {
       try {
         const response = await fetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
@@ -719,6 +700,8 @@ export default function App() {
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || '빠른 익명 투표를 시작하지 못했습니다.');
+        setShowIdeaSubmissionGate(false);
+        localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
         triggerToast('다른 사람의 선택은 보이지 않는 상태로 익명 투표를 시작합니다.');
         await fetchRoomDetails(activeRoomId);
       } catch (error: any) {
@@ -727,7 +710,11 @@ export default function App() {
       }
       return;
     }
-    await handleForceChangeStatus('CRITERIA_PROPOSAL');
+    const changed = await handleForceChangeStatus('CRITERIA_PROPOSAL');
+    if (changed) {
+      setShowIdeaSubmissionGate(false);
+      localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+    }
   };
 
   const handleRestartStage2WithSurvivingIdeas = async () => {
@@ -846,12 +833,15 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', {
+      const response = await fetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
-    } catch (e) {
-      console.error(e);
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '로그아웃하지 못했습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '로그아웃하지 못했습니다.', 'error');
+      return;
     }
     [
       'why_not_registered_users',
@@ -865,7 +855,10 @@ export default function App() {
     setUserId('');
     setNickname('');
     setUserEmail('');
+    roomFetchSequenceRef.current += 1;
+    isFetchingRoomRef.current = false;
     setActiveRoomId(null);
+    setRoomDetails(null);
     triggerToast('로그아웃되었습니다.');
   };
 
@@ -1082,7 +1075,6 @@ export default function App() {
     setJoiningInvite(true);
 
     const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
-    setNickname(nameToUse);
 
     try {
       const response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
@@ -1096,15 +1088,17 @@ export default function App() {
         throw new Error(data?.error || '참가에 실패했습니다.');
       }
 
-      const targetRoomId = data.roomId;
+      const targetRoomId = typeof data?.roomId === 'string' ? data.roomId : '';
+      if (!targetRoomId) throw new Error('참가한 회의실 정보를 받지 못했습니다.');
+      setNickname(nameToUse);
+      localStorage.setItem('why_not_room_nickname', nameToUse);
       localStorage.setItem('why_not_active_room_id', targetRoomId);
-      setActiveRoomId(targetRoomId);
       setLandingInviteToken(null);
       setLandingInviteData(null);
       setInviteTokenExpiresAt(null);
       window.history.replaceState({}, '', '/');
       triggerToast('회의실 참가가 완료되었습니다!');
-      handleSelectRoom(targetRoomId, userId, nameToUse);
+      await handleSelectRoom(targetRoomId, userId, nameToUse);
     } catch (err: any) {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
@@ -1235,17 +1229,7 @@ export default function App() {
       }
 
       const rawList = Array.isArray(data) ? data : (data?.rooms || []);
-      const mappedRooms = rawList.map((r: any) => {
-        const isQuickMode = r.decisionMode === 'QUICK' || localStorage.getItem(`why_not_room_decision_mode_${r.id}`) === 'QUICK';
-        if (isQuickMode) {
-          localStorage.setItem(`why_not_room_decision_mode_${r.id}`, 'QUICK');
-        }
-        return {
-          ...r,
-          decisionMode: isQuickMode ? 'QUICK' : 'STRUCTURED'
-        };
-      });
-      setRoomsList(mappedRooms);
+      setRoomsList(rawList);
       setFetchRoomsError(false);
     } catch (error) {
       console.error('BFF fetchRooms error:', error);
@@ -1267,6 +1251,7 @@ export default function App() {
     if (isFetchingRoomRef.current && isSilent) {
       return; // Skip overlapping background poll if previous fetch is still processing
     }
+    const requestSequence = ++roomFetchSequenceRef.current;
     isFetchingRoomRef.current = true;
 
     if (!isSilent) setLoading(true);
@@ -1275,85 +1260,42 @@ export default function App() {
 
     console.log(`[SYNC] 회의 정보 조회 시작 (roomId: ${id})`);
 
-    // Attach AbortController timeout ONLY for explicit non-silent loads to prevent infinite UI freeze.
-    // Background silent polling will NEVER time out artificially (0% chance of AbortError).
-    const controller = isSilent ? null : new AbortController();
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
+    // A stalled background request must release the polling lock so every
+    // participant can receive the next authoritative room state.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), isSilent ? 10000 : 30000);
 
     let isFetched = false;
 
     try {
       const fetchOptions: RequestInit = { cache: 'no-store' };
-      if (controller) {
-        fetchOptions.signal = controller.signal;
-      }
+      fetchOptions.signal = controller.signal;
 
       const res = await fetch(`/api/rooms/${id}`, fetchOptions);
-      if (timeoutId) clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
+        if (requestSequence !== roomFetchSequenceRef.current) return;
         console.log(`[SYNC] 회의 정보 조회 완료. 현재 단계: ${data?.room?.status}, 아이디어 수: ${data?.ideas?.length}`);
         console.log(`[SYNC] 고유 참여자 계산 완료. 제출 완료 참여자 수: ${data?.completedParticipantsCount}`);
 
         if (data.room && data.room.id) {
-          const isQuickMode = data.room.decisionMode === 'QUICK' || localStorage.getItem(`why_not_room_decision_mode_${data.room.id}`) === 'QUICK';
-          if (isQuickMode) {
-            data.room.decisionMode = 'QUICK';
-            localStorage.setItem(`why_not_room_decision_mode_${data.room.id}`, 'QUICK');
-          }
+          localStorage.setItem(`why_not_room_decision_mode_${data.room.id}`, data.room.decisionMode || 'STRUCTURED');
         }
 
-        setRoomDetails(prev => {
-          const incomingProposals = data.proposals || [];
-          const existingProposals = (prev && prev.room.id === data.room.id) ? (prev.proposals || []) : [];
-          
-          // Preserve only very recent local optimistic creations (< 3 seconds old) that haven't hit server yet
-          const now = Date.now();
-          const pendingUnsynced = existingProposals.filter(ep => {
-            if (!ep.createdAt) return false;
-            const age = now - new Date(ep.createdAt).getTime();
-            return age < 3000 && ep.proposerId === userId;
-          });
-
-          const combined = [...incomingProposals];
-          pendingUnsynced.forEach(ep => {
-            if (!combined.some(cp => cp.id === ep.id || (cp.rawText && ep.rawText && cp.rawText.trim() === ep.rawText.trim()))) {
-              combined.push(ep);
-            }
-          });
-
-          const incomingCriteria = (data.criteria && data.criteria.length > 0)
-            ? data.criteria
-            : (prev && prev.room.id === data.room.id && prev.criteria && prev.criteria.length > 0 ? prev.criteria : []);
-
-          const STATUS_ORDER: Record<string, number> = {
-            DRAFT: 0, IDEA_SUBMISSION: 1, CRITERIA_PROPOSAL: 2, CRITERIA_REVIEW: 3,
-            EVALUATION: 4, EVALUATION_ROUND_2: 5, ELIMINATION: 6, FINAL_VOTE: 7, CLOSED: 8
-          };
-
-          const targetStatus = (prev && prev.room.id === data.room.id && (STATUS_ORDER[prev.room.status] || 0) > (STATUS_ORDER[data.room.status] || 0))
-            ? prev.room.status
-            : data.room.status;
-
-          return {
-            ...data,
-            criteria: incomingCriteria,
-            proposals: combined,
-            proposalsCount: combined.length,
-            room: {
-              ...data.room,
-              status: targetStatus
-            }
-          };
-        });
+        // The authenticated server response is authoritative. Preserving an
+        // older local status or deleted rows here causes host/member divergence.
+        setRoomDetails(data);
+        const completedIdeaStep = Boolean((data as any).hasCompletedIdeaSubmission);
+        setShowIdeaSubmissionGate(data.room.status === 'IDEA_SUBMISSION' && completedIdeaStep);
+        if (data.room.status === 'IDEA_SUBMISSION' && completedIdeaStep) {
+          localStorage.setItem(`why_not_idea_step_gate_${data.room.id}`, 'true');
+        } else {
+          localStorage.removeItem(`why_not_idea_step_gate_${data.room.id}`);
+        }
 
         if (data?.room?.status === 'CRITERIA_REVIEW') {
-          const validCriteriaList = (data.criteria && data.criteria.length > 0)
-            ? data.criteria
-            : (editableCriteria.length > 0 ? editableCriteria : []);
-          if (validCriteriaList.length > 0) {
-            setEditableCriteria(validCriteriaList);
-          }
+          setEditableCriteria(data.criteria || []);
         }
         const hasFinalWinner = (data?.ideas || []).some((idea: Idea) => idea.status === 'WINNER');
         const isWinnerState =
@@ -1374,15 +1316,19 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      if (timeoutId) clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        console.warn('[SYNC NOTICE] 30초 데이터 조회 타임아웃 발생 (다음 주기에 자동 재시도)');
+        console.warn('[SYNC NOTICE] 데이터 조회 타임아웃 발생 (다음 주기에 자동 재시도)');
       } else {
         console.warn('[SYNC ERROR] Express backend fetchRoomDetails failed, retrying...', err);
       }
     } finally {
-      isFetchingRoomRef.current = false;
+      if (requestSequence === roomFetchSequenceRef.current) {
+        isFetchingRoomRef.current = false;
+      }
     }
+
+    if (requestSequence !== roomFetchSequenceRef.current) return;
 
     if (isFetched) {
       console.log('[SYNC] 초기 로딩 종료 (Express 성공)');
@@ -1391,16 +1337,34 @@ export default function App() {
       return;
     }
 
-    setFetchRoomError(true);
+    if (!isSilent) setFetchRoomError(true);
     setLoading(false);
     setRefreshing(false);
-    triggerToast('방 정보를 불러오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.', 'error');
+    if (!isSilent) {
+      triggerToast('방 정보를 불러오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.', 'error');
+    }
   };
 
   // Update user room entry nickname (Max 6 chars)
-  const handleUpdateNickname = () => {
+  const handleUpdateNickname = async () => {
     const trimmed = tempNickname.trim().slice(0, 6);
     if (!trimmed) return;
+
+    if (activeRoomId && !pendingRoomId) {
+      try {
+        const response = await fetch(`/api/rooms/${activeRoomId}/me`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nickname: trimmed }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || '닉네임을 저장하지 못했습니다.');
+      } catch (error) {
+        triggerToast(error instanceof Error ? error.message : '닉네임을 저장하지 못했습니다.', 'error');
+        return;
+      }
+    }
+
     localStorage.setItem('why_not_room_nickname', trimmed);
     setNickname(trimmed);
     setIsRegisteringUser(false);
@@ -1410,12 +1374,6 @@ export default function App() {
       const targetId = pendingRoomId;
       setPendingRoomId(null);
       handleSelectRoom(targetId, userId, trimmed);
-    } else if (activeRoomId) {
-      fetch(`/api/rooms/${activeRoomId}/me`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nickname: trimmed }),
-      });
     }
   };
 
@@ -1506,16 +1464,13 @@ export default function App() {
       return;
     }
 
-    // 1. Instant local UI update for snappy feedback
-    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: nextPinState } : r));
-    triggerToast(nextPinState ? '★ 상단 고정되었습니다. (ON)' : '☆ 상단 고정이 해제되었습니다. (OFF)');
-
     try {
       const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || '고정 상태를 저장하지 못했습니다.');
+      await fetchRooms();
+      triggerToast(data?.isPinned ? '★ 상단 고정되었습니다. (ON)' : '☆ 상단 고정이 해제되었습니다. (OFF)');
     } catch (err) {
-      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isPinned: !nextPinState } : r));
       triggerToast(err instanceof Error ? err.message : '고정 상태를 저장하지 못했습니다.', 'error');
     }
   };
@@ -1525,15 +1480,14 @@ export default function App() {
     e.stopPropagation();
     if (!userId) return;
 
-    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
-    triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
-
     try {
       const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'POST' });
-      if (!response.ok) throw new Error('회의실 숨김 상태를 저장하지 못했습니다.');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 저장하지 못했습니다.');
+      await fetchRooms();
+      triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
     } catch (err) {
-      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
-      triggerToast('회의실 숨김 상태를 저장하지 못했습니다.', 'error');
+      triggerToast(err instanceof Error ? err.message : '회의실 숨김 상태를 저장하지 못했습니다.', 'error');
     }
   };
 
@@ -1542,21 +1496,20 @@ export default function App() {
     e.stopPropagation();
     if (!userId) return;
 
-    setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: false } : r));
-    triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
-
     try {
       const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'DELETE' });
-      if (!response.ok) throw new Error('회의실 숨김 상태를 해제하지 못했습니다.');
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 해제하지 못했습니다.');
+      await fetchRooms();
+      triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
     } catch (err) {
-      setRoomsList(prev => prev.map(r => r.id === roomId ? { ...r, isHidden: true } : r));
-      triggerToast('회의실 숨김 상태를 해제하지 못했습니다.', 'error');
+      triggerToast(err instanceof Error ? err.message : '회의실 숨김 상태를 해제하지 못했습니다.', 'error');
     }
   };
 
   // Advance a room only through the server-validated milestone transition.
-  const handleForceChangeStatus = async (nextStatus: RoomStatus) => {
-    if (!activeRoomId) return;
+  const handleForceChangeStatus = async (nextStatus: RoomStatus): Promise<boolean> => {
+    if (!activeRoomId) return false;
 
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
@@ -1570,10 +1523,12 @@ export default function App() {
       }
       await fetchRoomDetails(activeRoomId, true);
       triggerToast(`단계가 '${nextStatus}'(으)로 변경되었습니다.`);
+      return true;
     } catch (error) {
       console.error('Room status transition failed:', error);
       triggerToast(error instanceof Error ? error.message : '단계를 변경하지 못했습니다.', 'error');
       await fetchRoomDetails(activeRoomId, true);
+      return false;
     }
   };
 
@@ -1685,7 +1640,7 @@ export default function App() {
     setIdeaLink('');
     setIdeaPdfName('');
     setIdeaTags('');
-    fetchRoomDetails(activeRoomId!);
+    await fetchRoomDetails(activeRoomId!);
   };
 
   // Update Idea Handler
@@ -1718,24 +1673,9 @@ export default function App() {
       return;
     }
 
-    // Update local roomDetails state if gominhajo or direct state match
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        ideas: prev.ideas.map(i => i.id === ideaId ? {
-          ...i,
-          title: editIdeaTitle.trim(),
-          description: editIdeaDesc.trim(),
-          attachmentUrl: editIdeaLink.trim(),
-          pdfAttachmentUrl: editIdeaPdfName.trim(),
-        } : i)
-      };
-    });
-
     triggerToast('아이디어가 성공적으로 수정되었습니다.');
     setEditingIdeaId(null);
-    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+    if (activeRoomId) await fetchRoomDetails(activeRoomId, true);
   };
 
   // Delete Idea Handler
@@ -1756,18 +1696,9 @@ export default function App() {
       return;
     }
 
-    // Update local roomDetails state
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        ideas: prev.ideas.filter(i => i.id !== ideaId)
-      };
-    });
-
     triggerToast('아이디어가 삭제되었습니다.');
     if (editingIdeaId === ideaId) setEditingIdeaId(null);
-    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
+    if (activeRoomId) await fetchRoomDetails(activeRoomId, true);
   };
 
 
@@ -1909,7 +1840,7 @@ export default function App() {
     }, 600);
   };
 
-  // Propose Criterion (Anonymous, Min 1 ~ Max 3 per user limit with instant fallback)
+  // Propose Criterion (Anonymous, Min 1 ~ Max 3 per user limit)
   const handleProposeCriterion = async (e?: React.FormEvent, customText?: string) => {
     if (e) e.preventDefault();
     const textToSubmit = customText || proposalText;
@@ -1950,48 +1881,24 @@ export default function App() {
       return;
     }
 
-    const newProposalObj = {
-      id: isAi ? `prop-ai-${Math.random().toString(36).substring(2, 9)}` : `prop-${Math.random().toString(36).substring(2, 9)}`,
-      roomId: activeRoomId!,
-      rawText: textToSubmit.trim(),
-      proposerId: userId,
-      isAiSuggested: isAi,
-      createdAt: new Date().toISOString()
-    };
-
-    // Update local state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const updatedProposals = [...(prev.proposals || []), newProposalObj];
-      return {
-        ...prev,
-        proposals: updatedProposals,
-        proposalsCount: updatedProposals.length
-      };
-    });
-
-    triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
-    setProposalText('');
-
-    // Persist through the authenticated backend only.
     try {
       const response = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: newProposalObj.id,
           rawText: textToSubmit.trim(),
           isAiSuggested: isAi,
         }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '평가 기준 제안을 저장하지 못했습니다.');
+      setProposalText('');
+      triggerToast('평가 기준 제안이 익명으로 등록되었습니다!');
+      await fetchRoomDetails(activeRoomId!, true);
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 기준 제안을 저장하지 못했습니다.';
       triggerToast(message, 'error');
     }
-
-    fetchRoomDetails(activeRoomId!, true);
   };
 
   // State for Editing Proposal
@@ -2007,23 +1914,6 @@ export default function App() {
       return;
     }
 
-    setEditingProposalId(null);
-    setEditingProposalText('');
-
-    // 1. Update local React state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const updated = (prev.proposals || []).map(p => p.id === proposalId ? { ...p, rawText: updatedText } : p);
-      return {
-        ...prev,
-        proposals: updated,
-        proposalsCount: updated.length
-      };
-    });
-
-    triggerToast('제안된 평가 기준이 수정되었습니다.');
-
-    // Persist through the authenticated backend only.
     try {
       const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'PUT',
@@ -2032,32 +1922,20 @@ export default function App() {
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '평가 기준 수정에 실패했습니다.');
+      setEditingProposalId(null);
+      setEditingProposalText('');
+      triggerToast('제안된 평가 기준이 수정되었습니다.');
+      if (activeRoomId) await fetchRoomDetails(activeRoomId, true);
     } catch (e) {
       const message = e instanceof Error ? e.message : '평가 기준 수정에 실패했습니다.';
       triggerToast(message, 'error');
     }
-
-    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
   };
 
   // Direct Delete proposal
   const handleDeleteProposalDirect = async (proposalId: string) => {
     if (!activeRoomId || !proposalId) return;
 
-    // 1. Update local React state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      const updated = (prev.proposals || []).filter(p => p.id !== proposalId);
-      return {
-        ...prev,
-        proposals: updated,
-        proposalsCount: updated.length
-      };
-    });
-
-    triggerToast('제안된 평가 기준이 삭제되었습니다.');
-
-    // Persist through the authenticated backend only.
     try {
       const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE',
@@ -2065,12 +1943,12 @@ export default function App() {
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '평가 기준 삭제에 실패했습니다.');
+      triggerToast('제안된 평가 기준이 삭제되었습니다.');
+      await fetchRoomDetails(activeRoomId, true);
     } catch (e) {
       const message = e instanceof Error ? e.message : '평가 기준 삭제에 실패했습니다.';
       triggerToast(message, 'error');
     }
-
-    if (activeRoomId) fetchRoomDetails(activeRoomId, true);
   };
 
   const handleConfirmDeleteProposal = async () => {
@@ -2129,79 +2007,23 @@ export default function App() {
   // Trigger AI Clustering (Host only)
   const handleTriggerClustering = async () => {
     setIsClusteringLoading(true);
-
-    const proposals = roomDetails?.proposals || [];
-
-    // Default clustered criteria dynamically mapping ALL submitted proposals
-    const defaultClusteredCriteria: Criterion[] = proposals.length > 0
-      ? proposals.map((p, i) => {
-        const parts = (p.rawText || '').split(':');
-        const namePart = parts[0]?.trim() || `제안 기준 #${i + 1}`;
-        const descPart = parts[1]?.trim() || p.rawText || '제안 의견을 반영한 평가 기준';
-        return {
-          id: `crit-clustered-${i + 1}-${Math.random().toString(36).substr(2, 5)}`,
-          roomId: activeRoomId!,
-          name: namePart.slice(0, 15),
-          description: `제안된 '${descPart.slice(0, 35)}...' 반영 평가 기준`,
-          confirmed: true
-        };
-      })
-      : [
-        {
-          id: `crit-clustered-1`,
-          roomId: activeRoomId!,
-          name: '기술적 구현 가능성 및 난이도',
-          description: '가용한 팀 리소스 및 스케줄 내에서 1달 이내 MVP 구축이 가능한가',
-          confirmed: true
-        },
-        {
-          id: `crit-clustered-2`,
-          roomId: activeRoomId!,
-          name: '타겟 사용자 체감 가치 및 차별성',
-          description: '기존 서비스 대비 뚜렷한 해결 효용을 제공하고 핵심 문제를 해소하는가',
-          confirmed: true
-        },
-        {
-          id: `crit-clustered-3`,
-          roomId: activeRoomId!,
-          name: '비용 및 운영 리스크 적정성',
-          description: '초기 예산 범위 내 유지보수가 가능하며 법적/보안 리스크가 제어 가능한가',
-          confirmed: true
-        }
-      ];
-
-    let finalCriteria = defaultClusteredCriteria;
-
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/cluster`, {
         method: 'POST',
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.candidates && data.candidates.length > 0) {
-          finalCriteria = data.candidates;
-        }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || '평가 기준을 정리하지 못했습니다.');
+      if (!Array.isArray(data?.candidates) || data.candidates.length === 0) {
+        throw new Error('서버에서 정리된 평가 기준을 받지 못했습니다.');
       }
+      setEditableCriteria(data.candidates);
+      await fetchRoomDetails(activeRoomId!, false);
+      triggerToast('수집된 의견을 바탕으로 핵심 평가 기준을 정리했습니다!');
     } catch (err) {
-      console.warn('Express API unavailable, criteria clustering updated locally.');
+      triggerToast(err instanceof Error ? err.message : '평가 기준을 정리하지 못했습니다.', 'error');
+    } finally {
+      setIsClusteringLoading(false);
     }
-
-    // Update local UI state
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        criteria: finalCriteria,
-        room: {
-          ...prev.room,
-          status: 'CRITERIA_REVIEW'
-        }
-      };
-    });
-    setEditableCriteria(finalCriteria);
-    triggerToast('Potens AI가 수집된 의견을 수렴하여 3개 핵심 평가 기준을 정립했습니다!');
-
-    setIsClusteringLoading(false);
   };
 
   // Confirm Criteria (Host only)
@@ -2212,38 +2034,20 @@ export default function App() {
       return;
     }
 
-    // 1. Update local UI state immediately
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        criteria: targetCriteria,
-        room: {
-          ...prev.room,
-          status: 'EVALUATION'
-        }
-      };
-    });
-
-    triggerToast('취합된 평가 기준이 최종 확인되었습니다. 3단계 1차 투표 및 익명 평가를 시작합니다!');
-
-    // Persist through the authenticated backend only.
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmedCriteria: targetCriteria }),
       });
-      if (res.ok) {
-        fetchRoomDetails(activeRoomId!);
-        return;
-      }
       const data = await res.json().catch(() => null);
-      throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
+      if (!res.ok) throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
+      await fetchRoomDetails(activeRoomId!, false);
+      triggerToast('취합된 평가 기준이 최종 확인되었습니다. 3단계 1차 투표 및 익명 평가를 시작합니다!');
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 기준 확정에 실패했습니다.';
       triggerToast(message, 'error');
-      fetchRoomDetails(activeRoomId!, true);
+      await fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -2380,22 +2184,6 @@ export default function App() {
       reasonType: evalSubmissions[i.id].reasonType,
     }));
 
-    setIsReEditingEvaluation(false);
-
-    // Mark only this user's completion locally. The server controls phase changes.
-    setRoomDetails(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        hasEvaluated: true,
-        evaluatorsCount: (prev.evaluatorsCount || 0) + 1,
-        minResponseThresholdMet: false,
-        aggregatedScores: undefined
-      };
-    });
-
-    triggerToast('익명 1차 투표 및 평가가 성공적으로 완료되었습니다!');
-
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
         method: 'POST',
@@ -2406,7 +2194,11 @@ export default function App() {
         }),
       });
       if (res.ok) {
-        fetchRoomDetails(activeRoomId!);
+        setIsReEditingEvaluation(false);
+        triggerToast(isRefinementReevaluation
+          ? '보완 후보 재평가가 성공적으로 제출되었습니다!'
+          : '익명 1차 투표 및 평가가 성공적으로 완료되었습니다!');
+        await fetchRoomDetails(activeRoomId!, false);
         return;
       }
       const data = await res.json().catch(() => null);
@@ -2414,8 +2206,7 @@ export default function App() {
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
       triggerToast(message, 'error');
-      setRoomDetails(prev => prev ? { ...prev, hasEvaluated: false } : prev);
-      fetchRoomDetails(activeRoomId!, true);
+      await fetchRoomDetails(activeRoomId!, true);
     }
   };
 
@@ -2474,7 +2265,7 @@ export default function App() {
     if (!roomDetails) return;
 
     const targetWinners = roomDetails.room.targetWinnerCount || 1;
-    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED').map(i => i.id);
+    const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE').map(i => i.id);
     const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
     const isSubmittedByMe = Boolean(validMyStarVotes.length >= targetWinners);
 
@@ -2518,20 +2309,6 @@ export default function App() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (res.status === 409 || data?.alreadySubmitted || (data?.error && (data.error.includes('이미') || data.error.includes('투표')))) {
-          setShowFinalVoteModal(false);
-          setRoomDetails(prev => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              isStarVoteSubmitted: true,
-              myStarVotes: mySelectedStarIdeaIds
-            };
-          });
-          triggerToast('✨ 익명 별 스티커 투표가 안전하게 제출되었습니다.');
-          await fetchRoomDetails(activeRoomId);
-          return;
-        }
         throw new Error(data.error || '투표를 저장하지 못했습니다.');
       }
       triggerToast(data.message || '익명 투표가 안전하게 제출되었습니다.');
@@ -2548,14 +2325,8 @@ export default function App() {
 
       await fetchRoomDetails(activeRoomId);
     } catch (err: any) {
-      if (err.message && (err.message.includes('이미') || err.message.includes('투표'))) {
-        setShowFinalVoteModal(false);
-        setRoomDetails(prev => prev ? { ...prev, isStarVoteSubmitted: true } : prev);
-        triggerToast('✨ 익명 별 스티커 투표가 제출 반영되었습니다.');
-        await fetchRoomDetails(activeRoomId);
-      } else {
-        triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
-      }
+      triggerToast(err.message || '투표를 저장하지 못했습니다. 다시 시도해 주세요.', 'error');
+      await fetchRoomDetails(activeRoomId, true);
     } finally {
       setIsSubmittingStarVote(false);
     }
@@ -2605,53 +2376,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
-  // Submit Final Vote for remaining 2 candidates
-  const handleSubmitFinalVote = async () => {
-    if (!activeRoomId) return;
-    if (!selectedFinalIdeaId) {
-      triggerToast('투표하실 최종 후보 아이디어를 선택해 주세요.', 'error');
-      return;
-    }
-    setIsSubmittingFinalVote(true);
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/final-vote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ winnerIdeaId: selectedFinalIdeaId }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || '오류 발생');
-
-      triggerToast(data.message || '최종 후보 투표가 완료되었습니다!');
-      setShowFinalVoteModal(false);
-      await fetchRoomDetails(activeRoomId);
-    } catch (err: any) {
-      triggerToast(err?.message || '최종 후보 투표 실패', 'error');
-    } finally {
-      setIsSubmittingFinalVote(false);
-    }
-  };
-
-  // Manually close room and summarize (Host only)
-  const handleManuallyCloseRoom = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/close`, {
-        method: 'POST',
-      });
-      if (!res.ok) throw new Error();
-      triggerToast('방을 수동 종료하고 최종 AI 리포트를 발급했습니다!');
-      fetchRoomDetails(activeRoomId!);
-    } catch (err) {
-      triggerToast('방 종료 실패', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
 
   // Robust Clipboard Copy Helper with Document Focus Fallback
   const copyToClipboard = async (text: string): Promise<boolean> => {
@@ -2971,9 +2695,9 @@ export default function App() {
                 <span className="text-xs font-medium text-slate-600">
                   {roomDetails.room.status === 'IDEA_SUBMISSION' && '1단계: 아이디어 등록 중'}
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && '2단계: 기준 익명제안 중'}
-                  {roomDetails.room.status === 'CRITERIA_REVIEW' && '3단계: 기준 확정 진행 중'}
-                  {roomDetails.room.status === 'EVALUATION' && (isRefinementReevaluation ? '보완 후보 재평가 진행 중' : '4단계: 익명 스크리닝 평가 중')}
-                  {roomDetails.room.status === 'ELIMINATION' && `${(roomDetails.rounds?.length || 0) + 1}라운드 소거 진행 중`}
+                  {roomDetails.room.status === 'CRITERIA_REVIEW' && '2단계: 평가 기준 확정 중'}
+                  {roomDetails.room.status === 'EVALUATION' && (isRefinementReevaluation ? '3단계: 보완 후보 재평가 중' : '3단계: 1차 투표 및 익명 평가 중')}
+                  {roomDetails.room.status === 'ELIMINATION' && '4단계: 2차 익명 투표 중'}
                   {roomDetails.room.status === 'CLOSED' && '종료 (최종 선정 완료)'}
                 </span>
               </div>
@@ -2991,7 +2715,7 @@ export default function App() {
                   className="group flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 py-1.5 px-3.5 rounded-full transition-all duration-200 cursor-pointer shadow-xs"
                 >
                   <User className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                  
+
                   {/* 평소: 닉네임 노출 */}
                   <span className="text-xs font-bold text-indigo-950 transition-all duration-200 group-hover:hidden">
                     {nickname || '사용자'}
@@ -3113,6 +2837,7 @@ export default function App() {
                     {landingInviteData?.errorCode === 'EXPIRED' ? '생성된 지 3분이 지나 만료된 초대 링크입니다' :
                      landingInviteData?.errorCode === 'DEACTIVATED' ? '방장에 의해 비활성화된 초대 링크입니다' :
                      landingInviteData?.errorCode === 'CAPACITY_FULL' ? '최대 참가 가능 인원이 초과된 회의실입니다' :
+                     (landingInviteData as any)?.errorCode === 'ROOM_STARTED' ? '이미 진행이 시작된 회의실입니다' :
                      landingInviteData?.errorCode === 'ROOM_CLOSED' ? '이미 종료된 회의실입니다' :
                      landingInviteData?.errorCode === 'ROOM_DELETED' ? '삭제된 회의실입니다' :
                      '유효하지 않은 초대 링크입니다'}
@@ -4080,9 +3805,7 @@ export default function App() {
                         <div className="text-xs font-bold text-slate-700 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full shrink-0 flex items-center gap-1.5">
                           <span>📊 등록 완료 현황판:</span>
                           <span className="text-indigo-600 font-extrabold">
-                            {roomDetails.completedParticipantsCount !== undefined
-                              ? roomDetails.completedParticipantsCount
-                              : new Set((roomDetails.ideas || []).map(i => i.submitterId).filter(Boolean)).size} / {roomDetails.room?.maxParticipants || 6}명 완료
+                            {roomDetails.completedParticipantsCount || 0} / {Math.max(1, Number((roomDetails as any).participantCount || 1))}명 완료
                           </span>
                         </div>
                         <button
@@ -4100,32 +3823,17 @@ export default function App() {
                     VIEW 1: IDEA_SUBMISSION
                     ----------------------------------------------------------- */}
                   {roomDetails.room?.status === 'IDEA_SUBMISSION' && (
-                    (showIdeaSubmissionGate || Boolean(activeRoomId && localStorage.getItem(`why_not_idea_step_gate_${activeRoomId}`) === 'true')) ? (
+                    (showIdeaSubmissionGate || Boolean((roomDetails as any).hasCompletedIdeaSubmission)) ? (
                       /* ANONYMITY QUORUM GATE VIEW MATCHING IMAGES 2 & 3 */
                       <div className="space-y-6">
 
                         {/* 2. Images 2 & 3 Equivalent: Anonymity Quorum Gate Waiting & Completion Card */}
                         {(() => {
-                          const ideaCompletedCount = roomDetails.completedParticipantsCount !== undefined
-                            ? roomDetails.completedParticipantsCount
-                            : (showIdeaSubmissionGate ? 1 : 0);
-
-                          const targetMinThreshold = Math.min(
-                            roomDetails.room.minResponseThreshold || 3,
-                            roomDetails.room.maxParticipants || 6
-                          );
-
-                          const targetTotalCount = Math.max(
-                            roomDetails.room.maxParticipants || 2,
-                            targetMinThreshold,
-                            ideaCompletedCount,
-                            (roomDetails.participants || []).length || 1
-                          );
+                          const ideaCompletedCount = roomDetails.completedParticipantsCount || 0;
+                          const targetTotalCount = Math.max(1, Number((roomDetails as any).participantCount || 1));
 
                           const ideasCountMet = (roomDetails.ideas || []).length >= 2;
-                          const participantQuorumMet = roomDetails.room.decisionMode === 'QUICK'
-                            ? (ideaCompletedCount >= (roomDetails.participants || []).length && ideaCompletedCount > 0)
-                            : (ideaCompletedCount >= Math.min(targetMinThreshold, (roomDetails.participants || []).length || 1));
+                          const participantQuorumMet = ideaCompletedCount >= targetTotalCount;
                           const isIdeaGateMinMet = ideasCountMet && participantQuorumMet;
 
                           return (
@@ -4151,7 +3859,7 @@ export default function App() {
                                     ? roomDetails.room.decisionMode === 'QUICK'
                                       ? '선택지가 모두 모였습니다. 다른 사람의 선택을 보지 않는 익명 투표를 시작할 수 있습니다.'
                                       : '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                    : '와이낫 서비스는 소수 인원 응답 시 필체나 의견 유추로 익명이 훼손되는 것을 원천 차단하기 위해, 설정된 정족수(최소 ' + targetMinThreshold + '명)가 찬 이후에만 다음 단계로 진행할 수 있습니다.'}
+                                    : '등록 내용을 동시에 공개하기 위해 현재 참여자 전원이 완료를 눌러야 다음 단계로 진행할 수 있습니다.'}
                                 </p>
                                 {participantQuorumMet && !ideasCountMet && (
                                   <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 leading-relaxed max-w-md mx-auto mt-2">
@@ -6622,7 +6330,7 @@ export default function App() {
                       await copyToClipboard(inviteUrl);
                       triggerToast('참여자 전용 초대 링크가 클립보드에 복사되었습니다!');
                     } else {
-                      copyShareLink();
+                      triggerToast('초대 링크를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.', 'error');
                     }
                   }}
                   className="w-full py-3.5 bg-white hover:bg-indigo-50/50 border border-indigo-200 text-indigo-900 rounded-2xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
@@ -6877,7 +6585,7 @@ export default function App() {
               <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
                 {(() => {
                   const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeas = (roomDetails?.ideas || []).filter(i => !i.status || i.status === 'ACTIVE' || i.status !== 'ELIMINATED');
+                  const activeIdeas = (roomDetails?.ideas || []).filter(i => !i.status || i.status === 'ACTIVE');
                   const activeIdeaIds = activeIdeas.map(i => i.id);
                   const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
                   const isSubmittedByMe = Boolean(validMyStarVotes.length >= targetWinners);
