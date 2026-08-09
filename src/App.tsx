@@ -338,6 +338,7 @@ export default function App() {
   const [refinementRevisionDrafts, setRefinementRevisionDrafts] = useState<Record<string, { title: string; description: string }>>({});
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
   const [isFinalizingScreening, setIsFinalizingScreening] = useState(false);
+  const [showSecondScoreBallot, setShowSecondScoreBallot] = useState(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -413,6 +414,12 @@ export default function App() {
     reasonType?: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE';
   }>>({});
   const [isReEditingEvaluation, setIsReEditingEvaluation] = useState(false);
+
+  useEffect(() => {
+    setShowSecondScoreBallot(false);
+    setEvalSubmissions({});
+    setIsReEditingEvaluation(false);
+  }, [activeRoomId, roomDetails?.room.currentRoundId]);
 
   const handleStartReEditingEvaluation = async () => {
     if (roomDetails?.myEvaluations && roomDetails.myEvaluations.length > 0) {
@@ -498,9 +505,23 @@ export default function App() {
     setShowFinalVoteModal(false);
   }, [activeRoomId]);
 
-  // Automatically open voting modal for participants when voting is active and they haven't voted yet
+  // Quick rooms can enter voting immediately. Structured V7 rooms first show
+  // the score result and let each participant open the final ballot themselves.
   useEffect(() => {
     if (!roomDetails) return;
+    const isV7 = (roomDetails.room.engineVersion || 1) >= 7;
+    if (isV7 && roomDetails.finalVoteCycle) {
+      const cycle = roomDetails.finalVoteCycle;
+      setMySelectedStarIdeaIds(cycle.mySelectedIdeaIds || []);
+      if (
+        roomDetails.room.decisionMode === 'QUICK' &&
+        cycle.status === 'VOTING' &&
+        !cycle.myBallotSubmitted
+      ) {
+        setShowFinalVoteModal(true);
+      }
+      return;
+    }
     const targetWinners = roomDetails.room?.targetWinnerCount || 1;
     const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE').map(i => i.id);
     const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
@@ -514,7 +535,7 @@ export default function App() {
     if (isVotingActive && !isSubmitted) {
       setShowFinalVoteModal(true);
     }
-  }, [roomDetails?.room?.status, roomDetails?.room?.finalVoteStatus, roomDetails?.room?.decisionMode, roomDetails?.isStarVoteSubmitted, roomDetails?.myStarVotes?.length]);
+  }, [roomDetails?.room?.status, roomDetails?.room?.finalVoteStatus, roomDetails?.room?.decisionMode, roomDetails?.isStarVoteSubmitted, roomDetails?.myStarVotes?.length, roomDetails?.finalVoteCycle?.status, roomDetails?.finalVoteCycle?.myBallotSubmitted]);
 
   // 4단계 수동 소거 확인 팝업 modal state
   const [pendingEliminationIdea, setPendingEliminationIdea] = useState<Idea | null>(null);
@@ -2131,6 +2152,9 @@ export default function App() {
   const handleSubmitAllEvaluations = async () => {
     if (!roomDetails) return;
 
+    const isSecondScoreRound = roomDetails.room.status === 'EVALUATION_ROUND_2';
+    const requiresFeedback = !isSecondScoreRound;
+
     const targetIdeas = roomDetails.ideas.filter(idea =>
       idea.status === 'ACTIVE' && idea.submitterId !== userId
     );
@@ -2145,7 +2169,7 @@ export default function App() {
         triggerToast(`"${idea.title}"의 종합점수를 1~10점 중에서 선택해 주세요.`, 'error');
         return;
       }
-      if (!submission.feedbackText.trim()) {
+      if (requiresFeedback && !submission.feedbackText.trim()) {
         triggerToast(`"${idea.title}"의 익명 피드백을 작성해 주세요.`, 'error');
         return;
       }
@@ -2154,7 +2178,7 @@ export default function App() {
     const submissions = targetIdeas.map(idea => ({
       ideaId: idea.id,
       overallScore: evalSubmissions[idea.id].overallScore,
-      feedbackText: evalSubmissions[idea.id].feedbackText.trim()
+      feedbackText: requiresFeedback ? evalSubmissions[idea.id].feedbackText.trim() : undefined
     }));
 
     try {
@@ -2168,7 +2192,9 @@ export default function App() {
       });
       if (res.ok) {
         setIsReEditingEvaluation(false);
-        triggerToast('종합점수와 익명 피드백을 모두 제출했습니다.');
+        triggerToast(isSecondScoreRound
+          ? '2차 종합점수를 모두 제출했습니다.'
+          : '1차 종합점수와 익명 피드백을 모두 제출했습니다.');
         await fetchRoomDetails(activeRoomId!, false);
         return;
       }
@@ -2183,6 +2209,7 @@ export default function App() {
 
   const handleRetryScreeningFinalization = async () => {
     if (!activeRoomId) return;
+    const phaseLabel = roomDetails?.room.status === 'EVALUATION_ROUND_2' ? '2차' : '1차';
     setIsFinalizingScreening(true);
     try {
       const response = await fetch(`/api/rooms/${activeRoomId}/screening/finalize`, {
@@ -2191,11 +2218,11 @@ export default function App() {
         body: JSON.stringify({})
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || '1차 평가 집계를 완료하지 못했습니다.');
-      triggerToast('1차 평가 집계와 2차 투표 후보 확정이 완료되었습니다.');
+      if (!response.ok) throw new Error(data.error || `${phaseLabel} 평가 집계를 완료하지 못했습니다.`);
+      triggerToast(`${phaseLabel} 평가 집계와 다음 단계 후보 확정이 완료되었습니다.`);
       await fetchRoomDetails(activeRoomId, true);
     } catch (error) {
-      triggerToast(error instanceof Error ? error.message : '1차 평가 집계를 완료하지 못했습니다.', 'error');
+      triggerToast(error instanceof Error ? error.message : `${phaseLabel} 평가 집계를 완료하지 못했습니다.`, 'error');
     } finally {
       setIsFinalizingScreening(false);
     }
@@ -2255,6 +2282,21 @@ export default function App() {
   const handleToggleStarIdea = (ideaId: string) => {
     if (!roomDetails) return;
 
+    if ((roomDetails.room.engineVersion || 1) >= 7) {
+      if (roomDetails.finalVoteCycle?.myBallotSubmitted) {
+        triggerToast('제출 내용을 수정하려면 먼저 투표 수정 버튼을 눌러 주세요.', 'error');
+        return;
+      }
+      setMySelectedStarIdeaIds(previous => {
+        if (previous.length >= 3) {
+          triggerToast('별 스티커 3개를 모두 사용했습니다. 다른 후보의 별을 먼저 빼 주세요.', 'error');
+          return previous;
+        }
+        return [...previous, ideaId];
+      });
+      return;
+    }
+
     const targetWinners = roomDetails.room.targetWinnerCount || 1;
     const activeIdeaIds = (roomDetails.ideas || []).filter(i => !i.status || i.status === 'ACTIVE').map(i => i.id);
     const validMyStarVotes = (roomDetails.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
@@ -2278,10 +2320,53 @@ export default function App() {
     });
   };
 
+  const handleRemoveStarIdea = (ideaId: string) => {
+    setMySelectedStarIdeaIds(previous => {
+      const index = previous.lastIndexOf(ideaId);
+      if (index < 0) return previous;
+      return previous.filter((_, itemIndex) => itemIndex !== index);
+    });
+  };
+
+  const handleReopenStarVote = async () => {
+    if (!activeRoomId) return;
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/reopen`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '투표를 수정 상태로 되돌리지 못했습니다.');
+      triggerToast('집계 전 투표를 다시 수정할 수 있습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+      setShowFinalVoteModal(true);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '투표 수정 요청에 실패했습니다.', 'error');
+    }
+  };
+
+  const handleRouletteConsent = async (consent: boolean) => {
+    if (!activeRoomId) return;
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/roulette-consent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ consent })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '동률 처리 의견을 저장하지 못했습니다.');
+      triggerToast(consent ? '롤렛 진행에 동의했습니다.' : '별 3개 재투표를 선택했습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '동률 처리 의견을 저장하지 못했습니다.', 'error');
+    }
+  };
+
   // 4단계 별 스티커 투표 제출 함수
   const handleSubmitStarVote = async () => {
     if (!activeRoomId || !roomDetails) return;
-    const targetWinners = roomDetails.room.targetWinnerCount || 1;
+    const targetWinners = (roomDetails.room.engineVersion || 1) >= 7
+      ? 3
+      : roomDetails.room.targetWinnerCount || 1;
 
     if (mySelectedStarIdeaIds.length !== targetWinners) {
       triggerToast(`⭐ 별 스티커 ${targetWinners}개를 모두 사용하셔야 투표를 제출할 수 있습니다.`, 'error');
@@ -2416,6 +2501,11 @@ export default function App() {
     return roomDetails.ideas.filter(i => i && i.status === 'ACTIVE').length;
   }, [roomDetails]);
   const refinement = ((roomDetails as any)?.refinement || null) as RefinementState | null;
+  const isV7Room = Number(roomDetails?.room?.engineVersion || 1) >= 7;
+  const hasV7SecondScoreRound = Boolean(
+    roomDetails?.room?.status === 'EVALUATION_ROUND_2' ||
+    roomDetails?.scoreRounds?.some(round => round.phase === 'SECOND')
+  );
   const isRefinementReevaluation = Boolean(
     refinement?.used && refinement?.stage === 'EVALUATION'
   );
@@ -2466,7 +2556,10 @@ export default function App() {
 
     if (roulettePurpose === 'TIE_RESOLUTION' && (roomDetails.tieCandidateIdeaIds || []).length > 0) {
       const tieIds = new Set(roomDetails.tieCandidateIdeaIds);
-      return roomDetails.ideas.filter(idea => tieIds.has(idea.id));
+      const alreadyDrawnIds = new Set(
+        (roomDetails.finalVoteCycle?.rouletteDraws || []).map(draw => draw.selectedIdeaId)
+      );
+      return roomDetails.ideas.filter(idea => tieIds.has(idea.id) && !alreadyDrawnIds.has(idea.id));
     }
 
     const starVoteCounts = roomDetails.starVotes || {};
@@ -2511,7 +2604,9 @@ export default function App() {
         const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/resolve-tie`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
+          body: JSON.stringify({
+            drawNumber: roomDetails?.finalVoteCycle?.nextRouletteDrawNumber
+          })
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || '동률 추첨 결과를 저장하지 못했습니다.');
@@ -2687,8 +2782,9 @@ export default function App() {
                   {roomDetails.room.status === 'IDEA_SUBMISSION' && '1단계: 아이디어 등록 중'}
                   {roomDetails.room.status === 'CRITERIA_PROPOSAL' && '2단계: 기준 익명제안 중'}
                   {roomDetails.room.status === 'CRITERIA_REVIEW' && '2단계: 평가 기준 확정 중'}
-                  {roomDetails.room.status === 'EVALUATION' && '3단계: 종합점수 및 익명 피드백 중'}
-                  {roomDetails.room.status === 'ELIMINATION' && (roomDetails.room.finalVoteStatus === 'NOT_STARTED' ? '3단계: 1차 평가 결과' : '4단계: 2차 익명 투표 중')}
+                  {roomDetails.room.status === 'EVALUATION' && '3단계: 1차 종합점수 및 익명 피드백 중'}
+                  {roomDetails.room.status === 'EVALUATION_ROUND_2' && '4단계: 2차 종합점수 평가 중'}
+                  {roomDetails.room.status === 'ELIMINATION' && ((roomDetails.room.engineVersion || 1) >= 7 ? '5단계: 최종 별 투표 중' : (roomDetails.room.finalVoteStatus === 'NOT_STARTED' ? '3단계: 1차 평가 결과' : '4단계: 2차 익명 투표 중'))}
                   {roomDetails.room.status === 'CLOSED' && '종료 (최종 선정 완료)'}
                 </span>
               </div>
@@ -3674,17 +3770,37 @@ export default function App() {
                             { key: 'ELIMINATION', label: '2단계 : 익명 투표' },
                             { key: 'CLOSED', label: '3단계 : 결과와 근거' }
                           ]
-                        : [
-                            { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
-                            { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
-                            { key: 'EVALUATION', label: '3단계 : 종합점수 및 익명 피드백' },
-                            { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
-                            { key: 'CLOSED', label: '5단계 : 최종 결과' }
-                          ]
+                        : isV7Room
+                          ? [
+                              { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
+                              { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
+                              { key: 'EVALUATION', label: '3단계 : 1차 점수·피드백' },
+                              ...(hasV7SecondScoreRound
+                                ? [{ key: 'EVALUATION_ROUND_2', label: '4단계 : 2차 종합점수' }]
+                                : []),
+                              { key: 'ELIMINATION', label: `${hasV7SecondScoreRound ? '5' : '4'}단계 : 최종 별 투표` },
+                              { key: 'CLOSED', label: `${hasV7SecondScoreRound ? '6' : '5'}단계 : 최종 결과` }
+                            ]
+                          : [
+                              { key: 'IDEA_SUBMISSION', label: '1단계 : 아이디어' },
+                              { key: 'CRITERIA_PROPOSAL', label: '2단계 : 평가 기준 설정' },
+                              { key: 'EVALUATION', label: '3단계 : 종합점수 및 익명 피드백' },
+                              { key: 'ELIMINATION', label: '4단계 : 2차 투표' },
+                              { key: 'CLOSED', label: '5단계 : 최종 결과' }
+                            ]
                       ).map((step, idx) => {
                         const statusesOrder: RoomStatus[] = roomDetails.room.decisionMode === 'QUICK'
                           ? ['IDEA_SUBMISSION', 'ELIMINATION', 'CLOSED']
-                          : ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
+                          : isV7Room
+                            ? [
+                                'IDEA_SUBMISSION',
+                                'CRITERIA_PROPOSAL',
+                                'EVALUATION',
+                                ...(hasV7SecondScoreRound ? ['EVALUATION_ROUND_2' as RoomStatus] : []),
+                                'ELIMINATION',
+                                'CLOSED'
+                              ]
+                            : ['IDEA_SUBMISSION', 'CRITERIA_PROPOSAL', 'EVALUATION', 'ELIMINATION', 'CLOSED'];
                         const roomSt = roomDetails.room?.status || 'IDEA_SUBMISSION';
                         const mappedSt = roomSt === 'CRITERIA_REVIEW' ? 'CRITERIA_PROPOSAL' : (roomSt === 'FINAL_VOTE' ? 'ELIMINATION' : roomSt);
                         const currentIdx = statusesOrder.indexOf(mappedSt);
@@ -3745,6 +3861,15 @@ export default function App() {
                                 {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 선택지 작성'}
                                 {(roomDetails.room?.status === 'ELIMINATION' || roomDetails.room?.status === 'FINAL_VOTE') && '2단계 : 익명 투표'}
                                 {roomDetails.room?.status === 'CLOSED' && '3단계 : 결과와 근거'}
+                              </>
+                            ) : isV7Room ? (
+                              <>
+                                {roomDetails.room?.status === 'IDEA_SUBMISSION' && '1단계 : 아이디어'}
+                                {(roomDetails.room?.status === 'CRITERIA_PROPOSAL' || roomDetails.room?.status === 'CRITERIA_REVIEW') && '2단계 : 평가 기준 설정'}
+                                {roomDetails.room?.status === 'EVALUATION' && '3단계 : 1차 종합점수 및 익명 피드백'}
+                                {roomDetails.room?.status === 'EVALUATION_ROUND_2' && '4단계 : 2차 종합점수 평가'}
+                                {(roomDetails.room?.status === 'ELIMINATION' || roomDetails.room?.status === 'FINAL_VOTE') && `${hasV7SecondScoreRound ? '5' : '4'}단계 : 최종 별 투표`}
+                                {roomDetails.room?.status === 'CLOSED' && `${hasV7SecondScoreRound ? '6' : '5'}단계 : 최종 결과`}
                               </>
                             ) : (
                               <>
@@ -4656,8 +4781,12 @@ export default function App() {
                   {/* -----------------------------------------------------------
                     VIEW 4 (V5): OVERALL SCORE + REQUIRED ANONYMOUS FEEDBACK
                     ----------------------------------------------------------- */}
-                  {roomDetails.room.status === 'EVALUATION' &&
-                    (roomDetails.room.engineVersion || 1) >= 5 && (() => {
+                  {(
+                    roomDetails.room.status === 'EVALUATION' ||
+                    (roomDetails.room.status === 'EVALUATION_ROUND_2' && showSecondScoreBallot)
+                  ) && (roomDetails.room.engineVersion || 1) >= 5 && (() => {
+                      const isSecondScoreRound = roomDetails.room.status === 'EVALUATION_ROUND_2';
+                      const requiresFeedback = !isSecondScoreRound;
                       const targetIdeas = (roomDetails.ideas || []).filter(idea =>
                         idea?.status === 'ACTIVE' && idea.submitterId !== userId
                       );
@@ -4673,7 +4802,7 @@ export default function App() {
                           Number.isInteger(submission.overallScore) &&
                           (submission.overallScore || 0) >= 1 &&
                           (submission.overallScore || 0) <= 10 &&
-                          submission.feedbackText.trim()
+                          (!requiresFeedback || submission.feedbackText.trim())
                         );
                       });
 
@@ -4686,10 +4815,12 @@ export default function App() {
                                   {roomDetails.hasEvaluated && !isReEditingEvaluation
                                     ? <CheckCircle className="w-5 h-5 text-emerald-600" />
                                     : <Lock className="w-5 h-5 text-indigo-600" />}
-                                  3단계: 종합점수 및 익명 피드백
+                                  {isSecondScoreRound ? '4단계: 2차 종합점수 평가' : '3단계: 1차 종합점수 및 익명 피드백'}
                                 </h2>
                                 <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                                  본인 아이디어를 제외한 모든 아이디어에 1~10점의 종합점수와 피드백을 남겨 주세요.
+                                  {isSecondScoreRound
+                                    ? '1차에서 살아남은 다른 참여자의 아이디어에 1~10점의 종합점수를 다시 매겨 주세요.'
+                                    : '본인 아이디어를 제외한 모든 아이디어에 1~10점의 종합점수와 피드백을 남겨 주세요.'}
                                 </p>
                               </div>
                               <div className="text-xs font-extrabold text-slate-700 bg-slate-50 border border-slate-200 px-4 py-2 rounded-xl shrink-0">
@@ -4720,9 +4851,9 @@ export default function App() {
                               <div>
                                 <h3 className="text-lg font-extrabold text-slate-900">내 평가 제출 완료</h3>
                                 <p className="text-xs text-slate-500 mt-1">
-                                  {(roomDetails.room.engineVersion || 1) >= 6
-                                    ? '모든 참여자가 제출하면 서버가 상위 40%를 계산하고, 2차 투표 후보를 최대 4개로 확정합니다.'
-                                    : '모든 참여자가 제출하면 서버가 종합점수 합계로 상위 40%를 자동 선정합니다.'}
+                                  {isSecondScoreRound
+                                    ? '모든 참여자가 제출하면 서버가 상위 4개를 확정하고 결과를 동시에 공개합니다.'
+                                    : '모든 참여자가 제출하면 서버가 상위 40%를 계산해 최대 8개 후보를 확정합니다.'}
                                 </p>
                               </div>
                               <div className="flex flex-wrap items-center justify-center gap-2">
@@ -4741,7 +4872,7 @@ export default function App() {
                                     disabled={isFinalizingScreening}
                                     className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold transition disabled:opacity-50"
                                   >
-                                    {isFinalizingScreening ? '후보 확정 중...' : '1차 평가 집계 다시 시도'}
+                                    {isFinalizingScreening ? '후보 확정 중...' : `${isSecondScoreRound ? '2차' : '1차'} 평가 집계 다시 시도`}
                                   </button>
                                 )}
                               </div>
@@ -4839,7 +4970,7 @@ export default function App() {
                                       </div>
                                     </div>
 
-                                    <div className="space-y-2">
+                                    {requiresFeedback && <div className="space-y-2">
                                       <div className="flex items-center justify-between gap-2">
                                         <label className="text-xs font-extrabold text-slate-800">
                                           익명 피드백 <span className="text-rose-500">*</span>
@@ -4857,7 +4988,7 @@ export default function App() {
                                       <p className="text-[10px] text-emerald-700 font-medium">
                                         작성자 정보는 공개되지 않으며, 결과 화면에는 원문과 AI 요약이 분리되어 제공됩니다.
                                       </p>
-                                    </div>
+                                    </div>}
                                   </motion.div>
                                 );
                               })}
@@ -4865,7 +4996,9 @@ export default function App() {
                               <div className="pt-4 pb-2 flex flex-col items-center gap-3">
                                 {!isAllEvaluated && (
                                   <p className="text-xs text-amber-700 font-bold bg-amber-50 px-4 py-2 rounded-xl border border-amber-200 text-center">
-                                    모든 평가 대상에 1~10점과 피드백을 입력하면 제출 버튼이 활성화됩니다.
+                                    {requiresFeedback
+                                      ? '모든 평가 대상에 1~10점과 피드백을 입력하면 제출 버튼이 활성화됩니다.'
+                                      : '모든 평가 대상에 1~10점을 입력하면 제출 버튼이 활성화됩니다.'}
                                   </p>
                                 )}
                                 <button
@@ -4878,7 +5011,7 @@ export default function App() {
                                   }`}
                                 >
                                   <CheckCircle className="w-4 h-4" />
-                                  종합점수와 익명 피드백 제출하기
+                                  {isSecondScoreRound ? '2차 종합점수 제출하기' : '1차 종합점수와 익명 피드백 제출하기'}
                                 </button>
                               </div>
                             </div>
@@ -5371,10 +5504,193 @@ export default function App() {
                 })()}
 
                   {/* -----------------------------------------------------------
+                    VIEW 5 (V7): SCORE RESULTS + CUMULATIVE STAR FINAL
+                    ----------------------------------------------------------- */}
+                  {(
+                    (roomDetails.room.status === 'EVALUATION_ROUND_2' && !showSecondScoreBallot) ||
+                    roomDetails.room.status === 'ELIMINATION' ||
+                    roomDetails.room.status === 'FINAL_VOTE'
+                  ) && (roomDetails.room.engineVersion || 1) >= 7 && (() => {
+                    const completedRounds = (roomDetails.scoreRounds || []).filter(round => round.completed);
+                    const latestRound = completedRounds[completedRounds.length - 1];
+                    const firstRound = completedRounds.find(round => round.phase === 'FIRST');
+                    const cycle = roomDetails.finalVoteCycle;
+                    const ideaById = new Map<string, Idea>(
+                      (roomDetails.ideas || []).map(idea => [idea.id, idea] as [string, Idea])
+                    );
+                    const resultIdeaIds = latestRound?.candidateIdeaIds?.length
+                      ? latestRound.candidateIdeaIds
+                      : cycle?.candidateIdeaIds || (roomDetails.ideas || []).filter(idea => idea.status === 'ACTIVE').map(idea => idea.id);
+                    const rankedResultIds = [...resultIdeaIds].sort((leftId, rightId) => {
+                      const leftScore = latestRound?.scoreStats?.[leftId]?.totalScore || 0;
+                      const rightScore = latestRound?.scoreStats?.[rightId]?.totalScore || 0;
+                      return rightScore - leftScore || leftId.localeCompare(rightId);
+                    });
+                    const latestAi = latestRound?.aiTiebreak?.used ? latestRound.aiTiebreak : null;
+                    const isFirstResult = latestRound?.phase === 'FIRST';
+                    const resultTitle = latestRound
+                      ? `${isFirstResult ? '1차' : '2차'} 점수 평가 결과`
+                      : roomDetails.room.decisionMode === 'QUICK'
+                        ? '빠른 결정 최종 후보'
+                        : '최종 후보';
+                    const survivorIds = new Set(latestRound?.survivorIdeaIds || cycle?.candidateIdeaIds || []);
+
+                    const renderV7ResultCard = (ideaId: string, rank: number) => {
+                      const idea = ideaById.get(ideaId);
+                      if (!idea) return null;
+                      const stats = latestRound?.scoreStats?.[ideaId];
+                      const survived = latestRound ? survivorIds.has(ideaId) : idea.status !== 'ELIMINATED';
+                      const feedbackItems = firstRound?.anonymousFeedbackByIdea?.[ideaId] || [];
+                      const feedbackKey = `v7_feedback_${latestRound?.roundId || 'final'}_${ideaId}`;
+                      const feedbackExpanded = Boolean(expandedIdeaIds[feedbackKey]);
+                      const aiReason = latestAi
+                        ? (survived ? latestAi.selectionReasons?.[ideaId] : latestAi.eliminationReasons?.[ideaId])
+                        : '';
+                      return (
+                        <article key={ideaId} className={`bg-white p-5 rounded-2xl border shadow-sm space-y-3 ${survived ? 'border-emerald-200' : 'border-slate-200'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-[10px] font-black text-indigo-600">#{rank}</span>
+                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${survived ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                                  {survived ? (latestRound ? '진출' : '최종 후보') : '소거'}
+                                </span>
+                              </div>
+                              <h3 className="text-sm font-extrabold text-slate-900 mt-1">{idea.title}</h3>
+                              <p className="text-xs text-slate-600 mt-1 leading-relaxed whitespace-pre-line">{idea.description}</p>
+                            </div>
+                            {stats && (
+                              <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-right shrink-0">
+                                <span className="text-[10px] text-slate-500 font-bold block">{isFirstResult ? '1차' : '2차'} 총점</span>
+                                <strong className="text-lg text-slate-900">{stats.totalScore}점</strong>
+                              </div>
+                            )}
+                          </div>
+                          {aiReason && (
+                            <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-xl p-3 text-xs leading-relaxed">
+                              <p className="text-[10px] font-black mb-1">{isFirstResult ? '8위' : '4위'} 경계 동률 AI 판정 근거</p>
+                              {aiReason}
+                            </div>
+                          )}
+                          {feedbackItems.length > 0 && (
+                            <div className="border-t border-slate-100 pt-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleIdeaExpanded(feedbackKey)}
+                                className="text-xs font-bold text-indigo-600 inline-flex items-center gap-1"
+                              >
+                                1차 익명 피드백 원문 {feedbackItems.length}건 {feedbackExpanded ? '접기' : '보기'}
+                                {feedbackExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              </button>
+                              {feedbackExpanded && (
+                                <ul className="mt-3 space-y-2">
+                                  {feedbackItems.map((feedback, index) => (
+                                    <li key={index} className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs text-slate-600 leading-relaxed">{feedback}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    };
+
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                        <section className="order-2 lg:order-1 lg:col-span-8 bg-slate-50 border border-slate-200 rounded-3xl p-4 md:p-5 max-h-[72vh] overflow-y-auto space-y-4">
+                          <div className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur border-b border-slate-200 pb-3">
+                            <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">전원 제출 후 동시 공개</span>
+                            <h2 className="text-xl font-black text-slate-900 mt-1">{resultTitle}</h2>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {latestRound
+                                ? `${rankedResultIds.length}개 아이디어의 총점과 진출 여부를 확인할 수 있습니다.`
+                                : '별 3개 누적 투표의 최종 후보를 확인할 수 있습니다.'}
+                            </p>
+                          </div>
+                          {latestAi && (
+                            <div className="bg-indigo-950 text-indigo-100 rounded-2xl p-4 border border-indigo-800 space-y-2">
+                              <h3 className="text-sm font-extrabold flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-300" /> {isFirstResult ? '8위' : '4위'} 경계 동률 AI 판정</h3>
+                              <p className="text-xs leading-relaxed">{latestAi.summary}</p>
+                              <p className="text-[10px] text-indigo-300">확정 기준·아이디어 원문·방 내부 익명 피드백만 사용했으며 작성자 정보와 외부 데이터는 제공하지 않았습니다.</p>
+                            </div>
+                          )}
+                          {rankedResultIds.length > 0
+                            ? rankedResultIds.map((ideaId, index) => renderV7ResultCard(ideaId, index + 1))
+                            : <p className="text-xs text-slate-500 text-center py-10">표시할 후보가 없습니다.</p>}
+                        </section>
+
+                        <aside className="order-1 lg:order-2 lg:col-span-4 lg:sticky lg:top-5 space-y-4">
+                          {roomDetails.room.status === 'EVALUATION_ROUND_2' ? (
+                            <div className="bg-slate-900 text-white p-5 rounded-2xl shadow-md space-y-4">
+                              <div>
+                                <span className="text-[10px] font-black text-amber-300">다음 단계</span>
+                                <h3 className="text-base font-extrabold mt-1">2차 종합점수 평가</h3>
+                                <p className="text-xs text-slate-300 mt-1 leading-relaxed">1차 진출 후보를 다시 1~10점으로 평가합니다. 2차에는 새 피드백을 받지 않습니다.</p>
+                              </div>
+                              <button type="button" onClick={() => setShowSecondScoreBallot(true)} className="w-full py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-xl text-xs font-black">
+                                2차 점수 평가 화면으로 이동
+                              </button>
+                            </div>
+                          ) : cycle?.status === 'VOTING' ? (
+                            <div className="bg-gradient-to-br from-amber-400 to-amber-500 text-slate-950 p-5 rounded-2xl shadow-md space-y-4">
+                              <div>
+                                <span className="text-[10px] font-black">최종 결정</span>
+                                <h3 className="text-base font-extrabold mt-1">별 3개 누적 투표</h3>
+                                <p className="text-xs font-bold mt-1">같은 후보에 여러 개를 줄 수 있으며 별 3개를 모두 사용해야 합니다.</p>
+                              </div>
+                              {cycle.myBallotSubmitted ? (
+                                <>
+                                  <div className="bg-white/50 rounded-xl p-3 text-xs font-bold">내 투표 제출 완료 · 전체 {cycle.submittedCount}/{cycle.expectedCount}명</div>
+                                  <button type="button" onClick={handleReopenStarVote} className="w-full py-3 bg-white text-slate-900 rounded-xl text-xs font-black">집계 전 투표 수정</button>
+                                </>
+                              ) : (
+                                <button type="button" onClick={() => setShowFinalVoteModal(true)} className="w-full py-3 bg-slate-950 text-amber-300 rounded-xl text-xs font-black">별 3개 투표하기</button>
+                              )}
+                            </div>
+                          ) : cycle?.status === 'CONSENT' ? (
+                            <div className="bg-slate-900 text-white p-5 rounded-2xl shadow-md space-y-4">
+                              <div>
+                                <span className="text-[10px] font-black text-amber-300">최종 경계 동률</span>
+                                <h3 className="text-base font-extrabold mt-1">롤렛 진행 동의</h3>
+                                <p className="text-xs text-slate-300 mt-1 leading-relaxed">전원이 동의하면 방장이 남은 자리 수만큼 롤렛을 돌립니다. 한 명이라도 거절하면 동률 후보만 별 3개 재투표를 시작합니다.</p>
+                              </div>
+                              {typeof cycle.myRouletteConsent === 'boolean' ? (
+                                <p className="bg-white/10 rounded-xl p-3 text-xs font-bold">내 선택: {cycle.myRouletteConsent ? '롤렛 동의' : '별 재투표'}</p>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button type="button" onClick={() => handleRouletteConsent(true)} className="py-3 bg-amber-400 text-slate-950 rounded-xl text-xs font-black">롤렛 동의</button>
+                                  <button type="button" onClick={() => handleRouletteConsent(false)} className="py-3 bg-white text-slate-900 rounded-xl text-xs font-black">별 재투표</button>
+                                </div>
+                              )}
+                              <p className="text-[10px] text-slate-400">동의 {cycle.consentedCount}명 · 재투표 선택 {cycle.declinedCount}명</p>
+                            </div>
+                          ) : cycle?.status === 'ROULETTE' ? (
+                            <div className="bg-indigo-950 text-white p-5 rounded-2xl shadow-md space-y-4">
+                              <div>
+                                <span className="text-[10px] font-black text-amber-300">전원 동의 완료</span>
+                                <h3 className="text-base font-extrabold mt-1">동률 롤렛 {cycle.nextRouletteDrawNumber}/{cycle.tieSlots}</h3>
+                                <p className="text-xs text-indigo-200 mt-1">이미 나온 후보는 다음 롤렛에서 자동 제외됩니다.</p>
+                              </div>
+                              {cycle.rouletteDraws.length > 0 && (
+                                <ul className="space-y-1 text-xs text-indigo-100">
+                                  {cycle.rouletteDraws.map(draw => <li key={draw.drawNumber}>#{draw.drawNumber} {ideaById.get(draw.selectedIdeaId)?.title || draw.selectedIdeaId}</li>)}
+                                </ul>
+                              )}
+                              {roomDetails.room.hostId === userId
+                                ? <button type="button" onClick={() => { setRoulettePurpose('TIE_RESOLUTION'); setRouletteWinnerResult(null); setShowRouletteModal(true); }} className="w-full py-3 bg-amber-400 text-slate-950 rounded-xl text-xs font-black">다음 롤렛 돌리기</button>
+                                : <p className="text-xs font-bold text-amber-200">방장이 다음 롤렛을 진행하고 있습니다.</p>}
+                            </div>
+                          ) : null}
+                        </aside>
+                      </div>
+                    );
+                  })()}
+
+                  {/* -----------------------------------------------------------
                     VIEW 5 (V5): SCREENING RESULT + FINAL ANONYMOUS VOTE
                     ----------------------------------------------------------- */}
                   {(roomDetails.room.status === 'ELIMINATION' || roomDetails.room.status === 'FINAL_VOTE') &&
-                    (roomDetails.room.engineVersion || 1) >= 5 && (() => {
+                    (roomDetails.room.engineVersion || 1) >= 5 && (roomDetails.room.engineVersion || 1) < 7 && (() => {
                       const activeIdeas = (roomDetails.ideas || []).filter(idea => idea?.status === 'ACTIVE');
                       const eliminatedIdeas = (roomDetails.ideas || []).filter(idea => idea?.status === 'ELIMINATED');
                       const scoreRound = [...(roomDetails.decisionRounds || [])].reverse().find(
@@ -6061,7 +6377,8 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* 테스트 환경 전용 룰렛 미리보기 카드 */}
+                      {/* 기존 회의실 호환용 테스트 룰렛 미리보기 카드 */}
+                      {(roomDetails.room.engineVersion || 1) < 7 && (
                       <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
                         <div className="space-y-1 text-center sm:text-left">
                           <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 justify-center sm:justify-start">
@@ -6085,6 +6402,7 @@ export default function App() {
                           <span>룰렛 돌리기 (미리보기)</span>
                         </button>
                       </div>
+                      )}
 
                       {/* ③ 최종 선정 아이디어 카드 (Spotlight) */}
                       <div className="bg-white p-6 md:p-8 rounded-3xl border border-indigo-200 shadow-lg space-y-5 relative overflow-hidden">
@@ -6117,7 +6435,11 @@ export default function App() {
                                     {winner.title}
                                   </h3>
                                   <span className="text-[11px] font-extrabold text-amber-900 bg-amber-200/90 border border-amber-300 px-2.5 py-0.5 rounded-full shrink-0">
-                                    최종 채택
+                                    {winner.winnerSelectionMethod === 'ROULETTE'
+                                      ? '롤렛 선정'
+                                      : winner.winnerSelectionMethod === 'AUTO_ALL'
+                                        ? '후보 수 충족 · 자동 선정'
+                                        : '누적 별 투표 선정'}
                                   </span>
                                 </div>
                                 <p className="text-xs md:text-sm text-slate-600 leading-relaxed font-medium">
@@ -6623,7 +6945,7 @@ export default function App() {
                     : 'text-rose-600 bg-rose-50 border-rose-100'
                 }`}>
                   {roulettePurpose === 'TIE_RESOLUTION'
-                    ? '서버가 동률 후보 안에서 암호학적 난수로 추첨하고, 그 결과를 최종 기록으로 저장합니다. 한 번 확정하면 다시 돌릴 수 없습니다.'
+                    ? '서버가 동률 후보 안에서 암호학적 난수로 한 자리씩 추첨하고 즉시 저장합니다. 이미 선정된 후보는 다음 추첨에서 제외됩니다.'
                     : '⚠️ 이 결과는 실제 최종 선정 결과에 반영되지 않는 미리보기 테스트입니다.'}
                 </p>
               </div>
@@ -6735,7 +7057,11 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleSpinRoulette}
-                  disabled={isSpinningRoulette || (roulettePurpose === 'TIE_RESOLUTION' && Boolean(rouletteWinnerResult))}
+                  disabled={isSpinningRoulette || (
+                    roulettePurpose === 'TIE_RESOLUTION' &&
+                    Boolean(rouletteWinnerResult) &&
+                    !((roomDetails?.room.engineVersion || 1) >= 7 && roomDetails?.finalVoteCycle?.status === 'ROULETTE')
+                  )}
                   className="flex-1 py-3 bg-amber-400 hover:bg-amber-300 text-slate-950 border border-amber-500 rounded-xl text-xs font-black transition shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   {isSpinningRoulette ? (
@@ -6748,7 +7074,9 @@ export default function App() {
                       <Sparkles className="w-3.5 h-3.5 text-slate-950" />
                       <span>
                         {roulettePurpose === 'TIE_RESOLUTION' && rouletteWinnerResult
-                          ? '최종 확정 완료'
+                          ? ((roomDetails?.room.engineVersion || 1) >= 7 && roomDetails?.finalVoteCycle?.status === 'ROULETTE'
+                            ? '다음 자리 추첨하기'
+                            : '최종 확정 완료')
                           : rouletteWinnerResult
                             ? '다시 돌리기'
                             : roulettePurpose === 'TIE_RESOLUTION'
@@ -6922,7 +7250,11 @@ export default function App() {
                             </span>
                             <h3 className="text-base font-bold text-slate-900">{winner.title}</h3>
                           </div>
-                          {isQuick || starCount > 0 || !stats || (stats.score === 0 && stats.keepCount === 0) ? (
+                          {winner.winnerSelectionMethod === 'ROULETTE' ? (
+                            <span className="text-xs font-black text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-xl border border-indigo-200 shrink-0">🎲 롤렛 선정</span>
+                          ) : winner.winnerSelectionMethod === 'AUTO_ALL' ? (
+                            <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-200 shrink-0">자동 선정</span>
+                          ) : isQuick || starCount > 0 || !stats || (stats.score === 0 && stats.keepCount === 0) ? (
                             <span className="text-xs font-black text-amber-700 bg-amber-50 px-2.5 py-1 rounded-xl border border-amber-200 shrink-0 flex items-center gap-1">
                               ⭐ {starCount}표 득표
                             </span>
@@ -7044,10 +7376,10 @@ export default function App() {
                     <div>
                       <h3 className="text-base font-extrabold text-slate-900">
                         {roomDetails?.room.decisionMode === 'QUICK'
-                          ? '2단계 익명 투표'
-                          : '4단계 2차 별 스티커 투표'}
+                          ? '빠른 결정 별 스티커 투표'
+                          : '최종 별 스티커 투표'}
                       </h3>
-                      <p className="text-xs text-slate-500 font-medium">생존한 후보 아이디어 중 최종 결과로 채택할 후보에 별 스티커를 붙여주세요.</p>
+                      <p className="text-xs text-slate-500 font-medium">별 3개를 모두 사용하세요. 같은 후보에 여러 개를 줄 수 있습니다.</p>
                     </div>
                   </div>
                   <button
@@ -7061,20 +7393,27 @@ export default function App() {
 
                 {/* Star Status Display Header Banner */}
                 {(() => {
-                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
-                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                  const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
-                  const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+                  const isV7 = (roomDetails?.room.engineVersion || 1) >= 7;
+                  const starBudget = isV7 ? 3 : roomDetails?.room.targetWinnerCount || 1;
+                  const candidateIds = isV7
+                    ? roomDetails?.finalVoteCycle?.candidateIdeaIds || []
+                    : (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
+                  const validMyStarVotes = isV7
+                    ? roomDetails?.finalVoteCycle?.mySelectedIdeaIds || []
+                    : (roomDetails?.myStarVotes || []).filter(id => candidateIds.includes(id));
+                  const isSubmitted = isV7
+                    ? Boolean(roomDetails?.finalVoteCycle?.myBallotSubmitted)
+                    : Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+                  const validLocalSelected = mySelectedStarIdeaIds.filter(id => candidateIds.includes(id));
                   const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
-                  const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
+                  const remainingStars = Math.max(0, starBudget - currentSelectedCount);
 
                   return (
                     <div className="bg-slate-900 text-white p-3 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex items-center gap-2">
-                        <span className="text-slate-300">최종 결과 목표: <strong className="text-white">{targetWinners}개</strong></span>
+                        <span className="text-slate-300">최종 결과 목표: <strong className="text-white">{roomDetails?.room.targetWinnerCount || 1}개</strong></span>
                         <span className="text-slate-600">|</span>
-                        <span className="text-amber-300 font-bold">내 별 스티커: ⭐ {targetWinners}개</span>
+                        <span className="text-amber-300 font-bold">내 별 스티커: ⭐ {starBudget}개</span>
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="bg-amber-400/20 text-amber-300 px-2.5 py-0.5 rounded-md font-bold border border-amber-400/30">
@@ -7092,20 +7431,28 @@ export default function App() {
               {/* Scrollable Middle Candidates List */}
               <div className="p-5 md:p-6 overflow-y-auto flex-1 space-y-3 text-left max-h-full">
                 {(() => {
-                  const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                  const activeIdeas = (roomDetails?.ideas || []).filter(i => !i.status || i.status === 'ACTIVE');
+                  const isV7 = (roomDetails?.room.engineVersion || 1) >= 7;
+                  const targetWinners = isV7 ? 3 : roomDetails?.room.targetWinnerCount || 1;
+                  const v7CandidateIds = new Set(roomDetails?.finalVoteCycle?.candidateIdeaIds || []);
+                  const activeIdeas = (roomDetails?.ideas || []).filter(idea => isV7
+                    ? v7CandidateIds.has(idea.id)
+                    : !idea.status || idea.status === 'ACTIVE');
                   const activeIdeaIds = activeIdeas.map(i => i.id);
-                  const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                  const isSubmittedByMe = Boolean(validMyStarVotes.length >= targetWinners);
+                  const validMyStarVotes = isV7
+                    ? roomDetails?.finalVoteCycle?.mySelectedIdeaIds || []
+                    : (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
+                  const isSubmittedByMe = isV7
+                    ? Boolean(roomDetails?.finalVoteCycle?.myBallotSubmitted)
+                    : Boolean(validMyStarVotes.length >= targetWinners);
 
                   if (activeIdeas.length === 0) {
                     return <p className="text-xs text-slate-400 text-center py-6">투표 가능한 활성 후보가 없습니다.</p>;
                   }
 
                   return activeIdeas.map(idea => {
-                    const isSelectedByMe = isSubmittedByMe
-                      ? validMyStarVotes.includes(idea.id)
-                      : mySelectedStarIdeaIds.includes(idea.id);
+                    const displayedVotes = isSubmittedByMe ? validMyStarVotes : mySelectedStarIdeaIds;
+                    const assignedStarCount = displayedVotes.filter(id => id === idea.id).length;
+                    const isSelectedByMe = assignedStarCount > 0;
                     const totalStarVotes = (roomDetails?.starVotes?.[idea.id] || 0);
 
                     return (
@@ -7123,7 +7470,7 @@ export default function App() {
                               <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">{idea.title}</h4>
                               {isSelectedByMe ? (
                                 <span className="text-[10px] font-black text-amber-950 bg-amber-200/90 border border-amber-300/80 px-2 py-0.5 rounded-md flex items-center gap-1">
-                                  ★ 내가 선택한 후보
+                                  ★ {assignedStarCount}개 배정
                                 </span>
                               ) : (
                                 <span className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
@@ -7136,8 +7483,25 @@ export default function App() {
                             </p>
                           </div>
 
-                          {/* Star Toggle Display Button */}
                           <div className="flex flex-col items-end gap-1 shrink-0">
+                            {isV7 && (
+                              <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+                                <button
+                                  type="button"
+                                  onClick={event => { event.stopPropagation(); handleRemoveStarIdea(idea.id); }}
+                                  disabled={isSubmittedByMe || assignedStarCount < 1}
+                                  className="w-8 h-8 bg-white border border-slate-200 rounded-lg font-black disabled:opacity-30"
+                                >−</button>
+                                <span className="w-8 text-center text-sm font-black text-amber-600">{assignedStarCount}</span>
+                                <button
+                                  type="button"
+                                  onClick={event => { event.stopPropagation(); handleToggleStarIdea(idea.id); }}
+                                  disabled={isSubmittedByMe || mySelectedStarIdeaIds.length >= 3}
+                                  className="w-8 h-8 bg-amber-400 border border-amber-500 rounded-lg font-black disabled:opacity-30"
+                                >＋</button>
+                              </div>
+                            )}
+                            {!isV7 && <>
                             <button
                               type="button"
                               onClick={(e) => {
@@ -7153,6 +7517,7 @@ export default function App() {
                               <span className="text-sm">{isSelectedByMe ? '★' : '☆'}</span>
                               <span>{isSelectedByMe ? '별 붙임' : '별 붙이기'}</span>
                             </button>
+                            </>}
 
                             {roomDetails?.room.finalVoteStatus === 'FINALIZED' && totalStarVotes > 0 && (
                               <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
@@ -7176,11 +7541,18 @@ export default function App() {
 
               {/* Fixed Footer with Submission Controls */}
               {(() => {
-                const targetWinners = roomDetails?.room.targetWinnerCount || 1;
-                const activeIdeaIds = (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
-                const validMyStarVotes = (roomDetails?.myStarVotes || []).filter(id => activeIdeaIds.includes(id));
-                const isSubmitted = Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
-                const validLocalSelected = mySelectedStarIdeaIds.filter(id => activeIdeaIds.includes(id));
+                const isV7 = (roomDetails?.room.engineVersion || 1) >= 7;
+                const targetWinners = isV7 ? 3 : roomDetails?.room.targetWinnerCount || 1;
+                const candidateIds = isV7
+                  ? roomDetails?.finalVoteCycle?.candidateIdeaIds || []
+                  : (roomDetails?.ideas || []).filter(i => i.status === 'ACTIVE').map(i => i.id);
+                const validMyStarVotes = isV7
+                  ? roomDetails?.finalVoteCycle?.mySelectedIdeaIds || []
+                  : (roomDetails?.myStarVotes || []).filter(id => candidateIds.includes(id));
+                const isSubmitted = isV7
+                  ? Boolean(roomDetails?.finalVoteCycle?.myBallotSubmitted)
+                  : Boolean(roomDetails?.isStarVoteSubmitted && validMyStarVotes.length > 0);
+                const validLocalSelected = mySelectedStarIdeaIds.filter(id => candidateIds.includes(id));
                 const currentSelectedCount = isSubmitted ? validMyStarVotes.length : validLocalSelected.length;
                 const remainingStars = Math.max(0, targetWinners - currentSelectedCount);
 
@@ -7194,9 +7566,11 @@ export default function App() {
                         </span>
                       ) : remainingStars > 0 ? (
                         <span className="text-amber-700 font-semibold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 block text-[11px] leading-tight">
-                          {targetWinners === 1
-                            ? '⚠️ 최종 채택할 아이디어 1개에 별 스티커를 붙여주세요.'
-                            : `⚠️ 최종 후보로 선택할 아이디어 ${targetWinners}개에 1위부터 ${targetWinners}위까지 별 스티커를 모두 지정해 주세요.`}
+                          {isV7
+                            ? '⚠️ 같은 후보에 중복 배정할 수 있습니다. 별 3개를 모두 사용해 주세요.'
+                            : targetWinners === 1
+                              ? '⚠️ 최종 채택할 아이디어 1개에 별 스티커를 붙여주세요.'
+                              : `⚠️ 최종 후보로 선택할 아이디어 ${targetWinners}개에 별 스티커를 모두 지정해 주세요.`}
                         </span>
                       ) : (
                         <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 block text-[11px] leading-tight">

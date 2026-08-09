@@ -10,7 +10,13 @@ export type RoomStatus =
   | 'CLOSED';
 
 export type DecisionMode = 'STRUCTURED' | 'QUICK';
-export type FinalVoteStatus = 'NOT_STARTED' | 'VOTING' | 'TIE_PENDING' | 'FINALIZED';
+export type FinalVoteStatus =
+  | 'NOT_STARTED'
+  | 'VOTING'
+  | 'TIE_PENDING'
+  | 'CONSENT_PENDING'
+  | 'ROULETTE_PENDING'
+  | 'FINALIZED';
 
 export interface EliminationConfig {
   countPerRound: number;
@@ -45,6 +51,7 @@ export interface Room {
   tieCandidateIdeaIds?: string[];
   tieSlots?: number;
   currentRoundId?: string;
+  currentFinalVoteCycleId?: string;
   criteriaSetVersion?: number;
 }
 
@@ -60,6 +67,7 @@ export interface Idea {
   submitterName: string;
   status: 'ACTIVE' | 'ELIMINATED' | 'WINNER';
   eliminatedRound?: number;
+  winnerSelectionMethod?: 'CUMULATIVE_STAR' | 'ROULETTE' | 'AUTO_ALL';
   evaluationCard?: EvaluationCard;
 }
 
@@ -147,7 +155,7 @@ export interface DecisionRound {
   status: 'ACTIVE' | 'COMPLETED';
   startedAt: string;
   completedAt?: string;
-  evaluationMethod?: 'LEGACY' | 'SCORE_FEEDBACK';
+  evaluationMethod?: 'LEGACY' | 'SCORE_FEEDBACK' | 'SCORE_ONLY';
   aggregationStatus?: 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
   resultSnapshot?: Record<string, unknown>;
 }
@@ -214,6 +222,7 @@ export interface RoomDetails {
   myStarVotes?: string[]; // array of selected ideaIds for current user
   isStarVoteSubmitted?: boolean;
   starVoteCount?: number;
+  starVoteSubmittedCount?: number;
   starVoteStatus?: 'voting' | 'tie_pending' | 'finalized';
   tieCandidateIdeaIds?: string[];
   tieSlots?: number;
@@ -226,6 +235,54 @@ export interface RoomDetails {
   }>;
   screeningSummary?: ScreeningSummary;
   anonymousFeedbackByIdea?: Record<string, string[]>;
+  scoreRounds?: ScoreRoundResult[];
+  activeScorePhase?: 'FIRST' | 'SECOND' | null;
+  finalVoteCycle?: FinalVoteCycleState;
+}
+
+export interface ScoreRoundResult {
+  roundId: string;
+  roundNumber: number;
+  phase: 'FIRST' | 'SECOND';
+  completed: boolean;
+  candidateIdeaIds: string[];
+  survivorIdeaIds: string[];
+  eliminatedIdeaIds: string[];
+  scoreStats: Record<string, {
+    totalScore: number;
+    responseCount: number;
+    survived: boolean;
+  }>;
+  aiTiebreak?: AiBoundaryTiebreakDecision | { used: false };
+  anonymousFeedbackByIdea?: Record<string, string[]>;
+}
+
+export interface FinalRouletteDraw {
+  drawNumber: number;
+  candidateIdeaIds: string[];
+  selectedIdeaId: string;
+  drawnAt: string;
+}
+
+export interface FinalVoteCycleState {
+  cycleId: string;
+  cycleNumber: number;
+  cycleKind: 'INITIAL' | 'TIE_REVOTE';
+  status: 'VOTING' | 'CONSENT' | 'ROULETTE' | 'COMPLETED';
+  candidateIdeaIds: string[];
+  guaranteedWinnerIdeaIds: string[];
+  tieCandidateIdeaIds: string[];
+  tieSlots: number;
+  starBudget: 3;
+  mySelectedIdeaIds: string[];
+  myBallotSubmitted: boolean;
+  submittedCount: number;
+  expectedCount: number;
+  myRouletteConsent?: boolean;
+  consentedCount: number;
+  declinedCount: number;
+  rouletteDraws: FinalRouletteDraw[];
+  nextRouletteDrawNumber: number;
 }
 
 export interface AiBoundaryTiebreakDecision {
