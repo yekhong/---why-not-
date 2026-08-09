@@ -60,6 +60,14 @@ export interface Idea {
   submitterName: string;
   status: 'ACTIVE' | 'ELIMINATED' | 'WINNER';
   eliminatedRound?: number;
+  evaluationCard?: EvaluationCard;
+}
+
+export interface EvaluationCard {
+  title: string;
+  summary: string;
+  criteriaNotes: string[];
+  source: 'AI' | 'ORIGINAL_FALLBACK';
 }
 
 export interface CriterionProposal {
@@ -87,7 +95,9 @@ export interface Evaluation {
   roomId: string;
   ideaId: string;
   evaluatorId?: string; // Kept private on the server
-  decision: 'KEEP' | 'NEUTRAL' | 'EXCLUDE';
+  decision?: 'KEEP' | 'NEUTRAL' | 'EXCLUDE';
+  overallScore?: number;
+  feedbackText?: string;
   excludedCriterionIds?: string[];
   criteriaEvaluations?: Record<string, CriteriaEvaluationValue>;
   reasonText?: string;
@@ -137,6 +147,9 @@ export interface DecisionRound {
   status: 'ACTIVE' | 'COMPLETED';
   startedAt: string;
   completedAt?: string;
+  evaluationMethod?: 'LEGACY' | 'SCORE_FEEDBACK';
+  aggregationStatus?: 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  resultSnapshot?: Record<string, unknown>;
 }
 
 export interface DecisionReport {
@@ -184,6 +197,11 @@ export interface RoomDetails {
   myEvaluations?: Evaluation[];
   hasEvaluated: boolean;
   minResponseThresholdMet: boolean;
+  evaluationExpectedCount?: number;
+  evaluationSubmittedCount?: number;
+  allEvaluationsCompleted?: boolean;
+  lowReliabilityWarning?: boolean;
+  isEvaluationReediting?: boolean;
   scoreConfig: {
     keepWeight: number;
     neutralWeight: number;
@@ -206,10 +224,24 @@ export interface RoomDetails {
     objectiveComments: string[];
     preferenceComments: string[];
   }>;
+  screeningSummary?: ScreeningSummary;
+  anonymousFeedbackByIdea?: Record<string, string[]>;
+}
+
+export interface ScreeningSummary {
+  recurringStrengths: string[];
+  recurringConcerns: string[];
+  disagreements: string[];
+  aiAvailable: boolean;
 }
 
 export interface AggregatedScore {
   score: number;
+  totalScore?: number;
+  averageScore?: number;
+  responseCount?: number;
+  survived?: boolean;
+  cutoffScore?: number;
   keepCount: number;
   neutralCount: number;
   excludeCount: number;
