@@ -337,6 +337,7 @@ export default function App() {
   const [refinementFeedbackDrafts, setRefinementFeedbackDrafts] = useState<Record<string, RefinementFeedbackDraft>>({});
   const [refinementRevisionDrafts, setRefinementRevisionDrafts] = useState<Record<string, { title: string; description: string }>>({});
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
+  const [isFinalizingScreening, setIsFinalizingScreening] = useState(false);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -2177,6 +2178,26 @@ export default function App() {
       const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
       triggerToast(message, 'error');
       await fetchRoomDetails(activeRoomId!, true);
+    }
+  };
+
+  const handleRetryScreeningFinalization = async () => {
+    if (!activeRoomId) return;
+    setIsFinalizingScreening(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/screening/finalize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '1차 평가 집계를 완료하지 못했습니다.');
+      triggerToast('1차 평가 집계와 2차 투표 후보 확정이 완료되었습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '1차 평가 집계를 완료하지 못했습니다.', 'error');
+    } finally {
+      setIsFinalizingScreening(false);
     }
   };
 
@@ -4699,16 +4720,36 @@ export default function App() {
                               <div>
                                 <h3 className="text-lg font-extrabold text-slate-900">내 평가 제출 완료</h3>
                                 <p className="text-xs text-slate-500 mt-1">
-                                  모든 참여자가 제출하면 서버가 종합점수 합계로 상위 40%를 자동 선정합니다.
+                                  {(roomDetails.room.engineVersion || 1) >= 6
+                                    ? '모든 참여자가 제출하면 서버가 상위 40%를 계산하고, 2차 투표 후보를 최대 4개로 확정합니다.'
+                                    : '모든 참여자가 제출하면 서버가 종합점수 합계로 상위 40%를 자동 선정합니다.'}
                                 </p>
                               </div>
-                              <button
-                                type="button"
-                                onClick={handleStartReEditingEvaluation}
-                                className="px-5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition"
-                              >
-                                제출 내용 수정하기
-                              </button>
+                              <div className="flex flex-wrap items-center justify-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={handleStartReEditingEvaluation}
+                                  disabled={roomDetails.allEvaluationsCompleted || isFinalizingScreening}
+                                  className="px-5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  제출 내용 수정하기
+                                </button>
+                                {roomDetails.room.hostId === userId && roomDetails.allEvaluationsCompleted && (
+                                  <button
+                                    type="button"
+                                    onClick={handleRetryScreeningFinalization}
+                                    disabled={isFinalizingScreening}
+                                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold transition disabled:opacity-50"
+                                  >
+                                    {isFinalizingScreening ? '후보 확정 중...' : '1차 평가 집계 다시 시도'}
+                                  </button>
+                                )}
+                              </div>
+                              {roomDetails.allEvaluationsCompleted && (
+                                <p className="text-[11px] text-slate-500">
+                                  전원 제출 후에는 평가를 수정할 수 없습니다. 화면이 이동하지 않았다면 방장이 집계를 다시 시도해 주세요.
+                                </p>
+                              )}
                             </div>
                           ) : (
                             <div className="space-y-5">
@@ -5342,11 +5383,16 @@ export default function App() {
                       const scoreSnapshot = (scoreRound?.resultSnapshot || {}) as Record<string, any>;
                       const showScreeningResult = roomDetails.room.finalVoteStatus === 'NOT_STARTED';
                       const screeningSummary = roomDetails.screeningSummary;
+                      const aiTiebreak = scoreSnapshot.aiTiebreak as Record<string, any> | undefined;
+                      const usesAiBoundaryPolicy = (roomDetails.room.engineVersion || 1) >= 6;
 
                       const renderScoreCard = (idea: Idea, survived: boolean) => {
                         const stats = roomDetails.aggregatedScores?.[idea.id];
                         const feedbackItems = roomDetails.anonymousFeedbackByIdea?.[idea.id] || [];
                         const feedbackExpanded = Boolean(expandedIdeaIds[`score_feedback_${idea.id}`]);
+                        const aiBoundaryReason = survived
+                          ? aiTiebreak?.selectionReasons?.[idea.id]
+                          : aiTiebreak?.eliminationReasons?.[idea.id];
                         return (
                           <div key={idea.id} className={`bg-white p-5 rounded-2xl border shadow-sm space-y-4 ${survived ? 'border-emerald-200' : 'border-slate-200 opacity-90'}`}>
                             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
@@ -5367,6 +5413,18 @@ export default function App() {
                                 </div>
                               )}
                             </div>
+
+                            {aiBoundaryReason && (
+                              <div className={`rounded-xl border p-3 text-xs leading-relaxed ${survived
+                                ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                                : 'bg-slate-50 border-slate-200 text-slate-700'
+                              }`}>
+                                <p className="text-[10px] font-black mb-1">
+                                  {survived ? '4위 경계 동률 AI 선택 근거' : '4위 경계 동률 AI 소거 근거'}
+                                </p>
+                                {aiBoundaryReason}
+                              </div>
+                            )}
 
                             {feedbackItems.length > 0 && (
                               <div className="border-t border-slate-100 pt-3">
@@ -5400,10 +5458,17 @@ export default function App() {
                               <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 md:p-8 rounded-3xl text-white shadow-xl space-y-4">
                                 <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                                   <div>
-                                    <span className="text-[10px] font-black text-amber-300 uppercase tracking-widest">1차 평가 자동 집계 완료</span>
-                                    <h2 className="text-xl md:text-2xl font-black mt-1">상위 40% 후보가 2차 투표로 진출했습니다</h2>
+                                    <span className="text-[10px] font-black text-amber-300 uppercase tracking-widest">1차 평가 집계 완료</span>
+                                    <h2 className="text-xl md:text-2xl font-black mt-1">
+                                      {usesAiBoundaryPolicy ? '상위 40% 중 최대 4개 후보가 진출했습니다' : '상위 40% 후보가 2차 투표로 진출했습니다'}
+                                    </h2>
                                     <p className="text-xs text-slate-300 mt-2 leading-relaxed">
-                                      서버가 참여자 종합점수 합계를 계산했습니다. AI는 점수 계산이나 생존자 선정에 관여하지 않았습니다.
+                                      서버가 참여자 종합점수 합계와 상위 40%를 계산했습니다.
+                                      {usesAiBoundaryPolicy && aiTiebreak?.used
+                                        ? ' 4번째 자리의 총점 동률 후보만 AI가 방 내부 근거로 비교했습니다.'
+                                        : usesAiBoundaryPolicy
+                                          ? ' 4번째 자리를 가르는 총점 동률이 없어 AI는 후보 선정에 관여하지 않았습니다.'
+                                          : ' 이 회의실은 기존 V5 정책에 따라 40% 경계 동률 후보를 함께 진출시켰습니다.'}
                                     </p>
                                   </div>
                                   <div className="flex gap-2 text-center shrink-0">
@@ -5417,10 +5482,17 @@ export default function App() {
                                     </div>
                                   </div>
                                 </div>
-                                {scoreSnapshot.tieExpanded && (
+                                {usesAiBoundaryPolicy && aiTiebreak?.used ? (
+                                  <div className="bg-indigo-400/15 border border-indigo-300/30 rounded-xl p-3 text-xs text-indigo-100 flex items-start gap-2">
+                                    <Sparkles className="w-4 h-4 shrink-0 mt-0.5" />
+                                    상위 40% 계산 후 4번째 자리에서 총점 동률이 발생해, 동률 후보 {scoreSnapshot.boundaryTieIdeaIds?.length || 0}개 중 남은 {scoreSnapshot.remainingSlots || 0}개 자리를 AI가 판정했습니다.
+                                  </div>
+                                ) : scoreSnapshot.tieExpanded && (
                                   <div className="bg-amber-400/15 border border-amber-300/30 rounded-xl p-3 text-xs text-amber-100 flex items-start gap-2">
                                     <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                                    40% 경계 점수가 같아 동점 후보를 모두 살렸습니다. 기본 생존 {scoreSnapshot.baseSurvivorCount || 0}개보다 {activeIdeas.length}개가 진출했습니다.
+                                    {usesAiBoundaryPolicy
+                                      ? '40% 경계 점수가 같아 기본 생존 수보다 후보가 늘었지만, 2차 투표 후보는 최대 4개 정책 안에서 확정했습니다.'
+                                      : `40% 경계 점수가 같아 동점 후보를 모두 살렸습니다. 기본 생존 ${scoreSnapshot.baseSurvivorCount || 0}개보다 ${activeIdeas.length}개가 진출했습니다.`}
                                   </div>
                                 )}
                               </div>
@@ -5447,12 +5519,25 @@ export default function App() {
                                 </div>
 
                                 <aside className="lg:col-span-4 space-y-5">
+                                  {usesAiBoundaryPolicy && aiTiebreak?.used && (
+                                    <div className="bg-indigo-950 text-white p-5 rounded-2xl border border-indigo-800 shadow-sm space-y-3">
+                                      <h3 className="text-sm font-extrabold text-indigo-100 flex items-center gap-2">
+                                        <Sparkles className="w-4 h-4 text-amber-300" /> 4위 경계 동률 AI 판정
+                                      </h3>
+                                      <p className="text-xs text-indigo-200 leading-relaxed">
+                                        {aiTiebreak.summary || '확정 평가 기준, 아이디어 원문, 익명 피드백만 사용해 남은 자리를 비교했습니다.'}
+                                      </p>
+                                      <p className="text-[10px] text-indigo-300">
+                                        외부 데이터와 작성자 정보는 사용하지 않았으며, 서로 다른 사용자 총점 순위는 변경하지 않았습니다.
+                                      </p>
+                                    </div>
+                                  )}
                                   <div className="bg-white p-5 rounded-2xl border border-indigo-200 shadow-sm space-y-4">
                                     <div>
                                       <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
                                         <Sparkles className="w-4 h-4 text-indigo-600" /> AI 익명 피드백 정리
                                       </h3>
-                                      <p className="text-[10px] text-slate-500 mt-1">참고용 요약이며 점수와 소거 결과에는 영향을 주지 않습니다.</p>
+                                      <p className="text-[10px] text-slate-500 mt-1">전체 피드백 요약은 참고용입니다. 후보 선정에는 위 4위 경계 동률 판정만 제한적으로 사용됩니다.</p>
                                     </div>
                                     {screeningSummary?.aiAvailable && (
                                       (screeningSummary.recurringStrengths || []).length > 0 ||

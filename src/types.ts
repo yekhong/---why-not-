@@ -228,6 +228,18 @@ export interface RoomDetails {
   anonymousFeedbackByIdea?: Record<string, string[]>;
 }
 
+export interface AiBoundaryTiebreakDecision {
+  used: true;
+  selectedIdeaIds: string[];
+  eliminatedIdeaIds: string[];
+  selectionReasons: Record<string, string>;
+  eliminationReasons: Record<string, string>;
+  summary: string;
+  modelName: string;
+  promptVersion: string;
+  decidedAt: string;
+}
+
 export interface ScreeningSummary {
   recurringStrengths: string[];
   recurringConcerns: string[];
