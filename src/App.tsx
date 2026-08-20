@@ -138,6 +138,7 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
 
   // Recovery code states
   const [recoveryCodeOutput, setRecoveryCodeOutput] = useState<string | null>(null);
@@ -173,6 +174,7 @@ export default function App() {
   // Secure Email/ID Signup Handler (/api/auth/signup)
   const handleEmailSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAuthSubmitting) return;
     if (!isEmailValid) {
       triggerToast('올바른 로그인 아이디/이메일 형식을 입력해 주세요.', 'error');
       return;
@@ -186,6 +188,8 @@ export default function App() {
       return;
     }
 
+    setIsAuthSubmitting(true);
+    setAuthError(null);
     try {
       const res = await fetch('/api/auth/signup', {
         method: 'POST',
@@ -197,9 +201,11 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error || '회원가입 처리 중 오류가 발생했습니다.');
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || (res.status >= 500
+          ? '회원가입 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.'
+          : '회원가입 요청을 처리하지 못했습니다.'));
       }
 
       const uId = data.user.id;
@@ -218,20 +224,30 @@ export default function App() {
       }
       triggerToast('회원가입이 완료되었습니다! 발급된 복구 코드를 반드시 보관하세요.');
     } catch (err: any) {
-      const message = err?.message || '회원가입 처리 중 오류가 발생했습니다.';
+      const message = err instanceof TypeError
+        ? '서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.'
+        : err?.message || '회원가입 처리 중 오류가 발생했습니다.';
       setAuthError(message);
       triggerToast(message, 'error');
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
   // Secure Email/ID Login Handler (/api/auth/login)
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAuthSubmitting) return;
     setAuthError(null);
-    const failMsg = '아이디 또는 비밀번호가 올바르지 않습니다. 입력한 정보를 다시 확인해 주세요.';
-
     const inputEmailOrId = authEmail.trim();
+    if (!inputEmailOrId || !authPassword) {
+      const message = '로그인 아이디와 비밀번호를 입력해 주세요.';
+      setAuthError(message);
+      triggerToast(message, 'error');
+      return;
+    }
 
+    setIsAuthSubmitting(true);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -242,8 +258,8 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
-      if (res.ok && data.ok) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.ok) {
         const uId = data.user.id;
         const uName = data.user.nickname;
         const uEmail = data.user.loginId;
@@ -256,12 +272,27 @@ export default function App() {
         triggerToast(`${uName}님 환영합니다!`);
         return;
       }
+      const message = data?.error || (
+        res.status === 401
+          ? '아이디 또는 비밀번호가 올바르지 않습니다.'
+          : res.status === 429
+            ? '로그인 시도가 많습니다. 잠시 후 다시 시도해 주세요.'
+            : res.status >= 500
+              ? '로그인 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요.'
+              : '로그인 요청을 처리하지 못했습니다.'
+      );
+      throw new Error(message);
     } catch (err) {
-      console.warn('Backend Auth Login error:', err);
+      const message = err instanceof TypeError
+        ? '서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.'
+        : err instanceof Error
+          ? err.message
+          : '로그인 요청을 처리하지 못했습니다.';
+      setAuthError(message);
+      triggerToast(message, 'error');
+    } finally {
+      setIsAuthSubmitting(false);
     }
-
-    setAuthError(failMsg);
-    triggerToast(failMsg, 'error');
   };
 
   // Secure Account Recovery Handler (/api/auth/recover)
@@ -271,8 +302,13 @@ export default function App() {
       triggerToast('발급받으셨던 복구 코드를 입력해 주세요.', 'error');
       return;
     }
-    if (!recoveryNewPassword) {
-      triggerToast('새로 변경할 비밀번호를 입력해 주세요.', 'error');
+    if (
+      recoveryNewPassword.length < 8 ||
+      recoveryNewPassword.length > 64 ||
+      !/[A-Za-z]/.test(recoveryNewPassword) ||
+      !/[0-9]/.test(recoveryNewPassword)
+    ) {
+      triggerToast('새 비밀번호는 8~64자의 영문과 숫자 조합이어야 합니다.', 'error');
       return;
     }
 
@@ -339,6 +375,7 @@ export default function App() {
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
   const [isFinalizingScreening, setIsFinalizingScreening] = useState(false);
   const [showSecondScoreBallot, setShowSecondScoreBallot] = useState(false);
+  const scoreDraftRoundKeyRef = useRef<string | null>(null);
 
   // ----------------------------------------------------------------
   // 3-Minute Expiring Invite Token & Landing Card States
@@ -419,7 +456,8 @@ export default function App() {
     setShowSecondScoreBallot(false);
     setEvalSubmissions({});
     setIsReEditingEvaluation(false);
-  }, [activeRoomId, roomDetails?.room.currentRoundId]);
+    scoreDraftRoundKeyRef.current = null;
+  }, [activeRoomId]);
 
   const handleStartReEditingEvaluation = async () => {
     if (roomDetails?.myEvaluations && roomDetails.myEvaluations.length > 0) {
@@ -1015,14 +1053,27 @@ export default function App() {
     if (!activeRoomId || !isLoggedIn) return;
 
     setAiSuggestedCriteria([]);
-    fetchRoomDetails(activeRoomId);
+    const refreshVisibleRoom = (silent: boolean) => {
+      if (document.visibilityState === 'visible') {
+        fetchRoomDetails(activeRoomId, silent);
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchRoomDetails(activeRoomId, true);
+      }
+    };
+
+    refreshVisibleRoom(false);
 
     const interval = setInterval(() => {
-      fetchRoomDetails(activeRoomId, true);
+      refreshVisibleRoom(true);
     }, 3000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [activeRoomId, isLoggedIn]);
 
@@ -1307,9 +1358,22 @@ export default function App() {
         // The authenticated server response is authoritative. Preserving an
         // older local status or deleted rows here causes host/member divergence.
         setRoomDetails(data);
+        const isScoreRound = (
+          data.room.status === 'EVALUATION' ||
+          data.room.status === 'EVALUATION_ROUND_2'
+        ) && (data.room.engineVersion || 1) >= 5;
+        const nextScoreRoundKey = isScoreRound && data.room.currentRoundId
+          ? `${data.room.id}:${data.room.currentRoundId}`
+          : null;
+        const scoreRoundChanged = scoreDraftRoundKeyRef.current !== nextScoreRoundKey;
+        if (scoreRoundChanged) {
+          scoreDraftRoundKeyRef.current = nextScoreRoundKey;
+          setShowSecondScoreBallot(false);
+          setEvalSubmissions({});
+        }
         if (
-          data.room.status === 'EVALUATION' &&
-          (data.room.engineVersion || 1) >= 5 &&
+          scoreRoundChanged &&
+          isScoreRound &&
           Array.isArray(data.myEvaluations) &&
           data.myEvaluations.length > 0
         ) {
@@ -4853,7 +4917,7 @@ export default function App() {
                                 <p className="text-xs text-slate-500 mt-1">
                                   {isSecondScoreRound
                                     ? '모든 참여자가 제출하면 서버가 상위 4개를 확정하고 결과를 동시에 공개합니다.'
-                                    : '모든 참여자가 제출하면 서버가 상위 40%를 계산해 최대 8개 후보를 확정합니다.'}
+                                    : '모든 참여자가 제출하면 서버가 상위 40%를 계산하며, 경계 점수가 같으면 해당 동점 후보는 모두 진출합니다.'}
                                 </p>
                               </div>
                               <div className="flex flex-wrap items-center justify-center gap-2">
@@ -5526,8 +5590,10 @@ export default function App() {
                       const rightScore = latestRound?.scoreStats?.[rightId]?.totalScore || 0;
                       return rightScore - leftScore || leftId.localeCompare(rightId);
                     });
-                    const latestAi = latestRound?.aiTiebreak?.used ? latestRound.aiTiebreak : null;
                     const isFirstResult = latestRound?.phase === 'FIRST';
+                    const latestAi = !isFirstResult && latestRound?.aiTiebreak?.used
+                      ? latestRound.aiTiebreak
+                      : null;
                     const resultTitle = latestRound
                       ? `${isFirstResult ? '1차' : '2차'} 점수 평가 결과`
                       : roomDetails.room.decisionMode === 'QUICK'
@@ -5568,7 +5634,7 @@ export default function App() {
                           </div>
                           {aiReason && (
                             <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-xl p-3 text-xs leading-relaxed">
-                              <p className="text-[10px] font-black mb-1">{isFirstResult ? '8위' : '4위'} 경계 동률 AI 판정 근거</p>
+                              <p className="text-[10px] font-black mb-1">4위 경계 동률 AI 판정 근거</p>
                               {aiReason}
                             </div>
                           )}
@@ -5609,9 +5675,15 @@ export default function App() {
                           </div>
                           {latestAi && (
                             <div className="bg-indigo-950 text-indigo-100 rounded-2xl p-4 border border-indigo-800 space-y-2">
-                              <h3 className="text-sm font-extrabold flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-300" /> {isFirstResult ? '8위' : '4위'} 경계 동률 AI 판정</h3>
+                              <h3 className="text-sm font-extrabold flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-300" /> 4위 경계 동률 AI 판정</h3>
                               <p className="text-xs leading-relaxed">{latestAi.summary}</p>
                               <p className="text-[10px] text-indigo-300">확정 기준·아이디어 원문·방 내부 익명 피드백만 사용했으며 작성자 정보와 외부 데이터는 제공하지 않았습니다.</p>
+                            </div>
+                          )}
+                          {isFirstResult && latestRound?.tieExpanded && (
+                            <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs leading-relaxed flex items-start gap-2">
+                              <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                              상위 40% 경계 점수가 같아 동점 후보를 모두 진출시켰습니다. 기본 {latestRound.baseSurvivorCount || 0}개에서 실제 {latestRound.actualSurvivorCount || latestRound.survivorIdeaIds.length}개가 진출했습니다.
                             </div>
                           )}
                           {rankedResultIds.length > 0
@@ -6794,10 +6866,11 @@ export default function App() {
                         <input
                           type="password"
                           required
-                          maxLength={15}
+                          minLength={8}
+                          maxLength={64}
                           value={recoveryNewPassword}
                           onChange={e => setRecoveryNewPassword(e.target.value)}
-                          placeholder="영문 소문자 및 숫자 조합"
+                          placeholder="8~64자 영문 및 숫자 조합"
                           className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                         />
                       </div>
@@ -6857,16 +6930,16 @@ export default function App() {
                         <div className="flex items-center justify-between">
                           <label className="text-xs font-bold text-slate-700">비밀번호 <span className="text-rose-500">*</span></label>
                           {authMode === 'SIGNUP' && (
-                            <span className="text-[10px] text-slate-400 font-normal">소문자+숫자 (최대 15자)</span>
+                            <span className="text-[10px] text-slate-400 font-normal">영문+숫자 (8~64자)</span>
                           )}
                         </div>
                         <input
                           type="password"
                           required
-                          maxLength={15}
+                          maxLength={64}
                           value={authPassword}
                           onChange={e => { setAuthPassword(e.target.value); setAuthError(null); }}
-                          placeholder="영문 소문자 및 숫자 조합"
+                          placeholder="8~64자 영문 및 숫자 조합"
                           className={`w-full px-3.5 py-2 border rounded-xl text-xs focus:outline-none focus:ring-2 font-medium ${authMode === 'SIGNUP' && authPassword && !isPasswordValid ? 'border-rose-300 focus:ring-rose-400 bg-rose-50/30' : 'border-slate-200 focus:ring-indigo-500'
                             }`}
                         />
@@ -6876,7 +6949,7 @@ export default function App() {
                               isPasswordValid ? (
                                 <p className="text-[10px] text-emerald-600 font-bold">✓ 사용 가능한 비밀번호입니다.</p>
                               ) : (
-                                <p className="text-[10px] text-rose-500 font-medium">⚠️ 영문 소문자와 숫자를 포함하여 15자 이내로 입력해주세요.</p>
+                                <p className="text-[10px] text-rose-500 font-medium">⚠️ 영문과 숫자를 포함하여 8~64자로 입력해 주세요.</p>
                               )
                             ) : null}
                           </div>
@@ -6886,10 +6959,12 @@ export default function App() {
                       <div className="pt-2 space-y-2">
                         <button
                           type="submit"
-                          disabled={authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim())}
+                          disabled={isAuthSubmitting || (authMode === 'SIGNUP' && (!isEmailValid || !isPasswordValid || !authName.trim()))}
                           className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-bold transition shadow-sm cursor-pointer"
                         >
-                          {authMode === 'LOGIN' ? '로그인' : '회원가입 완료 및 복구코드 발급'}
+                          {isAuthSubmitting
+                            ? (authMode === 'LOGIN' ? '로그인 확인 중...' : '계정 생성 중...')
+                            : (authMode === 'LOGIN' ? '로그인' : '회원가입 완료 및 복구코드 발급')}
                         </button>
 
                         <button

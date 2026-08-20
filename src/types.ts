@@ -248,6 +248,10 @@ export interface ScoreRoundResult {
   candidateIdeaIds: string[];
   survivorIdeaIds: string[];
   eliminatedIdeaIds: string[];
+  baseSurvivorCount?: number;
+  actualSurvivorCount?: number;
+  tieExpanded?: boolean;
+  boundaryTieIdeaIds?: string[];
   scoreStats: Record<string, {
     totalScore: number;
     responseCount: number;
