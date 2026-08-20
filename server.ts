@@ -291,7 +291,7 @@ function enforceAuthRateLimit(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-async function issueSession(account: UserAccount, res: Response): Promise<void> {
+function createSessionMaterial(account: UserAccount) {
   const rawToken = crypto.randomBytes(32).toString('base64url');
   const tokenHash = hashOpaqueSecret(rawToken);
   const expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
@@ -301,6 +301,12 @@ async function issueSession(account: UserAccount, res: Response): Promise<void> 
     nickname: account.nickname,
     expiresAt
   };
+
+  return { rawToken, tokenHash, expiresAt, session };
+}
+
+async function issueSession(account: UserAccount, res: Response): Promise<void> {
+  const { rawToken, tokenHash, expiresAt, session } = createSessionMaterial(account);
 
   sessionStore.set(tokenHash, session);
   if (SUPABASE_CONFIGURED) {
@@ -420,7 +426,6 @@ const SCORE_CONFIG = {
 
 const MAX_IDEAS_PER_PARTICIPANT = 3;
 const SCORE_SURVIVAL_RATIO = 0.4;
-const MAX_FIRST_ROUND_SURVIVORS = 8;
 const MAX_SECOND_ROUND_SURVIVORS = 4;
 const FINAL_STAR_BUDGET = 3;
 const MAX_EVALUATION_FEEDBACK_LENGTH = 500;
@@ -660,6 +665,20 @@ async function clearIdeaSubmissionCompletion(roomId: string, userId: string): Pr
     }
   }
   ideaCompletedUsersMap.get(roomId)?.delete(userId);
+}
+
+function ideaMutationErrorResponse(error: { message?: string }, fallback: string) {
+  const message = String(error?.message || fallback);
+  const status = message.includes('찾을 수 없습니다')
+    ? 404
+    : message.includes('작성자 본인') || message.includes('회의 참여자')
+      ? 403
+      : message.includes('단계')
+        ? 409
+        : message.includes('최대 3개')
+          ? 400
+          : 503;
+  return { status, message };
 }
 
 async function clearCriteriaProposalCompletion(room: Room, userId: string): Promise<void> {
@@ -906,14 +925,15 @@ async function ensureDecisionRound(
       throw new Error(`평가 회차를 저장하지 못했습니다: ${roundError.message}`);
     }
     if (candidateIdeas.length > 0) {
-      const { error: candidateError } = await supabase.from('round_candidates').insert(
+      const { error: candidateError } = await supabase.from('round_candidates').upsert(
         candidateIdeas.map(idea => ({
           id: `round-candidate-${crypto.randomUUID()}`,
           room_id: room.id,
           round_id: round.id,
           idea_id: idea.id,
           outcome: 'ACTIVE'
-        }))
+        })),
+        { onConflict: 'round_id,idea_id', ignoreDuplicates: true }
       );
       if (candidateError) {
         await supabase.from('evaluation_rounds').delete().eq('id', round.id).eq('room_id', room.id);
@@ -1037,7 +1057,7 @@ async function tryFinalizeScoreEvaluationRound(
   if (!['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(round.evaluationMethod || '')) return null;
 
   const isFirstRound = round.evaluationMethod === 'SCORE_FEEDBACK';
-  const maxSurvivors = isFirstRound ? MAX_FIRST_ROUND_SURVIVORS : MAX_SECOND_ROUND_SURVIVORS;
+  let maxSurvivors = MAX_SECOND_ROUND_SURVIVORS;
   let snapshot: Record<string, any> | null = null;
   let aiDecision: AiBoundaryTiebreakDecision | undefined;
 
@@ -1054,6 +1074,9 @@ async function tryFinalizeScoreEvaluationRound(
       }
       return snapshot;
     }
+    maxSurvivors = isFirstRound
+      ? Math.max(1, Array.isArray(snapshot.candidateIdeaIds) ? snapshot.candidateIdeaIds.length : 1)
+      : MAX_SECOND_ROUND_SURVIVORS;
 
     const guaranteedIds = Array.isArray(snapshot.guaranteedSurvivorIdeaIds)
       ? snapshot.guaranteedSurvivorIdeaIds.map(String)
@@ -1061,6 +1084,9 @@ async function tryFinalizeScoreEvaluationRound(
     let survivorIdeaIds: string[];
 
     if (snapshot.aggregationStatus === 'AWAITING_AI') {
+      if (isFirstRound) {
+        throw new Error('1차 평가는 AI 경계 판정을 사용하지 않습니다. V8 데이터베이스 마이그레이션을 확인해 주세요.');
+      }
       const boundaryIdeaIds = Array.isArray(snapshot.boundaryTieIdeaIds)
         ? snapshot.boundaryTieIdeaIds.map(String)
         : [];
@@ -1147,11 +1173,12 @@ async function tryFinalizeScoreEvaluationRound(
       const desiredCount = isFirstRound
         ? Math.min(candidateIdeas.length, Math.max(Math.ceil(candidateIdeas.length * SCORE_SURVIVAL_RATIO), (room.targetWinnerCount || 1) + 1))
         : Math.min(candidateIdeas.length, MAX_SECOND_ROUND_SURVIVORS);
+      maxSurvivors = isFirstRound ? candidateIdeas.length : MAX_SECOND_ROUND_SURVIVORS;
       const baseCutoff = scoreStats[ranked[Math.max(0, desiredCount - 1)].id].totalScore;
       const baseIds = ranked
         .filter(idea => scoreStats[idea.id].totalScore >= baseCutoff)
         .map(idea => idea.id);
-      const needsCap = baseIds.length > maxSurvivors;
+      const needsCap = !isFirstRound && baseIds.length > maxSurvivors;
       const boundaryScore = needsCap ? scoreStats[ranked[maxSurvivors - 1].id].totalScore : null;
       const guaranteedIds = boundaryScore === null
         ? baseIds
@@ -1189,6 +1216,7 @@ async function tryFinalizeScoreEvaluationRound(
         eliminatedIdeaIds,
         boundaryScore,
         boundaryTieIdeaIds: boundaryIds,
+        tieExpanded: isFirstRound && baseIds.length > desiredCount,
         aiTiebreak: aiDecision || { used: false },
         scoreStats: Object.fromEntries(Object.entries(scoreStats).map(([ideaId, value]) => [ideaId, {
           ...value,
@@ -1237,17 +1265,20 @@ async function transitionAfterCompletedScoreRound(
       roundNumber: round.roundNumber,
       eliminatedIdeaIds,
       aiSummaryText: snapshot.aiTiebreak?.used
-        ? `${round.evaluationMethod === 'SCORE_ONLY' ? '2차 4위' : '1차 8위'} 경계 동률 후보만 방 내부 근거로 AI가 비교했습니다.`
+        ? '2차 4위 경계 동률 후보만 방 내부 근거로 AI가 비교했습니다.'
         : round.evaluationMethod === 'SCORE_ONLY'
           ? '2차 종합점수 합계 상위 4개 후보를 확정했습니다.'
-          : '1차 종합점수 상위 40%를 계산하고 최대 8개 후보를 확정했습니다.'
+          : snapshot.tieExpanded
+            ? '1차 종합점수 상위 40% 경계 동점 후보를 모두 진출시켰습니다.'
+            : '1차 종합점수 상위 40% 후보를 확정했습니다.'
     }]);
   }
 
   if (round.evaluationMethod === 'SCORE_FEEDBACK') {
     const scoreRows = (evaluations.get(room.id) || []).filter(evaluation => evaluation.roundId === round.id);
     const rawStats = snapshot.scoreStats || {};
-    if (!screeningSummariesCache.has(room.id)) {
+    const storedSummary = await loadScreeningSummary(room, round.id);
+    if (!storedSummary) {
       await generateAndStoreScreeningSummary(
         room,
         round,
@@ -1273,39 +1304,124 @@ async function startSecondScoreEvaluationRound(
   candidateIdeas: Idea[],
   firstRound: RefinementAwareDecisionRound
 ): Promise<void> {
-  room.status = 'EVALUATION_ROUND_2';
-  room.finalVoteStatus = 'NOT_STARTED';
-  const secondRound = await ensureDecisionRound(room, candidateIdeas, {
-    roundKind: 'INITIAL',
-    parentRoundId: firstRound.id,
-    criteriaSetVersion: firstRound.criteriaSetVersion,
-    stage: 'EVALUATION',
-    evaluationMethod: 'SCORE_ONLY'
-  }) as RefinementAwareDecisionRound;
-  const requiredUsers = await loadOrCreatePhaseParticipants(room.id, `EVALUATION:${secondRound.id}`);
+  const rounds = await loadDecisionRounds(room.id) as RefinementAwareDecisionRound[];
+  let secondRound = rounds.find(candidate =>
+    candidate.evaluationMethod === 'SCORE_ONLY' && candidate.parentRoundId === firstRound.id
+  );
+
+  if (secondRound?.status === 'COMPLETED' && secondRound.resultSnapshot) {
+    await transitionAfterCompletedScoreRound(room, secondRound, secondRound.resultSnapshot as Record<string, any>);
+    return;
+  }
+
+  if (!secondRound) {
+    room.currentRoundId = undefined;
+    secondRound = await ensureDecisionRound(room, candidateIdeas, {
+      roundKind: 'INITIAL',
+      parentRoundId: firstRound.id,
+      criteriaSetVersion: firstRound.criteriaSetVersion,
+      stage: 'EVALUATION',
+      evaluationMethod: 'SCORE_ONLY'
+    }) as RefinementAwareDecisionRound;
+  }
+
+  await ensureScoreRoundInfrastructure(room, secondRound, candidateIdeas, 'EVALUATION_ROUND_2');
+}
+
+async function ensureScoreRoundInfrastructure(
+  room: Room,
+  round: RefinementAwareDecisionRound,
+  candidateIdeas: Idea[],
+  status: 'EVALUATION' | 'EVALUATION_ROUND_2'
+): Promise<void> {
+  const requiredUsers = await loadOrCreatePhaseParticipants(room.id, `EVALUATION:${round.id}`);
   if (SUPABASE_CONFIGURED) {
+    if (candidateIdeas.length > 0) {
+      const { error: candidateError } = await supabase
+        .from('round_candidates')
+        .upsert(candidateIdeas.map(idea => ({
+          id: `round-candidate-${crypto.randomUUID()}`,
+          room_id: room.id,
+          round_id: round.id,
+          idea_id: idea.id,
+          outcome: 'ACTIVE'
+        })), { onConflict: 'round_id,idea_id', ignoreDuplicates: true });
+      if (candidateError) throw new Error(`점수 평가 후보 명단을 복구하지 못했습니다: ${candidateError.message}`);
+    }
+
     const { error: participantError } = await supabase
       .from('evaluation_round_participants')
       .upsert(Array.from(requiredUsers).map(userId => ({
-        round_id: secondRound.id,
+        round_id: round.id,
         room_id: room.id,
         user_id: userId,
         is_required: true,
         submission_status: 'NOT_STARTED',
         finalized_at: null
-      })), { onConflict: 'round_id,user_id' });
-    if (participantError) throw new Error(`2차 평가 참여자 명단을 저장하지 못했습니다: ${participantError.message}`);
+      })), { onConflict: 'round_id,user_id', ignoreDuplicates: true });
+    if (participantError) throw new Error(`점수 평가 참여자 명단을 복구하지 못했습니다: ${participantError.message}`);
     const { error: roomError } = await supabase
       .from('rooms')
       .update({
-        status: room.status,
-        final_vote_status: room.finalVoteStatus,
-        current_round_id: secondRound.id
+        status,
+        final_vote_status: 'NOT_STARTED',
+        current_round_id: round.id
       })
       .eq('id', room.id);
-    if (roomError) throw new Error(`2차 점수 평가 상태를 저장하지 못했습니다: ${roomError.message}`);
+    if (roomError) throw new Error(`점수 평가 상태를 복구하지 못했습니다: ${roomError.message}`);
   }
-  room.currentRoundId = secondRound.id;
+  room.status = status;
+  room.finalVoteStatus = 'NOT_STARTED';
+  room.currentRoundId = round.id;
+  rooms.set(room.id, room);
+}
+
+/**
+ * A completed score round and its next round/cycle are persisted in separate
+ * operations. Reconcile on every authoritative room read so a server restart,
+ * timeout, or partial serverless request can safely resume without duplicates.
+ */
+async function reconcileCompletedScoreTransition(room: Room): Promise<boolean> {
+  if (room.status === 'CLOSED') return false;
+
+  const rounds = await loadDecisionRounds(room.id) as RefinementAwareDecisionRound[];
+  const activeScoreRound = [...rounds].reverse().find(candidate =>
+    candidate.status === 'ACTIVE' &&
+    ['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(candidate.evaluationMethod || '')
+  );
+  if (activeScoreRound) {
+    const expectedStatus = activeScoreRound.evaluationMethod === 'SCORE_ONLY'
+      ? 'EVALUATION_ROUND_2'
+      : 'EVALUATION';
+    const progress = await loadScoreEvaluationProgress(room, activeScoreRound);
+    if (
+      progress.expected > 0 &&
+      room.currentRoundId === activeScoreRound.id &&
+      room.status === expectedStatus
+    ) return false;
+    const candidateIdeas = (ideas.get(room.id) || []).filter(idea => idea.status === 'ACTIVE');
+    await ensureScoreRoundInfrastructure(
+      room,
+      activeScoreRound,
+      candidateIdeas,
+      expectedStatus
+    );
+    return false;
+  }
+
+  const completedRound = [...rounds].reverse().find(candidate =>
+    candidate.status === 'COMPLETED' &&
+    ['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(candidate.evaluationMethod || '') &&
+    (candidate.resultSnapshot as Record<string, any> | undefined)?.aggregationStatus === 'COMPLETED'
+  );
+  if (!completedRound?.resultSnapshot) return false;
+
+  await transitionAfterCompletedScoreRound(
+    room,
+    completedRound,
+    completedRound.resultSnapshot as Record<string, any>
+  );
+  return true;
 }
 
 async function loadCriteriaApprovalVotes(
@@ -2090,8 +2206,11 @@ async function generateOrLoadBoundaryTiebreakDecision(
   round: RefinementAwareDecisionRound,
   boundaryIdeaIds: string[],
   remainingSlots: number,
-  scoreStats: Record<string, { totalScore?: number; averageScore?: number; responseCount?: number }>
+  scoreStats: Record<string, { totalScore?: number; responseCount?: number }>
 ): Promise<AiBoundaryTiebreakDecision> {
+  if (round.evaluationMethod !== 'SCORE_ONLY') {
+    throw new Error('AI 경계 판정은 2차 종합점수 평가의 4위 경계에서만 사용할 수 있습니다.');
+  }
   const allowedIdeaIds = new Set(boundaryIdeaIds.map(String));
   if (
     allowedIdeaIds.size !== boundaryIdeaIds.length ||
@@ -2164,7 +2283,7 @@ async function generateOrLoadBoundaryTiebreakDecision(
     name: criterion.name,
     description: criterion.description
   }));
-  const boundaryLabel = round.evaluationMethod === 'SCORE_ONLY' ? '2차 4위' : '1차 8위';
+  const boundaryLabel = '2차 4위';
   const promptVersion = 'boundary-tiebreak-v2.0';
   const prompt = `당신은 익명 팀 의사결정의 제한된 경계 동률 판정자입니다.
 서버가 사용자 종합점수 합계를 계산한 뒤, ${boundaryLabel} 경계에서 총점이 완전히 같은 후보만 전달했습니다.
@@ -2284,7 +2403,7 @@ ${JSON.stringify(evidence)}
       result_snapshot: decision,
       model_name: decision.modelName,
       prompt_version: promptVersion,
-      engine_version: 7,
+      engine_version: Math.max(8, Number(room.engineVersion || 8)),
       created_at: decidedAt
     });
     if (insertError) {
@@ -2463,7 +2582,7 @@ async function generateAndStoreScreeningSummary(
   roomIdeas: Idea[],
   confirmedCriteria: Criterion[],
   scoreRows: Evaluation[],
-  scoreStats: Record<string, { totalScore: number; averageScore: number; responseCount: number }>
+  scoreStats: Record<string, { totalScore: number; responseCount: number }>
 ): Promise<ScreeningSummary> {
   let summary: ScreeningSummary = {
     recurringStrengths: [],
@@ -2478,7 +2597,6 @@ async function generateAndStoreScreeningSummary(
       ideaId: idea.id,
       title: idea.title,
       totalScore: scoreStats[idea.id]?.totalScore || 0,
-      averageScore: scoreStats[idea.id]?.averageScore || 0,
       responseCount: scoreStats[idea.id]?.responseCount || 0,
       feedback: scoreRows
         .filter(row => row.ideaId === idea.id && row.feedbackText)
@@ -2749,7 +2867,7 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
   }
 
   if (userAccountsMap.has(normalizedId)) {
-    return res.status(400).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
+    return res.status(409).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
   }
 
   if (SUPABASE_CONFIGURED) {
@@ -2760,7 +2878,7 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
       .maybeSingle();
     if (error) return res.status(503).json({ error: '아이디 중복 여부를 확인하지 못했습니다.' });
     if (existingSupa) {
-      return res.status(400).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
+      return res.status(409).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
     }
   }
 
@@ -2782,48 +2900,42 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
     failedRecoveryAttempts: 0
   };
 
+  const signupSession = createSessionMaterial(accountRecord);
+
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('user_accounts').insert({
-      id: newUserId,
-      login_id: normalizedId,
-      password_hash: passwordHash,
-      nickname: normalizedNickname,
-      recovery_code_hash: recoveryCodeHash,
-      created_at: now,
-      updated_at: now,
-      status: 'ACTIVE',
-      failed_recovery_attempts: 0
+    const { error } = await supabase.rpc('create_user_account_with_session_v8', {
+      p_user_id: newUserId,
+      p_login_id: normalizedId,
+      p_password_hash: passwordHash,
+      p_nickname: normalizedNickname,
+      p_recovery_code_hash: recoveryCodeHash,
+      p_session_token_hash: signupSession.tokenHash,
+      p_session_expires_at: new Date(signupSession.expiresAt).toISOString(),
+      p_created_at: now
     });
     if (error) {
-      return res.status(503).json({ error: '계정을 안전하게 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
-    }
-
-    const { error: registrationError } = await supabase.from('user_registrations').insert({
-      user_id: newUserId,
-      login_id: normalizedId,
-      nickname: normalizedNickname,
-      registration_status: 'COMPLETED',
-      registered_at: now
-    });
-    if (registrationError) {
-      await supabase.from('user_accounts').delete().eq('id', newUserId);
-      console.error('Signup registration audit insert failed:', registrationError.message);
-      return res.status(503).json({ error: '회원가입 기록을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
+      const duplicateContext = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+      if (error.code === '23505' && /login_id|user_accounts_login_id|user_registrations_login_id/i.test(duplicateContext)) {
+        return res.status(409).json({ error: '이미 사용 중인 로그인 아이디입니다.' });
+      }
+      console.error('Atomic signup failed:', error.message);
+      return res.status(503).json({ error: '계정과 로그인 세션을 안전하게 만들지 못했습니다. 잠시 후 다시 시도해 주세요.' });
     }
   } else if (IS_PRODUCTION) {
     return res.status(503).json({ error: '계정 저장소가 준비되지 않았습니다.' });
   }
 
   userAccountsMap.set(normalizedId, accountRecord);
-  try {
-    await issueSession(accountRecord, res);
-  } catch (error) {
-    userAccountsMap.delete(normalizedId);
-    if (SUPABASE_CONFIGURED) {
-      await supabase.from('user_registrations').delete().eq('user_id', newUserId);
-      await supabase.from('user_accounts').delete().eq('id', newUserId);
+  if (SUPABASE_CONFIGURED) {
+    sessionStore.set(signupSession.tokenHash, signupSession.session);
+    setSessionCookie(res, signupSession.rawToken);
+  } else {
+    try {
+      await issueSession(accountRecord, res);
+    } catch {
+      userAccountsMap.delete(normalizedId);
+      return res.status(503).json({ error: '로그인 세션을 안전하게 만들지 못했습니다.' });
     }
-    return res.status(503).json({ error: '로그인 세션을 안전하게 만들지 못했습니다.' });
   }
 
   res.status(201).json({
@@ -2853,27 +2965,30 @@ app.post('/api/auth/login', enforceAuthRateLimit, async (req, res) => {
 
   let account: UserAccount | undefined = userAccountsMap.get(normalizedId);
 
-  if (!account && SUPABASE_CONFIGURED) {
-      const { data: supaAcc, error } = await supabase
-        .from('user_accounts')
-        .select('*')
-        .eq('login_id', normalizedId)
-        .maybeSingle();
-      if (error) return res.status(503).json({ error: '계정 정보를 불러오지 못했습니다.' });
-      if (supaAcc) {
-        account = {
-          id: supaAcc.id,
-          loginId: supaAcc.login_id,
-          passwordHash: supaAcc.password_hash,
-          nickname: supaAcc.nickname,
-          recoveryCodeHash: supaAcc.recovery_code_hash,
-          createdAt: supaAcc.created_at,
-          updatedAt: supaAcc.updated_at,
-          status: supaAcc.status || 'ACTIVE',
-          failedRecoveryAttempts: supaAcc.failed_recovery_attempts || 0
-        };
-        userAccountsMap.set(normalizedId, account);
-      }
+  if (SUPABASE_CONFIGURED) {
+    const { data: supaAcc, error } = await supabase
+      .from('user_accounts')
+      .select('*')
+      .eq('login_id', normalizedId)
+      .maybeSingle();
+    if (error) return res.status(503).json({ error: '계정 정보를 불러오지 못했습니다.' });
+    if (supaAcc) {
+      account = {
+        id: supaAcc.id,
+        loginId: supaAcc.login_id,
+        passwordHash: supaAcc.password_hash,
+        nickname: supaAcc.nickname,
+        recoveryCodeHash: supaAcc.recovery_code_hash,
+        createdAt: supaAcc.created_at,
+        updatedAt: supaAcc.updated_at,
+        status: supaAcc.status || 'ACTIVE',
+        failedRecoveryAttempts: supaAcc.failed_recovery_attempts || 0
+      };
+      userAccountsMap.set(normalizedId, account);
+    } else {
+      account = undefined;
+      userAccountsMap.delete(normalizedId);
+    }
   }
 
   if (!account) {
@@ -3680,7 +3795,7 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
     return res.status(404).json({ error: '삭제된 회의실입니다.' });
   }
 
-  if (room.status === 'CLOSED') {
+  if (!SUPABASE_CONFIGURED && room.status === 'CLOSED') {
     return res.status(400).json({ error: '이미 종료된 회의실입니다.' });
   }
 
@@ -3691,22 +3806,30 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
   }
 
   const maxCap = room.maxParticipants || 6;
-  const isAlreadyMember = pMap.has(userId);
-
-  if (!isAlreadyMember && room.status !== 'IDEA_SUBMISSION') {
-    return res.status(409).json({ error: '새 참여자는 아이디어 등록 단계에서만 참가할 수 있습니다.' });
-  }
-
-  if (!isAlreadyMember && pMap.size >= maxCap) {
-    return res.status(400).json({ error: `최대 참가 가능 인원(${maxCap}명)이 차서 참가할 수 없습니다.` });
-  }
+  let isAlreadyMember = pMap.has(userId);
 
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('participants').upsert(
-      { room_id: inv.roomId, user_id: userId, nickname },
-      { onConflict: 'room_id,user_id' }
-    );
-    if (error) return res.status(503).json({ error: '참여 정보를 안전하게 저장하지 못했습니다.' });
+    const { data: joinResult, error } = await supabase.rpc('join_room_v8', {
+      p_room_id: inv.roomId,
+      p_user_id: userId,
+      p_nickname: nickname
+    });
+    if (error) {
+      const conflict = error.code === 'P0001' || /단계|인원|회의실|찾을 수/i.test(error.message || '');
+      return res.status(conflict ? 409 : 503).json({
+        error: error.message || '참여 정보를 안전하게 저장하지 못했습니다.'
+      });
+    }
+    if (joinResult && typeof joinResult === 'object' && 'alreadyMember' in joinResult) {
+      isAlreadyMember = Boolean((joinResult as { alreadyMember?: boolean }).alreadyMember);
+    }
+  } else {
+    if (!isAlreadyMember && room.status !== 'IDEA_SUBMISSION') {
+      return res.status(409).json({ error: '새 참여자는 아이디어 등록 단계에서만 참가할 수 있습니다.' });
+    }
+    if (!isAlreadyMember && pMap.size >= maxCap) {
+      return res.status(400).json({ error: `최대 참가 가능 인원(${maxCap}명)이 차서 참가할 수 없습니다.` });
+    }
   }
   pMap.set(userId, nickname);
 
@@ -3763,6 +3886,23 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     (room.status === 'IDEA_SUBMISSION' && status === 'CRITERIA_PROPOSAL');
   if (!allowedTransition) {
     return res.status(409).json({ error: '현재 단계에서 요청한 다음 단계로 이동할 수 없습니다.' });
+  }
+
+  if (SUPABASE_CONFIGURED) {
+    const { error: transitionError } = await supabase.rpc('advance_idea_submission_v8', {
+      p_room_id: id,
+      p_host_user_id: reqUserId
+    });
+    if (transitionError) {
+      const conflict = transitionError.code === 'P0001' || /단계|참여자|아이디어|방장|선정 수/i.test(transitionError.message || '');
+      return res.status(conflict ? 409 : 503).json({
+        error: transitionError.message || '아이디어 등록 단계를 안전하게 종료하지 못했습니다.'
+      });
+    }
+    room.status = 'CRITERIA_PROPOSAL';
+    await loadOrCreatePhaseParticipants(id, criteriaPhase(room, 'CRITERIA_PROPOSAL'));
+    rooms.set(id, room);
+    return res.json({ success: true, status: room.status });
   }
 
   if (room.status === 'IDEA_SUBMISSION' && status === 'CRITERIA_PROPOSAL') {
@@ -3906,32 +4046,30 @@ app.post('/api/rooms/:id/ideas', async (req: AuthenticatedRequest, res) => {
     status: 'ACTIVE',
   };
 
-  try {
-    await clearIdeaSubmissionCompletion(id, submitterId);
-  } catch (error) {
-    return res.status(503).json({ error: error instanceof Error ? error.message : '아이디어 완료 상태를 초기화하지 못했습니다.' });
-  }
-
   if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('ideas').insert({
-      id: newIdea.id,
-      room_id: id,
-      title: newIdea.title,
-      description: newIdea.description,
-      submitter_id: submitterId,
-      submitter_name: newIdea.submitterName,
-      attachment_url: newIdea.attachmentUrl || null,
-      pdf_attachment_url: newIdea.pdfAttachmentUrl || null,
-      tags: newIdea.tags || [],
-      status: newIdea.status
+    const { error } = await supabase.rpc('create_idea_v8', {
+      p_room_id: id,
+      p_idea_id: newIdea.id,
+      p_user_id: submitterId,
+      p_title: newIdea.title,
+      p_description: newIdea.description,
+      p_submitter_name: newIdea.submitterName,
+      p_attachment_url: newIdea.attachmentUrl || null,
+      p_pdf_attachment_url: newIdea.pdfAttachmentUrl || null,
+      p_tags: newIdea.tags || []
     });
-    if (error) return res.status(503).json({ error: '아이디어를 안전하게 저장하지 못했습니다.' });
+    if (error) {
+      const response = ideaMutationErrorResponse(error, '아이디어를 안전하게 저장하지 못했습니다.');
+      return res.status(response.status).json({ error: response.message });
+    }
   } else if (IS_PRODUCTION) {
     return res.status(503).json({ error: '아이디어 저장소가 준비되지 않았습니다.' });
+  } else {
+    await clearIdeaSubmissionCompletion(id, submitterId);
   }
 
   roomIdeas.push(newIdea);
-
+  ideaCompletedUsersMap.get(id)?.delete(submitterId);
   ideas.set(id, roomIdeas);
   res.status(201).json(newIdea);
 });
@@ -3998,32 +4136,26 @@ app.put('/api/rooms/:id/ideas/:ideaId', async (req: AuthenticatedRequest, res) =
     tags: safeTags,
   };
 
-  try {
-    await clearIdeaSubmissionCompletion(id, submitterId);
-  } catch (error) {
-    return res.status(503).json({ error: error instanceof Error ? error.message : '아이디어 완료 상태를 초기화하지 못했습니다.' });
-  }
-
   if (SUPABASE_CONFIGURED) {
-    const { data: changedRows, error } = await supabase
-      .from('ideas')
-      .update({
-        title: updatedIdea.title,
-        description: updatedIdea.description,
-        attachment_url: updatedIdea.attachmentUrl || null,
-        pdf_attachment_url: updatedIdea.pdfAttachmentUrl || null,
-        tags: updatedIdea.tags || []
-      })
-      .eq('id', ideaId)
-      .eq('room_id', id)
-      .eq('submitter_id', submitterId)
-      .select('id');
-    if (error) return res.status(503).json({ error: '아이디어 수정 내용을 안전하게 저장하지 못했습니다.' });
-    if (!changedRows || changedRows.length !== 1) {
-      return res.status(409).json({ error: '아이디어가 다른 요청에서 변경되거나 삭제되었습니다. 새로고침해 주세요.' });
+    const { error } = await supabase.rpc('update_idea_v8', {
+      p_room_id: id,
+      p_idea_id: ideaId,
+      p_user_id: submitterId,
+      p_title: updatedIdea.title,
+      p_description: updatedIdea.description,
+      p_attachment_url: updatedIdea.attachmentUrl || null,
+      p_pdf_attachment_url: updatedIdea.pdfAttachmentUrl || null,
+      p_tags: updatedIdea.tags || []
+    });
+    if (error) {
+      const response = ideaMutationErrorResponse(error, '아이디어 수정 내용을 안전하게 저장하지 못했습니다.');
+      return res.status(response.status).json({ error: response.message });
     }
+  } else {
+    await clearIdeaSubmissionCompletion(id, submitterId);
   }
   roomIdeas[existingIdeaIndex] = updatedIdea;
+  ideaCompletedUsersMap.get(id)?.delete(submitterId);
   ideas.set(id, roomIdeas);
   res.json(updatedIdea);
 });
@@ -4053,26 +4185,21 @@ app.delete('/api/rooms/:id/ideas/:ideaId', async (req: AuthenticatedRequest, res
     return res.status(403).json({ error: '작성자 본인만 삭제할 수 있습니다.' });
   }
 
-  try {
-    await clearIdeaSubmissionCompletion(id, submitterId);
-  } catch (error) {
-    return res.status(503).json({ error: error instanceof Error ? error.message : '아이디어 완료 상태를 초기화하지 못했습니다.' });
-  }
-
   if (SUPABASE_CONFIGURED) {
-    const { data: deletedRows, error } = await supabase
-      .from('ideas')
-      .delete()
-      .eq('id', ideaId)
-      .eq('room_id', id)
-      .eq('submitter_id', submitterId)
-      .select('id');
-    if (error) return res.status(503).json({ error: '아이디어를 안전하게 삭제하지 못했습니다.' });
-    if (!deletedRows || deletedRows.length !== 1) {
-      return res.status(409).json({ error: '아이디어가 이미 변경되거나 삭제되었습니다. 새로고침해 주세요.' });
+    const { error } = await supabase.rpc('delete_idea_v8', {
+      p_room_id: id,
+      p_idea_id: ideaId,
+      p_user_id: submitterId
+    });
+    if (error) {
+      const response = ideaMutationErrorResponse(error, '아이디어를 안전하게 삭제하지 못했습니다.');
+      return res.status(response.status).json({ error: response.message });
     }
+  } else {
+    await clearIdeaSubmissionCompletion(id, submitterId);
   }
   roomIdeas.splice(existingIdeaIndex, 1);
+  ideaCompletedUsersMap.get(id)?.delete(submitterId);
   ideas.set(id, roomIdeas);
   res.json({ success: true, deletedId: ideaId });
 });
@@ -4428,7 +4555,7 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
     },
     deadlines: deadlines || {},
     createdAt: new Date().toISOString(),
-    engineVersion: normalizedDecisionMode === 'STRUCTURED' ? 7 : 7,
+    engineVersion: normalizedDecisionMode === 'STRUCTURED' ? 8 : 7,
     decisionMode: normalizedDecisionMode,
     refinementEnabled: false,
     maxRefinementRounds: 0
@@ -4594,6 +4721,8 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   if (!room) {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   }
+
+  await reconcileCompletedScoreTransition(room);
 
   const roomIdeas = ideas.get(id) || [];
   const rawRoomCriteria = criteria.get(id) || [];
@@ -4877,6 +5006,12 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       candidateIdeaIds: (snapshot.candidateIdeaIds || Object.keys(rawStats)).map(String),
       survivorIdeaIds: survivorIds,
       eliminatedIdeaIds: (snapshot.eliminatedIdeaIds || []).map(String),
+      baseSurvivorCount: Number(snapshot.baseSurvivorCount || survivorIds.length),
+      actualSurvivorCount: Number(snapshot.actualSurvivorCount || survivorIds.length),
+      tieExpanded: Boolean(snapshot.tieExpanded),
+      boundaryTieIdeaIds: Array.isArray(snapshot.boundaryTieIdeaIds)
+        ? snapshot.boundaryTieIdeaIds.map(String)
+        : [],
       scoreStats: Object.fromEntries(Object.entries(rawStats).map(([ideaId, raw]: [string, any]) => [ideaId, {
         totalScore: Number(raw?.totalScore || 0),
         responseCount: Number(raw?.responseCount || 0),
@@ -4936,12 +5071,14 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     result.aggregatedScores = Object.fromEntries(
       Object.entries(scoreSnapshot.scoreStats as Record<string, any>).map(([ideaId, raw]) => {
         const totalScore = Number(raw?.totalScore || 0);
-        const averageScore = Number(raw?.averageScore || 0);
+        const storedAverageScore = typeof raw?.averageScore === 'number'
+          ? Number(raw.averageScore)
+          : undefined;
         const responseCount = Number(raw?.responseCount || 0);
         return [ideaId, {
-          score: averageScore,
+          score: storedAverageScore ?? totalScore,
           totalScore,
-          averageScore,
+          averageScore: storedAverageScore,
           responseCount,
           survived: Boolean(raw?.survived),
           cutoffScore,
@@ -5204,66 +5341,32 @@ app.post('/api/rooms/:id/re-edit-status', async (req: AuthenticatedRequest, res)
     reEditingEvaluatorsMap.set(id, set);
   }
 
-  if (isReEditing) {
+  if (SUPABASE_CONFIGURED) {
+    const { error } = await supabase.rpc('set_score_reedit_state_v8', {
+      p_room_id: id,
+      p_round_id: round.id,
+      p_user_id: userId,
+      p_is_reediting: isReEditing
+    });
+    if (error) {
+      const conflict = error.code === 'P0001' || /집계|수정|제출|회차/i.test(error.message || '');
+      return res.status(conflict ? 409 : 503).json({
+        error: error.message || '평가 수정 상태를 안전하게 저장하지 못했습니다.'
+      });
+    }
+  } else if (isReEditing) {
     const hasSubmittedEvaluation = (evaluations.get(id) || []).some(
       evaluation => evaluation.evaluatorId === userId && evaluation.roundId === round.id
     );
     if (!hasSubmittedEvaluation) {
       return res.status(409).json({ error: '먼저 현재 회차 평가를 제출해 주세요.' });
     }
-    if (SUPABASE_CONFIGURED) {
-      const { error } = await supabase.from('phase_completions').upsert(
-        {
-          room_id: id,
-          phase: evaluationReeditPhase(round.id),
-          user_id: userId,
-          completed_at: new Date().toISOString()
-        },
-        { onConflict: 'room_id,phase,user_id' }
-      );
-      if (error) return res.status(503).json({ error: '평가 수정 상태를 저장하지 못했습니다.' });
-      if (['SCORE_FEEDBACK', 'SCORE_ONLY'].includes((round as RefinementAwareDecisionRound).evaluationMethod || '')) {
-        const { data: participantRows, error: participantError } = await supabase
-          .from('evaluation_round_participants')
-          .update({ submission_status: 'DRAFT', finalized_at: null })
-          .eq('round_id', round.id)
-          .eq('room_id', id)
-          .eq('user_id', userId)
-          .eq('is_required', true)
-          .select('user_id');
-        if (participantError || !participantRows || participantRows.length !== 1) {
-          return res.status(503).json({ error: '평가 수정 대기 상태를 저장하지 못했습니다.' });
-        }
-      }
-    }
-    set.add(String(userId));
-    // Re-editing is a UI state, not a destructive action. The previously
-    // submitted evaluations stay intact until a complete replacement succeeds.
-  } else {
-    if (SUPABASE_CONFIGURED) {
-      const { error } = await supabase
-        .from('phase_completions')
-        .delete()
-        .eq('room_id', id)
-        .eq('phase', evaluationReeditPhase(round.id))
-        .eq('user_id', userId);
-      if (error) return res.status(503).json({ error: '평가 수정 취소 상태를 저장하지 못했습니다.' });
-      if (['SCORE_FEEDBACK', 'SCORE_ONLY'].includes((round as RefinementAwareDecisionRound).evaluationMethod || '')) {
-        const { data: participantRows, error: participantError } = await supabase
-          .from('evaluation_round_participants')
-          .update({ submission_status: 'FINAL', finalized_at: new Date().toISOString() })
-          .eq('round_id', round.id)
-          .eq('room_id', id)
-          .eq('user_id', userId)
-          .eq('is_required', true)
-          .select('user_id');
-        if (participantError || !participantRows || participantRows.length !== 1) {
-          return res.status(503).json({ error: '기존 평가 완료 상태를 복원하지 못했습니다.' });
-        }
-      }
-    }
-    set.delete(String(userId));
   }
+
+  if (isReEditing) set.add(String(userId));
+  else set.delete(String(userId));
+  // Re-editing is a UI state, not a destructive action. The previously
+  // submitted evaluations stay intact until a complete replacement succeeds.
 
   let aggregationPending = false;
   if (!isReEditing && ['SCORE_FEEDBACK', 'SCORE_ONLY'].includes((round as RefinementAwareDecisionRound).evaluationMethod || '')) {
@@ -5460,17 +5563,47 @@ app.post('/api/rooms/:id/screening/finalize', async (req: AuthenticatedRequest, 
     const { id } = req.params;
     const room = await hydrateRoomFromSupabase(id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    await loadDecisionRounds(id);
+    await reconcileCompletedScoreTransition(room);
+    const rounds = await loadDecisionRounds(id) as RefinementAwareDecisionRound[];
+    const round = [...rounds].reverse().find(candidate =>
+      candidate.status === 'ACTIVE' &&
+      ['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(candidate.evaluationMethod || '')
+    );
+    const latestCompleted = [...rounds].reverse().find(candidate =>
+      candidate.status === 'COMPLETED' &&
+      ['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(candidate.evaluationMethod || '') &&
+      (candidate.resultSnapshot as Record<string, any> | undefined)?.aggregationStatus === 'COMPLETED'
+    );
+
+    if (!round) {
+      if (latestCompleted?.resultSnapshot) {
+        return res.json({
+          success: true,
+          alreadyCompleted: true,
+          status: (rooms.get(id) || room).status,
+          result: latestCompleted.resultSnapshot
+        });
+      }
+      return res.status(409).json({ error: '진행 중이거나 완료된 종합점수 평가 회차를 찾을 수 없습니다.' });
+    }
     if (room.status !== 'EVALUATION' && room.status !== 'EVALUATION_ROUND_2') {
       return res.status(409).json({ error: '현재는 점수 평가 집계를 다시 시도할 단계가 아닙니다.' });
     }
-
-    await loadDecisionRounds(id);
-    const round = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
-    if (!round || !['SCORE_FEEDBACK', 'SCORE_ONLY'].includes(round.evaluationMethod || '') || round.status !== 'ACTIVE') {
-      return res.status(409).json({ error: '진행 중인 종합점수 평가 회차를 찾을 수 없습니다.' });
-    }
     const progress = await loadScoreEvaluationProgress(room, round);
     if (progress.expected < 2 || progress.submitted < progress.expected) {
+      if (
+        progress.submitted === 0 &&
+        latestCompleted?.resultSnapshot &&
+        round.parentRoundId === latestCompleted.id
+      ) {
+        return res.json({
+          success: true,
+          alreadyCompleted: true,
+          status: (rooms.get(id) || room).status,
+          result: latestCompleted.resultSnapshot
+        });
+      }
       return res.status(409).json({
         error: `모든 참여자의 평가 제출이 필요합니다. (${progress.submitted}/${progress.expected})`
       });
@@ -6318,7 +6451,7 @@ app.post('/api/rooms/:id/criteria/confirm', async (req: AuthenticatedRequest, re
       .from('rooms')
       .update({
         status: 'EVALUATION',
-        engine_version: Math.max(7, Number(room.engineVersion || 7)),
+        engine_version: Math.max(8, Number(room.engineVersion || 8)),
         refinement_enabled: false,
         max_refinement_rounds: 0
       })
@@ -6330,7 +6463,7 @@ app.post('/api/rooms/:id/criteria/confirm', async (req: AuthenticatedRequest, re
     }
   }
 
-  room.engineVersion = Math.max(7, Number(room.engineVersion || 7));
+  room.engineVersion = Math.max(8, Number(room.engineVersion || 8));
   (room as RefinementAwareRoom).refinementEnabled = false;
   (room as RefinementAwareRoom).maxRefinementRounds = 0;
   room.status = 'EVALUATION';
@@ -7997,8 +8130,8 @@ async function generateFinalRoomReport(
         .filter(evaluation => evaluation.ideaId === idea.id)
         .map(evaluation => Number(evaluation.overallScore));
       if (ideaScores.length > 0) {
-        const average = Math.round((ideaScores.reduce((sum, score) => sum + score, 0) / ideaScores.length) * 100) / 100;
-        selectedReasons.push(`"${idea.title}"의 1차 종합점수 평균은 ${average}점(${ideaScores.length}명 평가)이었습니다.`);
+        const totalScore = ideaScores.reduce((sum, score) => sum + score, 0);
+        selectedReasons.push(`"${idea.title}"의 1차 종합점수 합계는 ${totalScore}점(${ideaScores.length}명 평가)이었습니다.`);
       }
     });
   }
