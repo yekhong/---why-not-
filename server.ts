@@ -19,7 +19,9 @@ import {
   DecisionMode,
   FinalVoteStatus,
   DecisionRound,
-  DecisionReport
+  DecisionReport,
+  ParticipantRole,
+  VoterSetupState
 } from './src/types';
 
 dotenv.config();
@@ -146,12 +148,12 @@ function legacyHashString(input: string): string {
     .digest('hex');
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(promise: PromiseLike<T>, ms: number, errorMessage = '데이터 저장소 응답 시간이 초과되었습니다.'): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('데이터 저장소 응답 시간이 초과되었습니다.')), ms);
+    timeoutId = setTimeout(() => reject(new Error(errorMessage)), ms);
   });
-  return Promise.race([promise, timeout]).finally(() => {
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
     if (timeoutId) clearTimeout(timeoutId);
   });
 }
@@ -246,6 +248,30 @@ function normalizeOptionalHttpUrl(value: unknown): string | undefined {
   } catch {
     throw new Error('참고 링크는 http 또는 https 주소만 사용할 수 있습니다.');
   }
+}
+
+async function acceptPendingRoomAccountInvites(userId: string): Promise<Array<{
+  roomId: string;
+  role: ParticipantRole;
+  waiting: boolean;
+}>> {
+  if (!SUPABASE_CONFIGURED) return [];
+  const { data, error } = await supabase.rpc('accept_room_account_invites_v9', {
+    p_user_id: userId
+  });
+  if (error) {
+    // 로그인 자체를 초대 처리 실패와 묶지 않는다. 사용자는 로그인 후 다시
+    // 접속하면 다음 상태 갱신에서 안전하게 재시도할 수 있다.
+    console.warn('Account invite auto-match notice:', error.message);
+    return [];
+  }
+  return Array.isArray(data)
+    ? data.map((item: any): { roomId: string; role: ParticipantRole; waiting: boolean } => ({
+        roomId: String(item.roomId || item.room_id || ''),
+        role: item.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT',
+        waiting: Boolean(item.waiting)
+      })).filter(item => item.roomId)
+    : [];
 }
 
 function parseCookies(req: Request): Record<string, string> {
@@ -373,24 +399,40 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 
 // Lazy-initialized Gemini / Potens AI Client
 const POTENS_API_URL = 'https://ai.potens.ai/api/chat';
+const AI_PROVIDER_TIMEOUT_MS = Math.min(30000, Math.max(5000, Number(process.env.AI_PROVIDER_TIMEOUT_MS || 12000)));
 
-async function callPotensAI(prompt: string, model: string = 'claude-4-6-sonnet'): Promise<string> {
+async function callPotensAI(
+  prompt: string,
+  model: string = 'claude-4-6-sonnet',
+  timeoutMs: number = AI_PROVIDER_TIMEOUT_MS
+): Promise<string> {
   const apiKey = process.env.POTENS_API_KEY || process.env.GEMINI_API_KEY || '';
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new Error('POTENS_API_KEY environment variable is not configured.');
   }
 
-  const response = await fetch(POTENS_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      prompt: prompt,
-      model: model
-    })
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  let response: globalThis.Response;
+  try {
+    response = await fetch(POTENS_API_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        prompt: prompt,
+        model: model
+      })
+    });
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') throw new Error('Potens AI 응답 시간이 초과되었습니다.');
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -490,15 +532,29 @@ const criteria = new Map<string, Criterion[]>();
 const evaluations = new Map<string, Evaluation[]>();
 const eliminationRounds = new Map<string, EliminationRound[]>();
 const participants = new Map<string, Map<string, string>>(); // room_id -> Map<user_id, nickname>
-const roomInvites = new Map<string, { id: string; roomId: string; inviteToken: string; createdBy: string; expiresAt: string; isActive: boolean; createdAt: string }>();
+const participantRolesMap = new Map<string, Map<string, ParticipantRole>>();
+type RoomInviteRecord = {
+  id: string;
+  roomId: string;
+  inviteToken: string;
+  createdBy: string;
+  expiresAt: string;
+  isActive: boolean;
+  createdAt: string;
+  inviteType: ParticipantRole;
+};
+const roomInvites = new Map<string, RoomInviteRecord>();
 
 // Cache for AI summarized comments to avoid repeating calls on every request
 const aiCommentsCache = new Map<string, Record<string, { objectiveComments: string[]; preferenceComments: string[] }>>();
+const aiCommentsGenerationInFlight = new Set<string>();
 const evaluationCardsCache = new Map<string, { roundId: string; cards: Record<string, EvaluationCard> }>();
 const screeningSummariesCache = new Map<string, { roundId: string; summary: ScreeningSummary }>();
 const aiBoundaryTiebreakCache = new Map<string, { roundId: string; decision: AiBoundaryTiebreakDecision }>();
 // Cache for AI final summaries
 const aiFinalSummaries = new Map<string, string>();
+const finalReportGenerationInFlight = new Set<string>();
+const screeningSummaryGenerationInFlight = new Set<string>();
 // Map for 4단계 Star Votes: room_id -> Map<user_id, string[]> (userId to array of selected ideaIds)
 const starVotesMap = new Map<string, Map<string, string[]>>();
 const finalVoteCyclesMap = new Map<string, FinalVoteCycleRecord>();
@@ -571,6 +627,7 @@ function criteriaApprovalCacheKey(roomId: string, version: number): string {
 const phaseParticipantSnapshots = new Map<string, Map<string, Set<string>>>();
 // Phase 3 keeps each decision attempt immutable instead of overwriting previous results.
 const decisionRoundsMap = new Map<string, DecisionRound[]>();
+const decisionRoundsLoadedAtMap = new Map<string, number>();
 // The final report is a frozen snapshot. It is not regenerated on every page load.
 const decisionReportsMap = new Map<string, DecisionReport>();
 
@@ -599,7 +656,13 @@ function getPhaseParticipants(roomId: string, phase: string): Set<string> {
   }
   let snapshot = roomSnapshots.get(phase);
   if (!snapshot) {
-    snapshot = new Set(participants.get(roomId)?.keys() || []);
+    const includeVoters = phase.startsWith('FINAL_VOTE:');
+    const roleMap = participantRolesMap.get(roomId);
+    snapshot = new Set(
+      Array.from(participants.get(roomId)?.keys() || []).filter(userId =>
+        includeVoters || (roleMap?.get(userId) || 'PARTICIPANT') === 'PARTICIPANT'
+      )
+    );
     roomSnapshots.set(phase, snapshot);
   }
   return snapshot;
@@ -611,7 +674,7 @@ async function loadOrCreatePhaseParticipants(roomId: string, phase: string): Pro
 
   const { data, error } = await supabase
     .from('room_phase_participants')
-    .select('user_id')
+    .select('user_id,role')
     .eq('room_id', roomId)
     .eq('phase', phase);
   if (error) {
@@ -628,7 +691,13 @@ async function loadOrCreatePhaseParticipants(roomId: string, phase: string): Pro
     return snapshot;
   }
 
-  const snapshot = new Set<string>(participants.get(roomId)?.keys() || []);
+  const includeVoters = phase.startsWith('FINAL_VOTE:');
+  const roleMap = participantRolesMap.get(roomId);
+  const snapshot = new Set<string>(
+    Array.from(participants.get(roomId)?.keys() || []).filter(userId =>
+      includeVoters || (roleMap?.get(userId) || 'PARTICIPANT') === 'PARTICIPANT'
+    )
+  );
   if (snapshot.size === 0) {
     throw new Error('단계 참여자 명단을 만들 수 없습니다.');
   }
@@ -636,7 +705,8 @@ async function loadOrCreatePhaseParticipants(roomId: string, phase: string): Pro
     Array.from(snapshot).map(userId => ({
       room_id: roomId,
       phase,
-      user_id: userId
+      user_id: userId,
+      role: roleMap?.get(userId) || 'PARTICIPANT'
     })),
     { onConflict: 'room_id,phase,user_id', ignoreDuplicates: true }
   );
@@ -726,6 +796,23 @@ async function updateDecisionRoundStage(
 }
 
 async function buildRefinementState(room: Room, userId: string) {
+  const settings = getRefinementSettings(room);
+  if (!settings.enabled) {
+    return {
+      enabled: false,
+      used: false,
+      stage: null,
+      roundId: null,
+      roundNumber: null,
+      feedbackSubmittedCount: 0,
+      feedbackExpectedCount: 0,
+      myFeedbackSubmitted: false,
+      revisionSubmittedCount: 0,
+      revisionExpectedCount: 0,
+      myRevisions: [] as Array<Record<string, unknown>>,
+      feedbackForMyIdeas: {} as Record<string, Array<Record<string, unknown>>>
+    };
+  }
   await loadDecisionRounds(room.id);
   const rounds = decisionRoundsMap.get(room.id) || [];
   const refinementRounds = rounds.filter(
@@ -733,8 +820,6 @@ async function buildRefinementState(room: Room, userId: string) {
   ) as RefinementAwareDecisionRound[];
   const current = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
   const activeRefinement = current?.roundKind === 'REFINEMENT' ? current : undefined;
-  const settings = getRefinementSettings(room);
-
   const base = {
     enabled: settings.enabled,
     used: refinementRounds.length > 0,
@@ -823,9 +908,11 @@ async function buildRefinementState(room: Room, userId: string) {
   return base;
 }
 
-async function loadDecisionRounds(roomId: string): Promise<DecisionRound[]> {
+async function loadDecisionRounds(roomId: string, forceRefresh = false): Promise<DecisionRound[]> {
   const cached = decisionRoundsMap.get(roomId);
   if (!SUPABASE_CONFIGURED) return cached || [];
+  const loadedAt = decisionRoundsLoadedAtMap.get(roomId) || 0;
+  if (!forceRefresh && cached && Date.now() - loadedAt < 1000) return cached;
 
   const rounds: DecisionRound[] = [];
   const { data, error } = await supabase
@@ -860,6 +947,7 @@ async function loadDecisionRounds(roomId: string): Promise<DecisionRound[]> {
       : 'EVALUATION'
   } as RefinementAwareDecisionRound));
   decisionRoundsMap.set(roomId, rounds);
+  decisionRoundsLoadedAtMap.set(roomId, Date.now());
   return rounds;
 }
 
@@ -1278,23 +1366,37 @@ async function transitionAfterCompletedScoreRound(
     const scoreRows = (evaluations.get(room.id) || []).filter(evaluation => evaluation.roundId === round.id);
     const rawStats = snapshot.scoreStats || {};
     const storedSummary = await loadScreeningSummary(room, round.id);
-    if (!storedSummary) {
-      await generateAndStoreScreeningSummary(
+    if (!storedSummary && !screeningSummaryGenerationInFlight.has(round.id)) {
+      screeningSummaryGenerationInFlight.add(round.id);
+      void generateAndStoreScreeningSummary(
         room,
         round,
         allRoomIdeas,
         (criteria.get(room.id) || []).filter(criterion => criterion.confirmed),
         scoreRows,
         rawStats
-      );
+      )
+        .catch(error => console.warn('[AI SUMMARY] 1차 평가 요약 생성 실패:', error))
+        .finally(() => screeningSummaryGenerationInFlight.delete(round.id));
     }
   }
 
   const survivingIdeas = allRoomIdeas.filter(idea => survivorSet.has(idea.id));
   if (round.evaluationMethod === 'SCORE_FEEDBACK' && survivingIdeas.length > 4) {
     await startSecondScoreEvaluationRound(room, survivingIdeas, round);
-  } else {
+  } else if (survivingIdeas.length <= Math.max(1, room.targetWinnerCount || 1)) {
+    // 최종 선정 수 이하라면 별 투표가 불필요하므로 기존 확정 정책대로 모두 선정한다.
     await ensureFinalVoteCycle(room, survivingIdeas);
+  } else {
+    // 점수 평가 완료와 최종 별 투표 시작을 분리한다. 이 구간에서 방장이
+    // 외부 투표자 사용 여부와 필요 인원을 확인한 뒤 명단을 확정한다.
+    room.status = 'ELIMINATION';
+    room.finalVoteStatus = 'NOT_STARTED';
+    room.currentRoundId = undefined;
+    room.currentFinalVoteCycleId = undefined;
+    room.tieCandidateIdeaIds = [];
+    room.tieSlots = 0;
+    await persistFinalVoteRoomState(room);
   }
   rooms.set(room.id, room);
 }
@@ -2085,13 +2187,13 @@ JSON 출력 포맷:
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await withTimeout(ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         responseMimeType: 'application/json'
       }
-    });
+    }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
 
     return JSON.parse(response.text || '{}');
   } catch (err) {
@@ -2117,22 +2219,29 @@ async function requestStructuredAi(prompt: string): Promise<{
   parsed: any;
   modelName: string;
 }> {
+  // Potens 실패 후 Gemini를 재시도하더라도 한 번의 논리적 AI 작업이
+  // 공급자별 제한시간을 연속으로 모두 소비하지 않도록 전체 예산을 공유한다.
+  const deadline = Date.now() + AI_PROVIDER_TIMEOUT_MS;
+  const remainingTimeout = () => Math.max(1, deadline - Date.now());
+
   if (process.env.POTENS_API_KEY) {
     try {
-      const rawText = await callPotensAI(prompt, 'gemini-2.5-flash');
+      const rawText = await callPotensAI(prompt, 'gemini-2.5-flash', remainingTimeout());
       return { parsed: parseAiJson(rawText), modelName: 'potens:gemini-2.5-flash' };
     } catch (error) {
       console.info('[AI Provider] Structured Potens call failed; trying Gemini:', error);
     }
   }
 
+  const fallbackTimeout = remainingTimeout();
+  if (fallbackTimeout <= 1) throw new Error('AI 전체 응답 시간이 초과되었습니다.');
   const ai = getGeminiClient();
   if (!ai) throw new Error('사용 가능한 AI 공급자가 없습니다.');
-  const response = await ai.models.generateContent({
+  const response = await withTimeout(ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: prompt,
     config: { responseMimeType: 'application/json' }
-  });
+  }), fallbackTimeout, 'AI 전체 응답 시간이 초과되었습니다.');
   return {
     parsed: parseAiJson(response.text || '{}'),
     modelName: 'google:gemini-2.5-flash'
@@ -2709,10 +2818,10 @@ ${reasons.map(r => `- ${r}`).join('\n')}
   const ai = getGeminiClient();
   if (ai) {
     try {
-      const response = await ai.models.generateContent({
+      const response = await withTimeout(ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt,
-      });
+      }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
       if (response.text?.trim()) return response.text.trim();
     } catch (err) {
       console.error('Gemini AI round summary failed:', err);
@@ -2804,10 +2913,10 @@ ${evidence.nextValidationTasks.map(item => `- ${item}`).join('\n')}
   const ai = getGeminiClient();
   if (ai) {
     try {
-      const response = await ai.models.generateContent({
+      const response = await withTimeout(ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt,
-      });
+      }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
       if (response.text?.trim()) return response.text.trim();
     } catch (err) {
       console.error('Gemini AI final summary failed:', err);
@@ -2938,6 +3047,7 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
     }
   }
 
+  const matchedInvites = await acceptPendingRoomAccountInvites(newUserId);
   res.status(201).json({
     ok: true,
     user: {
@@ -2945,7 +3055,8 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
       loginId: normalizedId,
       nickname: normalizedNickname
     },
-    recoveryCode // Provided ONCE on signup
+    recoveryCode, // Provided ONCE on signup
+    matchedInvites
   });
 });
 
@@ -3025,13 +3136,15 @@ app.post('/api/auth/login', enforceAuthRateLimit, async (req, res) => {
     return res.status(503).json({ error: '로그인 세션을 안전하게 만들지 못했습니다.' });
   }
 
+  const matchedInvites = await acceptPendingRoomAccountInvites(account.id);
   res.json({
     ok: true,
     user: {
       id: account.id,
       loginId: account.loginId,
       nickname: account.nickname
-    }
+    },
+    matchedInvites
   });
 });
 
@@ -3152,13 +3265,15 @@ app.get('/api/auth/session', async (req, res) => {
     clearSessionCookie(res);
     return res.status(401).json({ authenticated: false });
   }
+  const matchedInvites = await acceptPendingRoomAccountInvites(session.userId);
   return res.json({
     authenticated: true,
     user: {
       id: session.userId,
       loginId: session.loginId,
       nickname: session.nickname
-    }
+    },
+    matchedInvites
   });
 });
 
@@ -3184,19 +3299,66 @@ async function isRoomMember(roomId: string, userId: string): Promise<boolean> {
     return inMemoryRoom?.hostId === userId || Boolean(participants.get(roomId)?.has(userId));
   }
 
-  const [roomResult, participantResult] = await Promise.all([
+  const [roomResult, participantResult, voterRegistrationResult] = await Promise.all([
     supabase.from('rooms').select('host_id').eq('id', roomId).maybeSingle(),
     supabase
       .from('participants')
+      .select('user_id,role')
+      .eq('room_id', roomId)
+      .eq('user_id', userId)
+      .maybeSingle(),
+    supabase
+      .from('room_voter_registrations')
       .select('user_id')
       .eq('room_id', roomId)
       .eq('user_id', userId)
+      .in('status', ['WAITING', 'ACTIVE'])
       .maybeSingle()
   ]);
-  if (roomResult.error || participantResult.error) {
+  if (roomResult.error || participantResult.error || voterRegistrationResult.error) {
     throw new Error('회의실 접근 권한을 확인하지 못했습니다.');
   }
-  return roomResult.data?.host_id === userId || Boolean(participantResult.data);
+  const participantRole = participantResult.data?.role === 'VOTER' ? 'VOTER' : participantResult.data ? 'PARTICIPANT' : null;
+  return roomResult.data?.host_id === userId || participantRole === 'PARTICIPANT' || Boolean(voterRegistrationResult.data);
+}
+
+async function getRoomMemberRole(roomId: string, userId: string): Promise<ParticipantRole | null> {
+  const room = rooms.get(roomId);
+  if (room?.hostId === userId) return 'PARTICIPANT';
+  const cachedRole = participantRolesMap.get(roomId)?.get(userId);
+  if (!SUPABASE_CONFIGURED) {
+    return participants.get(roomId)?.has(userId) ? (cachedRole || 'PARTICIPANT') : null;
+  }
+  const { data, error } = await supabase
+    .from('participants')
+    .select('role')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw new Error('회의실 참여 역할을 확인하지 못했습니다.');
+  if (data?.role !== 'VOTER' && data) return 'PARTICIPANT';
+  const { data: registration, error: registrationError } = await supabase
+    .from('room_voter_registrations')
+    .select('status')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .in('status', ['WAITING', 'ACTIVE'])
+    .maybeSingle();
+  if (registrationError) throw new Error('외부 투표자 등록 상태를 확인하지 못했습니다.');
+  return registration ? 'VOTER' : null;
+}
+
+async function isActivatedFinalVoter(roomId: string, userId: string): Promise<boolean> {
+  if (!SUPABASE_CONFIGURED) return participantRolesMap.get(roomId)?.get(userId) === 'VOTER';
+  const { data, error } = await supabase
+    .from('room_voter_registrations')
+    .select('user_id')
+    .eq('room_id', roomId)
+    .eq('user_id', userId)
+    .eq('status', 'ACTIVE')
+    .maybeSingle();
+  if (error) throw new Error('외부 투표자 활성 상태를 확인하지 못했습니다.');
+  return Boolean(data);
 }
 
 async function isRoomHost(roomId: string, userId: string): Promise<boolean> {
@@ -3210,11 +3372,16 @@ async function isRoomHost(roomId: string, userId: string): Promise<boolean> {
 function isHostOnlyRoomMutation(req: Request): boolean {
   const suffix = req.path.split('/').slice(4).join('/');
   if (req.method === 'PATCH' && !suffix) return true;
-  if (req.method === 'DELETE' && suffix === 'invites') return true;
+  if (req.method === 'DELETE' && (
+    suffix === 'invites' || suffix.startsWith('account-invites/') || suffix.startsWith('voters/')
+  )) return true;
   if (req.method !== 'POST') return false;
   return (
     suffix === 'pin' ||
     suffix === 'invites' ||
+    suffix === 'account-invites' ||
+    suffix === 'final-vote/start' ||
+    suffix === 'final-vote/cancel' ||
     suffix === 'status' ||
     suffix === 'criteria/cluster' ||
     suffix === 'criteria/confirm' ||
@@ -3272,8 +3439,29 @@ app.use(async (req: AuthenticatedRequest, res, next) => {
     if (req.path === `/api/rooms/${roomId}/join`) {
       return res.status(403).json({ error: '유효한 초대 링크를 통해서만 참여할 수 있습니다.' });
     }
+    // 상태 폴링은 라우트의 get_room_state_v9 RPC가 접근 권한과 버전을
+    // 한 번에 검증한다. 여기서 공통 다중 조회를 반복하지 않는다.
+    if (req.method === 'GET' && roomSuffix === 'state') return next();
     if (!(await isRoomMember(roomId, actorId))) {
       return res.status(403).json({ error: '이 회의실에 접근할 권한이 없습니다.' });
+    }
+    const memberRole = await getRoomMemberRole(roomId, actorId);
+    if (memberRole === 'VOTER') {
+      const activeFinalVoter = await isActivatedFinalVoter(roomId, actorId);
+      const voterAllowed =
+        req.method === 'GET' && (roomSuffix === '' || roomSuffix === 'state') ||
+        activeFinalVoter && req.method === 'POST' && (
+          roomSuffix === 'star-vote' ||
+          roomSuffix === 'star-vote/reopen' ||
+          roomSuffix === 'star-vote/roulette-consent'
+        );
+      if (!voterAllowed) {
+        return res.status(activeFinalVoter ? 403 : 409).json({
+          error: activeFinalVoter
+            ? '외부 투표자는 최종 별 투표에만 참여할 수 있습니다.'
+            : '아직 최종 별 투표가 시작되지 않았습니다.'
+        });
+      }
     }
     if (isHostOnlyRoomMutation(req) && !(await isRoomHost(roomId, actorId))) {
       return res.status(403).json({ error: '방장만 실행할 수 있습니다.' });
@@ -3319,46 +3507,129 @@ function mapRoomRow(row: any): Room {
     currentRoundId: row.current_round_id || undefined,
     currentFinalVoteCycleId: row.current_final_vote_cycle_id || undefined,
     criteriaSetVersion: Math.max(1, Number(row.criteria_set_version || 1)),
+    externalVotersEnabled: Boolean(row.external_voters_enabled),
+    requiredVoterCount: Math.min(30, Math.max(0, Number(row.required_voter_count || 0))),
+    finalVoteRosterLockedAt: row.final_vote_roster_locked_at || undefined,
+    stateVersion: String(row.state_version || 1),
     refinementEnabled: Boolean(row.refinement_enabled),
     maxRefinementRounds: Math.min(1, Math.max(0, Number(row.max_refinement_rounds || 0)))
   } as RefinementAwareRoom;
+}
+
+async function loadVoterSetupState(room: Room): Promise<VoterSetupState> {
+  const requiredCount = room.externalVotersEnabled ? Math.max(1, Number(room.requiredVoterCount || 1)) : 0;
+  if (!room.externalVotersEnabled && !room.finalVoteRosterLockedAt) {
+    return {
+      enabled: false,
+      requiredCount: 0,
+      registeredCount: 0,
+      activeCount: 0,
+      pendingCount: 0,
+      remainingCount: 0,
+      rosterLocked: false,
+      canStartFinalVote: true,
+      registrations: [] as Array<{ userId: string; nickname: string; status: 'WAITING' | 'ACTIVE' }>
+    };
+  }
+  if (!SUPABASE_CONFIGURED) {
+    return {
+      enabled: Boolean(room.externalVotersEnabled),
+      requiredCount,
+      registeredCount: 0,
+      activeCount: 0,
+      pendingCount: 0,
+      remainingCount: requiredCount,
+      rosterLocked: Boolean(room.finalVoteRosterLockedAt),
+      canStartFinalVote: !room.externalVotersEnabled
+    };
+  }
+  const [registrationResult, pendingInviteResult] = await Promise.all([
+    supabase
+      .from('room_voter_registrations')
+      .select('user_id,nickname,status')
+      .eq('room_id', room.id)
+      .in('status', ['WAITING', 'ACTIVE']),
+    supabase
+      .from('room_account_invites')
+      .select('id')
+      .eq('room_id', room.id)
+      .eq('invite_role', 'VOTER')
+      .eq('status', 'PENDING')
+  ]);
+  if (registrationResult.error || pendingInviteResult.error) {
+    throw new Error('외부 투표자 등록 현황을 불러오지 못했습니다.');
+  }
+  const registrationRows = registrationResult.data || [];
+  const registeredCount = registrationRows.length;
+  const activeCount = registrationRows.filter((row: any) => row.status === 'ACTIVE').length;
+  const pendingCount = (pendingInviteResult.data || []).length;
+  const remainingCount = Math.max(0, requiredCount - registeredCount - pendingCount);
+  return {
+    enabled: Boolean(room.externalVotersEnabled),
+    requiredCount,
+    registeredCount,
+    activeCount,
+    pendingCount,
+    remainingCount,
+    rosterLocked: Boolean(room.finalVoteRosterLockedAt),
+    canStartFinalVote: !room.externalVotersEnabled || (registeredCount === requiredCount && pendingCount === 0),
+    registrations: registrationRows.map((row: any) => ({
+      userId: String(row.user_id),
+      nickname: String(row.nickname || '외부 투표자'),
+      status: row.status === 'ACTIVE' ? 'ACTIVE' : 'WAITING'
+    }))
+  };
 }
 
 async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   const cached = rooms.get(roomId);
   if (!SUPABASE_CONFIGURED) return cached || null;
 
-  const results = await withTimeout(Promise.all([
+  const { data: roomRow, error: roomError } = await withTimeout(
     supabase.from('rooms').select('*').eq('id', roomId).maybeSingle(),
-    supabase.from('ideas').select('*').eq('room_id', roomId),
-    supabase.from('criteria').select('*').eq('room_id', roomId).order('created_at', { ascending: true }),
-    supabase.from('criterion_proposals').select('*').eq('room_id', roomId),
-    supabase.from('participants').select('*').eq('room_id', roomId),
-    supabase.from('evaluations').select('*').eq('room_id', roomId)
-  ]), 3500);
-  const failedResult = results.find(result => result.error);
-  if (failedResult?.error) {
-    throw new Error(`회의 정보를 불러오지 못했습니다: ${failedResult.error.message}`);
-  }
-  const [
-    { data: roomRow },
-    { data: ideaRows },
-    { data: criterionRows },
-    { data: proposalRows },
-    { data: participantRows },
-    { data: evaluationRows }
-  ] = results;
+    3500
+  );
+  if (roomError) throw new Error(`회의 정보를 불러오지 못했습니다: ${roomError.message}`);
   if (!roomRow) {
     rooms.delete(roomId);
     ideas.delete(roomId);
     criteria.delete(roomId);
     criterionProposals.delete(roomId);
     participants.delete(roomId);
+    participantRolesMap.delete(roomId);
     evaluations.delete(roomId);
     return null;
   }
 
   const room = mapRoomRow(roomRow);
+  const loadsCriteriaData = room.status !== 'IDEA_SUBMISSION';
+  const loadsEvaluationData = [
+    'EVALUATION', 'EVALUATION_ROUND_2', 'ELIMINATION', 'FINAL_VOTE', 'CLOSED'
+  ].includes(room.status);
+  const detailResults = await withTimeout(Promise.all([
+    supabase.from('ideas').select('*').eq('room_id', roomId),
+    supabase.from('participants').select('*').eq('room_id', roomId),
+    loadsCriteriaData
+      ? supabase.from('criteria').select('*').eq('room_id', roomId).order('created_at', { ascending: true })
+      : Promise.resolve({ data: [], error: null }),
+    loadsCriteriaData
+      ? supabase.from('criterion_proposals').select('*').eq('room_id', roomId)
+      : Promise.resolve({ data: [], error: null }),
+    loadsEvaluationData
+      ? supabase.from('evaluations').select('*').eq('room_id', roomId)
+      : Promise.resolve({ data: [], error: null })
+  ]), 3500);
+  const failedDetail = detailResults.find(result => result.error);
+  if (failedDetail?.error) {
+    throw new Error(`회의 상세 정보를 불러오지 못했습니다: ${failedDetail.error.message}`);
+  }
+  const [
+    { data: ideaRows },
+    { data: participantRows },
+    { data: criterionRows },
+    { data: proposalRows },
+    { data: evaluationRows }
+  ] = detailResults;
 
   rooms.set(roomId, room);
   roomDecisionModesMap.set(roomId, room.decisionMode || 'STRUCTURED');
@@ -3415,8 +3686,13 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
   }
   if (Array.isArray(participantRows)) {
     const participantMap = new Map<string, string>();
-    participantRows.forEach((row: any) => participantMap.set(row.user_id, row.nickname || '참여자'));
+    const participantRoleMap = new Map<string, ParticipantRole>();
+    participantRows.forEach((row: any) => {
+      participantMap.set(row.user_id, row.nickname || '참여자');
+      participantRoleMap.set(row.user_id, row.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT');
+    });
     participants.set(roomId, participantMap);
+    participantRolesMap.set(roomId, participantRoleMap);
   }
   if (Array.isArray(evaluationRows)) {
     evaluations.set(
@@ -3440,9 +3716,16 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
       }))
     );
   }
-  await loadDecisionRounds(roomId);
+  if (loadsEvaluationData) {
+    await loadDecisionRounds(roomId, true);
+  } else {
+    decisionRoundsMap.set(roomId, []);
+    decisionRoundsLoadedAtMap.set(roomId, Date.now());
+  }
 
-  if (SUPABASE_CONFIGURED) {
+  if (SUPABASE_CONFIGURED && (
+    room.status === 'ELIMINATION' || room.status === 'FINAL_VOTE' || room.status === 'CLOSED'
+  )) {
     // Final votes are immutable per decision round. Loading every vote from the
     // room mixes an earlier round with the current refinement round and can
     // overwrite a participant's current selection in the in-memory map.
@@ -3463,6 +3746,8 @@ async function hydrateRoomFromSupabase(roomId: string): Promise<Room | null> {
       );
     });
     starVotesMap.set(roomId, voteMap);
+  } else {
+    starVotesMap.set(roomId, new Map());
   }
   return room;
 }
@@ -3556,17 +3841,24 @@ app.patch('/api/rooms/:id/me', async (req: AuthenticatedRequest, res) => {
 });
 
 /**
- * Create / Refresh 3-Minute Room Invite Token
+ * Create / refresh a participant or final-voter invite token.
  */
 app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
+  const inviteType: ParticipantRole = req.body?.inviteType === 'VOTER' ? 'VOTER' : 'PARTICIPANT';
 
   const room = await hydrateRoomFromSupabase(id);
   if (!room && id !== 'room-gominhajo') {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   }
-  if (room && room.status !== 'IDEA_SUBMISSION') {
+  if (inviteType === 'PARTICIPANT' && room && room.status !== 'IDEA_SUBMISSION') {
     return res.status(409).json({ error: '새 참여자는 아이디어 등록 단계에서만 초대할 수 있습니다.' });
+  }
+  if (inviteType === 'VOTER' && room && (!room.externalVotersEnabled || !room.requiredVoterCount)) {
+    return res.status(409).json({ error: '외부 투표자 사용을 먼저 활성화하고 필요 인원을 설정해 주세요.' });
+  }
+  if (inviteType === 'VOTER' && room?.finalVoteRosterLockedAt) {
+    return res.status(409).json({ error: '최종 투표가 시작되어 새 투표자를 초대할 수 없습니다.' });
   }
 
   const now = new Date();
@@ -3574,7 +3866,7 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
   // deployments a cached token can be stale after another instance deactivates it.
   if (!SUPABASE_CONFIGURED) {
     for (const inv of roomInvites.values()) {
-      if (inv.roomId === id && inv.isActive) {
+      if (inv.roomId === id && inv.inviteType === inviteType && inv.isActive) {
         const exp = new Date(inv.expiresAt);
         if (exp.getTime() - now.getTime() > 15000) {
           return res.json({ success: true, invite: inv });
@@ -3583,9 +3875,12 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
     }
   }
 
-  // Generate new 3-minute invite token
+  // 참여자 링크는 3분, 투표자 링크는 최종 투표 전 재접속을 위해 30일간
+  // 유지한다. 두 링크 모두 방장이 언제든 폐기·재발급할 수 있다.
   const inviteToken = `inv_${crypto.randomBytes(32).toString('base64url')}`;
-  const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString(); // EXACTLY 3 MINUTES
+  const expiresAt = new Date(
+    now.getTime() + (inviteType === 'VOTER' ? 30 * 24 * 60 * 60 * 1000 : 3 * 60 * 1000)
+  ).toISOString();
 
   const inviteRecord = {
     id: `invite-${crypto.randomUUID()}`,
@@ -3594,18 +3889,18 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
     createdBy: req.auth!.userId,
     expiresAt,
     isActive: true,
-    createdAt: now.toISOString()
+    createdAt: now.toISOString(),
+    inviteType
   };
 
   if (SUPABASE_CONFIGURED) {
     try {
-      const { error } = await supabase.from('room_invites').insert({
-        room_id: id,
-        invite_token: null,
-        invite_token_hash: hashOpaqueSecret(inviteToken),
-        created_by: req.auth!.userId,
-        expires_at: expiresAt,
-        is_active: true
+      const { error } = await supabase.rpc('create_room_invite_v9', {
+        p_room_id: id,
+        p_host_user_id: req.auth!.userId,
+        p_invite_token_hash: hashOpaqueSecret(inviteToken),
+        p_expires_at: expiresAt,
+        p_invite_type: inviteType
       });
       if (error) return res.status(503).json({ error: '초대 링크를 안전하게 저장하지 못했습니다.' });
     } catch (err) {
@@ -3613,6 +3908,11 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
     }
   } else if (IS_PRODUCTION) {
     return res.status(503).json({ error: '초대 링크 저장소를 사용할 수 없습니다.' });
+  }
+  for (const existingInvite of roomInvites.values()) {
+    if (existingInvite.roomId === id && existingInvite.inviteType === inviteType) {
+      existingInvite.isActive = false;
+    }
   }
   roomInvites.set(inviteToken, inviteRecord);
 
@@ -3624,13 +3924,19 @@ app.post('/api/rooms/:id/invites', async (req: AuthenticatedRequest, res) => {
  */
 app.delete('/api/rooms/:id/invites', async (req, res) => {
   const { id } = req.params;
+  const inviteType = req.query.inviteType === 'VOTER' || req.body?.inviteType === 'VOTER'
+    ? 'VOTER'
+    : req.query.inviteType === 'PARTICIPANT' || req.body?.inviteType === 'PARTICIPANT'
+      ? 'PARTICIPANT'
+      : null;
   if (SUPABASE_CONFIGURED) {
     try {
       const { error } = await supabase
         .from('room_invites')
         .update({ is_active: false })
         .eq('room_id', id)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .match(inviteType ? { invite_type: inviteType } : {});
       if (error) return res.status(503).json({ error: '초대 링크를 비활성화하지 못했습니다.' });
     } catch (err) {
       return res.status(503).json({ error: '초대 링크를 비활성화하지 못했습니다.' });
@@ -3639,9 +3945,77 @@ app.delete('/api/rooms/:id/invites', async (req, res) => {
     return res.status(503).json({ error: '초대 링크 저장소를 사용할 수 없습니다.' });
   }
   for (const inv of roomInvites.values()) {
-    if (inv.roomId === id && inv.isActive) inv.isActive = false;
+    if (inv.roomId === id && inv.isActive && (!inviteType || inv.inviteType === inviteType)) inv.isActive = false;
   }
   res.json({ success: true, message: '초대 링크가 비활성화되었습니다.' });
+});
+
+app.get('/api/rooms/:id/account-invites', async (req: AuthenticatedRequest, res) => {
+  if (!(await isRoomHost(req.params.id, req.auth!.userId))) {
+    return res.status(403).json({ error: '방장만 계정 초대 현황을 확인할 수 있습니다.' });
+  }
+  if (!SUPABASE_CONFIGURED) return res.json({ invites: [] });
+  const { data, error } = await supabase
+    .from('room_account_invites')
+    .select('id,room_id,invited_login_id,invite_role,status,created_at,accepted_at,canceled_at')
+    .eq('room_id', req.params.id)
+    .order('created_at', { ascending: false });
+  if (error) return res.status(503).json({ error: '계정 초대 현황을 불러오지 못했습니다.' });
+  return res.json({
+    invites: (data || []).map((row: any) => ({
+      id: row.id,
+      roomId: row.room_id,
+      loginId: row.invited_login_id,
+      role: row.invite_role === 'VOTER' ? 'VOTER' : 'PARTICIPANT',
+      status: row.status,
+      createdAt: row.created_at,
+      acceptedAt: row.accepted_at || undefined,
+      canceledAt: row.canceled_at || undefined
+    }))
+  });
+});
+
+app.post('/api/rooms/:id/account-invites', async (req: AuthenticatedRequest, res) => {
+  const loginId = normalizeLoginId(req.body?.loginId);
+  const role: ParticipantRole = req.body?.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT';
+  if (!loginId) return res.status(400).json({ error: '가입된 로그인 아이디를 정확히 입력해 주세요.' });
+  if (!SUPABASE_CONFIGURED) {
+    return res.status(503).json({ error: '계정 초대 저장소가 연결되지 않았습니다.' });
+  }
+  const { data, error } = await supabase.rpc('create_room_account_invite_v9', {
+    p_room_id: req.params.id,
+    p_host_user_id: req.auth!.userId,
+    p_login_id: loginId,
+    p_role: role
+  });
+  if (error) {
+    const conflict = error.code === 'P0001' || error.code === '23505';
+    return res.status(conflict ? 409 : 503).json({ error: error.message || '계정 초대를 만들지 못했습니다.' });
+  }
+  return res.status(201).json({ success: true, invite: data });
+});
+
+app.delete('/api/rooms/:id/account-invites/:inviteId', async (req: AuthenticatedRequest, res) => {
+  if (!SUPABASE_CONFIGURED) return res.status(503).json({ error: '계정 초대 저장소가 연결되지 않았습니다.' });
+  const { data, error } = await supabase.rpc('cancel_room_account_invite_v9', {
+    p_room_id: req.params.id,
+    p_host_user_id: req.auth!.userId,
+    p_invite_id: req.params.inviteId
+  });
+  if (error) return res.status(error.code === 'P0001' ? 409 : 503).json({ error: error.message });
+  return res.json(data || { success: true });
+});
+
+app.delete('/api/rooms/:id/voters/:voterUserId', async (req: AuthenticatedRequest, res) => {
+  if (!SUPABASE_CONFIGURED) return res.status(503).json({ error: '외부 투표자 저장소가 연결되지 않았습니다.' });
+  const { data, error } = await supabase.rpc('cancel_room_voter_registration_v9', {
+    p_room_id: req.params.id,
+    p_host_user_id: req.auth!.userId,
+    p_voter_user_id: req.params.voterUserId
+  });
+  if (error) return res.status(error.code === 'P0001' ? 409 : 503).json({ error: error.message });
+  participantRolesMap.get(req.params.id)?.delete(req.params.voterUserId);
+  return res.json(data || { success: true });
 });
 
 /**
@@ -3672,7 +4046,8 @@ app.get('/api/invites/:token', async (req, res) => {
         createdBy: data.created_by,
         expiresAt: data.expires_at,
         isActive: Boolean(data.is_active),
-        createdAt: data.created_at
+        createdAt: data.created_at,
+        inviteType: data.invite_type === 'VOTER' ? 'VOTER' : 'PARTICIPANT'
       };
       roomInvites.set(token, inv);
     }
@@ -3686,13 +4061,20 @@ app.get('/api/invites/:token', async (req, res) => {
     return res.json({ isValid: false, errorCode: 'DEACTIVATED', errorMessage: '방장에 의해 비활성화된 초대 링크입니다.' });
   }
 
-  // Strict Server-time 3-minute check
+  // Strict server-time expiration check.
   const nowTime = new Date().getTime();
   const expireTime = new Date(inv.expiresAt).getTime();
   const secondsRemaining = Math.max(0, Math.floor((expireTime - nowTime) / 1000));
 
   if (expireTime <= nowTime) {
-    return res.json({ isValid: false, errorCode: 'EXPIRED', errorMessage: '생성된 지 3분이 지나 만료된 초대 링크입니다.', secondsRemaining: 0 });
+    return res.json({
+      isValid: false,
+      errorCode: 'EXPIRED',
+      errorMessage: inv.inviteType === 'VOTER'
+        ? '만료된 외부 투표자 초대 링크입니다.'
+        : '생성된 지 3분이 지나 만료된 초대 링크입니다.',
+      secondsRemaining: 0
+    });
   }
 
   const room = await hydrateRoomFromSupabase(inv.roomId);
@@ -3701,7 +4083,7 @@ app.get('/api/invites/:token', async (req, res) => {
     return res.json({ isValid: false, errorCode: 'ROOM_DELETED', errorMessage: '삭제된 회의실입니다.' });
   }
 
-  if (room.status !== 'IDEA_SUBMISSION') {
+  if (inv.inviteType === 'PARTICIPANT' && room.status !== 'IDEA_SUBMISSION') {
     return res.json({
       isValid: false,
       errorCode: room.status === 'CLOSED' ? 'ROOM_CLOSED' : 'ROOM_STARTED',
@@ -3711,10 +4093,41 @@ app.get('/api/invites/:token', async (req, res) => {
     });
   }
 
+  if (inv.inviteType === 'VOTER' && (!room.externalVotersEnabled || room.finalVoteRosterLockedAt)) {
+    return res.json({
+      isValid: false,
+      errorCode: 'VOTER_REGISTRATION_CLOSED',
+      errorMessage: '외부 투표자 등록이 마감되었습니다.'
+    });
+  }
+
   const pMap = participants.get(inv.roomId) || new Map<string, string>();
-  const participantCount = Math.max(1, pMap.size);
+  const roleMap = participantRolesMap.get(inv.roomId);
+  const participantCount = Math.max(1, Array.from(pMap.keys())
+    .filter(userId => (roleMap?.get(userId) || 'PARTICIPANT') === 'PARTICIPANT').length);
   const maxParticipants = room.maxParticipants || 6;
   const hostNickname = pMap.get(room.hostId) || '방장';
+  const voterSetup = room.externalVotersEnabled ? await loadVoterSetupState(room) : null;
+
+  if (inv.inviteType === 'VOTER' && (!voterSetup || voterSetup.remainingCount <= 0)) {
+    return res.json({
+      isValid: false,
+      errorCode: 'VOTER_CAPACITY_FULL',
+      errorMessage: '설정한 외부 투표자 인원이 모두 등록되었습니다.'
+    });
+  }
+
+  if (
+    inv.inviteType === 'PARTICIPANT' &&
+    participantCount >= maxParticipants &&
+    (!voterSetup || voterSetup.remainingCount <= 0 || room.finalVoteRosterLockedAt)
+  ) {
+    return res.json({
+      isValid: false,
+      errorCode: 'CAPACITY_FULL',
+      errorMessage: '참여자 정원이 마감되었습니다.'
+    });
+  }
 
   res.json({
     isValid: true,
@@ -3728,6 +4141,12 @@ app.get('/api/invites/:token', async (req, res) => {
     hostNickname,
     participantCount,
     maxParticipants,
+    inviteType: inv.inviteType,
+    waiting: inv.inviteType === 'VOTER',
+    canJoinAsVoter: inv.inviteType === 'PARTICIPANT' &&
+      participantCount >= maxParticipants &&
+      Boolean(voterSetup?.remainingCount) &&
+      !room.finalVoteRosterLockedAt,
     expiresAt: inv.expiresAt,
     secondsRemaining
   });
@@ -3764,7 +4183,8 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
         createdBy: data.created_by,
         expiresAt: data.expires_at,
         isActive: Boolean(data.is_active),
-        createdAt: data.created_at
+        createdAt: data.created_at,
+        inviteType: data.invite_type === 'VOTER' ? 'VOTER' : 'PARTICIPANT'
       };
       roomInvites.set(token, inv);
     }
@@ -3777,12 +4197,16 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
     return res.status(400).json({ error: '비활성화된 초대 링크입니다.' });
   }
 
-  // Re-verify strict 3-minute expiration AT THE EXACT MOMENT OF JOINING
+  // Re-verify server expiration at the exact moment of joining.
   const nowTime = new Date().getTime();
   const expireTime = new Date(inv.expiresAt).getTime();
 
   if (expireTime <= nowTime) {
-    return res.status(400).json({ error: '생성된 지 3분이 지나 만료된 초대 링크입니다.' });
+    return res.status(400).json({
+      error: inv.inviteType === 'VOTER'
+        ? '만료된 외부 투표자 초대 링크입니다.'
+        : '생성된 지 3분이 지나 만료된 초대 링크입니다.'
+    });
   }
 
   const room = await hydrateRoomFromSupabase(inv.roomId) || (inv.roomId === 'room-gominhajo' ? {
@@ -3809,19 +4233,41 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
   let isAlreadyMember = pMap.has(userId);
 
   if (SUPABASE_CONFIGURED) {
-    const { data: joinResult, error } = await supabase.rpc('join_room_v8', {
+    const { data: joinResult, error } = await supabase.rpc('join_room_v9', {
       p_room_id: inv.roomId,
       p_user_id: userId,
-      p_nickname: nickname
+      p_nickname: nickname,
+      p_invite_type: inv.inviteType,
+      p_allow_voter_fallback: req.body?.allowVoterFallback === true
     });
     if (error) {
       const conflict = error.code === 'P0001' || /단계|인원|회의실|찾을 수/i.test(error.message || '');
+      const participantFull = /PARTICIPANT_FULL_VOTER_AVAILABLE/.test(error.message || '');
       return res.status(conflict ? 409 : 503).json({
-        error: error.message || '참여 정보를 안전하게 저장하지 못했습니다.'
+        error: participantFull
+          ? '정원이 마감되었습니다. 투표자로 참여하시겠습니까?'
+          : error.message || '참여 정보를 안전하게 저장하지 못했습니다.',
+        errorCode: participantFull ? 'PARTICIPANT_FULL_VOTER_AVAILABLE' : undefined,
+        canJoinAsVoter: participantFull
       });
     }
+    const joinedRole: ParticipantRole = joinResult && typeof joinResult === 'object' && (joinResult as any).role === 'VOTER'
+      ? 'VOTER'
+      : 'PARTICIPANT';
     if (joinResult && typeof joinResult === 'object' && 'alreadyMember' in joinResult) {
       isAlreadyMember = Boolean((joinResult as { alreadyMember?: boolean }).alreadyMember);
+    }
+    if (joinedRole === 'VOTER') {
+      return res.json({
+        success: true,
+        alreadyMember: isAlreadyMember,
+        roomId: inv.roomId,
+        role: 'VOTER',
+        waiting: Boolean((joinResult as any).waiting),
+        message: Boolean((joinResult as any).waiting)
+          ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때 참여할 수 있습니다.'
+          : '외부 투표자로 최종 별 투표에 입장했습니다.'
+      });
     }
   } else {
     if (!isAlreadyMember && room.status !== 'IDEA_SUBMISSION') {
@@ -3832,6 +4278,8 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
     }
   }
   pMap.set(userId, nickname);
+  if (!participantRolesMap.has(inv.roomId)) participantRolesMap.set(inv.roomId, new Map());
+  participantRolesMap.get(inv.roomId)!.set(userId, 'PARTICIPANT');
 
   res.json({
     success: true,
@@ -3863,6 +4311,22 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
     const activeCandidates = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
     if (activeCandidates.length < Math.max(2, room.targetWinnerCount || 1)) {
       return res.status(409).json({ error: '최종 익명 투표를 시작하려면 활성 후보가 2개 이상 필요합니다.' });
+    }
+    if (Number(room.engineVersion || 1) >= 7) {
+      try {
+        const cycle = await ensureFinalVoteCycle(room, activeCandidates, reqUserId);
+        return res.json({
+          success: true,
+          status: room.status,
+          finalVoteStatus: room.finalVoteStatus,
+          cycleId: cycle?.id || null
+        });
+      } catch (error) {
+        const statusCode = Number((error as any)?.statusCode || 500);
+        return res.status(statusCode).json({
+          error: error instanceof Error ? error.message : '최종 익명 투표를 시작하지 못했습니다.'
+        });
+      }
     }
     const round = await ensureDecisionRound(room, activeCandidates, { stage: 'FINAL_VOTE' });
     await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${round.id}`);
@@ -4298,6 +4762,11 @@ app.post('/api/rooms/:id/criteria/complete', async (req: AuthenticatedRequest, r
   if (room.status !== 'CRITERIA_PROPOSAL') {
     return res.status(409).json({ error: '현재는 평가 기준 제안 단계가 아닙니다.' });
   }
+  const ownProposalCount = (criterionProposals.get(id) || [])
+    .filter(proposal => proposal.proposerId === userId).length;
+  if (ownProposalCount < 1) {
+    return res.status(409).json({ error: '평가 기준을 최소 1개 등록해야 제안을 완료할 수 있습니다.' });
+  }
 
   const phase = criteriaPhase(room, 'CRITERIA_PROPOSAL');
   const completionKey = criteriaCompletionCacheKey(room);
@@ -4405,14 +4874,14 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
       let memberRows: any[] | null = null;
       const { data: mRowsWithHide, error: memberHideError } = await supabase
         .from('participants')
-        .select('room_id, hidden_at')
+        .select('room_id, hidden_at, role')
         .eq('user_id', reqUserId);
 
       if (memberHideError) {
         // Fallback: If hidden_at column doesn't exist yet in participants table, query room_id only
         const { data: mRowsOnly, error: mError } = await supabase
           .from('participants')
-          .select('room_id')
+          .select('room_id, role')
           .eq('user_id', reqUserId);
         if (mError) {
           console.error('Supabase member participants query error:', mError.message);
@@ -4424,10 +4893,28 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
         memberRows = mRowsWithHide;
       }
 
+      const { data: waitingVoterRows, error: waitingVoterError } = await supabase
+        .from('room_voter_registrations')
+        .select('room_id,status')
+        .eq('user_id', reqUserId)
+        .in('status', ['WAITING', 'ACTIVE']);
+      if (waitingVoterError) {
+        return res.status(503).json({ error: '외부 투표자로 등록된 회의실을 불러오지 못했습니다.' });
+      }
+
+      const voterStatusByRoom = new Map((waitingVoterRows || []).map((row: any) => [
+        String(row.room_id),
+        row.status === 'ACTIVE' ? 'ACTIVE' : 'WAITING'
+      ]));
+      const waitingVoterRoomIds = new Set(voterStatusByRoom.keys());
+      const effectiveMemberRows = (memberRows || []).filter((row: any) =>
+        row.role !== 'VOTER' || waitingVoterRoomIds.has(String(row.room_id))
+      );
       const roomIds = Array.from(
         new Set([
           ...(hostRows || []).map((row: any) => row.id),
-          ...(memberRows || []).map((row: any) => row.room_id)
+          ...effectiveMemberRows.map((row: any) => row.room_id),
+          ...(waitingVoterRows || []).map((row: any) => row.room_id)
         ])
       );
 
@@ -4445,17 +4932,23 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
         }
       }
 
-      const hiddenByRoom = new Map((memberRows || []).map((row: any) => [row.room_id, row.hidden_at]));
+      const hiddenByRoom = new Map(effectiveMemberRows.map((row: any) => [row.room_id, row.hidden_at]));
+      const memberRoleByRoom = new Map(effectiveMemberRows.map((row: any) => [
+        row.room_id,
+        row.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT'
+      ]));
       const counts = new Map<string, number>();
       if (roomIds.length) {
         const { data: participantRows, error: participantCountError } = await supabase
           .from('participants')
-          .select('room_id')
+          .select('room_id,role')
           .in('room_id', roomIds);
         if (participantCountError) {
           return res.status(503).json({ error: '회의실 참여 인원을 불러오지 못했습니다.' });
         }
-        (participantRows || []).forEach((row: any) => counts.set(row.room_id, (counts.get(row.room_id) || 0) + 1));
+        (participantRows || [])
+          .filter((row: any) => row.role !== 'VOTER')
+          .forEach((row: any) => counts.set(row.room_id, (counts.get(row.room_id) || 0) + 1));
       }
 
       return res.json(
@@ -4478,7 +4971,12 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
           hostId: row.host_id,
           isHost: row.host_id === reqUserId,
           isJoined: true,
-          myRole: row.host_id === reqUserId ? '방장' : '참여자',
+          myRole: row.host_id === reqUserId
+            ? '방장'
+            : memberRoleByRoom.get(row.id) === 'VOTER' || waitingVoterRoomIds.has(row.id)
+              ? '투표자'
+              : '참여자',
+          waitingForFinalVote: voterStatusByRoom.get(String(row.id)) === 'WAITING',
           isHidden: Boolean(hiddenByRoom.get(row.id))
         }))
       );
@@ -4518,7 +5016,10 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
  * 2. Create room
  */
 app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
-  const { title, description, minResponseThreshold, eliminationConfig, deadlines, category, maxParticipants, targetWinnerCount, decisionMode } = req.body;
+  const {
+    title, description, minResponseThreshold, eliminationConfig, deadlines, category,
+    maxParticipants, targetWinnerCount, decisionMode, externalVotersEnabled, requiredVoterCount
+  } = req.body;
 
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) {
     return res.status(400).json({ error: '방 제목은 1~120자로 입력해 주세요.' });
@@ -4532,7 +5033,20 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
 
   const normalizedDecisionMode: DecisionMode = decisionMode === 'QUICK' ? 'QUICK' : 'STRUCTURED';
   const normalizedMaxParticipants = Math.min(Math.max(Math.trunc(Number(maxParticipants)) || 4, 2), 6);
+  const normalizedExternalVotersEnabled = externalVotersEnabled === true;
+  const normalizedRequiredVoterCount = normalizedExternalVotersEnabled
+    ? Math.min(30, Math.max(1, Math.trunc(Number(requiredVoterCount)) || 1))
+    : 0;
   const newId = `room-${crypto.randomUUID()}`;
+  const createdAt = new Date();
+  const participantInviteToken = `inv_${crypto.randomBytes(32).toString('base64url')}`;
+  const participantInviteExpiresAt = new Date(createdAt.getTime() + 3 * 60 * 1000).toISOString();
+  const voterInviteToken = normalizedExternalVotersEnabled
+    ? `inv_${crypto.randomBytes(32).toString('base64url')}`
+    : null;
+  const voterInviteExpiresAt = normalizedExternalVotersEnabled
+    ? new Date(createdAt.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString()
+    : null;
   const newRoom: RefinementAwareRoom = {
     id: newId,
     title: title.trim(),
@@ -4554,9 +5068,12 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
       tieBreak: eliminationConfig?.tieBreak || 'random',
     },
     deadlines: deadlines || {},
-    createdAt: new Date().toISOString(),
+    createdAt: createdAt.toISOString(),
     engineVersion: normalizedDecisionMode === 'STRUCTURED' ? 8 : 7,
     decisionMode: normalizedDecisionMode,
+    externalVotersEnabled: normalizedExternalVotersEnabled,
+    requiredVoterCount: normalizedRequiredVoterCount,
+    stateVersion: '1',
     refinementEnabled: false,
     maxRefinementRounds: 0
   };
@@ -4578,26 +5095,26 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
       deadlines: newRoom.deadlines,
       engine_version: newRoom.engineVersion,
       decision_mode: newRoom.decisionMode,
+      external_voters_enabled: newRoom.externalVotersEnabled,
+      required_voter_count: newRoom.requiredVoterCount,
+      participant_invite_token_hash: hashOpaqueSecret(participantInviteToken),
+      participant_invite_expires_at: participantInviteExpiresAt,
+      voter_invite_token_hash: voterInviteToken ? hashOpaqueSecret(voterInviteToken) : null,
+      voter_invite_expires_at: voterInviteExpiresAt,
       refinement_enabled: newRoom.refinementEnabled,
       max_refinement_rounds: newRoom.maxRefinementRounds
     };
 
-    const { error: roomError } = await supabase.from('rooms').insert(roomInsertObj);
+    const { data: roomCreateResult, error: roomError } = await supabase.rpc('create_room_with_host_v9', {
+      p_room: roomInsertObj,
+      p_host_user_id: newRoom.hostId,
+      p_host_nickname: req.auth!.nickname || '방장'
+    });
     if (roomError) {
       console.error('Supabase DB room insert error:', roomError.message);
       return res.status(503).json({ error: '회의실을 DB에 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
     }
-
-    const { error: participantError } = await supabase.from('participants').insert({
-      room_id: newId,
-      user_id: newRoom.hostId,
-      nickname: req.auth!.nickname || '방장'
-    });
-    if (participantError) {
-      console.error('Supabase DB host participant insert error:', participantError.message);
-      await supabase.from('rooms').delete().eq('id', newId);
-      return res.status(503).json({ error: '방장 참여자 정보를 저장하지 못해 회의실 생성을 취소했습니다.' });
-    }
+    newRoom.stateVersion = String(roomCreateResult?.stateVersion || newRoom.stateVersion || '1');
   } else if (IS_PRODUCTION) {
     return res.status(503).json({ error: '회의실 저장소가 준비되지 않았습니다.' });
   }
@@ -4610,8 +5127,84 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   evaluations.set(newId, []);
   eliminationRounds.set(newId, []);
   participants.set(newId, new Map([[newRoom.hostId, req.auth!.nickname || '방장']]));
+  participantRolesMap.set(newId, new Map([[newRoom.hostId, 'PARTICIPANT']]));
+  const initialInvites: RoomInviteRecord[] = [{
+    id: `invite-${crypto.randomUUID()}`,
+    roomId: newId,
+    inviteToken: participantInviteToken,
+    createdBy: newRoom.hostId,
+    expiresAt: participantInviteExpiresAt,
+    isActive: true,
+    createdAt: createdAt.toISOString(),
+    inviteType: 'PARTICIPANT'
+  }];
+  if (voterInviteToken && voterInviteExpiresAt) {
+    initialInvites.push({
+      id: `invite-${crypto.randomUUID()}`,
+      roomId: newId,
+      inviteToken: voterInviteToken,
+      createdBy: newRoom.hostId,
+      expiresAt: voterInviteExpiresAt,
+      isActive: true,
+      createdAt: createdAt.toISOString(),
+      inviteType: 'VOTER'
+    });
+  }
+  initialInvites.forEach(invite => roomInvites.set(invite.inviteToken, invite));
 
-  res.status(201).json(newRoom);
+  const initialDetails = {
+    room: newRoom,
+    ideas: [],
+    criteria: [],
+    proposals: [],
+    proposalsCount: 0,
+    completedParticipantsCount: 0,
+    criteriaCompletedParticipantsCount: 0,
+    criteriaProposalsRevealed: false,
+    participants: [{
+      roomId: newId,
+      userId: newRoom.hostId,
+      nickname: (req.auth!.nickname || '방장').slice(0, 6),
+      role: 'PARTICIPANT'
+    }],
+    rounds: [],
+    decisionRounds: [],
+    evaluatorsCount: 0,
+    hasEvaluated: false,
+    minResponseThresholdMet: false,
+    evaluationExpectedCount: 0,
+    evaluationSubmittedCount: 0,
+    allEvaluationsCompleted: false,
+    scoreConfig: SCORE_CONFIG,
+    starVotes: {},
+    myStarVotes: [],
+    isStarVoteSubmitted: false,
+    starVoteCount: 0,
+    starVoteSubmittedCount: 0,
+    starVoteStatus: 'voting',
+    tieCandidateIdeaIds: [],
+    tieSlots: 0,
+    finalVoteExpectedCount: 1,
+    myParticipantRole: 'PARTICIPANT',
+    participantCount: 1,
+    voterSetup: {
+      enabled: normalizedExternalVotersEnabled,
+      requiredCount: normalizedRequiredVoterCount,
+      registeredCount: 0,
+      activeCount: 0,
+      pendingCount: 0,
+      remainingCount: normalizedRequiredVoterCount,
+      rosterLocked: false,
+      canStartFinalVote: !normalizedExternalVotersEnabled,
+      registrations: []
+    },
+    hasMyCriterionProposal: false,
+    hasCompletedIdeaSubmission: false,
+    activeScorePhase: null,
+    scoreRounds: []
+  };
+
+  res.status(201).json({ ...newRoom, invites: initialInvites, details: initialDetails });
 });
 
 /**
@@ -4636,7 +5229,10 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     return res.status(403).json({ error: '방장만 회의실 설정을 수정할 수 있습니다.' });
   }
 
-  const { title, description, category, maxParticipants, targetWinnerCount, minResponseThreshold } = req.body;
+  const {
+    title, description, category, maxParticipants, targetWinnerCount, minResponseThreshold,
+    externalVotersEnabled, requiredVoterCount
+  } = req.body;
 
   if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120)) {
     return res.status(400).json({ error: '방 제목은 1~120자로 입력해 주세요.' });
@@ -4652,6 +5248,12 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   if (changesDecisionRules && room.status !== 'IDEA_SUBMISSION') {
     return res.status(409).json({ error: '참여 인원과 선정 규칙은 아이디어 등록 단계에서만 변경할 수 있습니다.' });
   }
+  if (
+    (externalVotersEnabled !== undefined || requiredVoterCount !== undefined) &&
+    room.finalVoteRosterLockedAt
+  ) {
+    return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 외부 투표자 설정을 변경할 수 없습니다.' });
+  }
 
   const updatedRoom: Room = { ...room };
   if (title !== undefined) updatedRoom.title = title.trim();
@@ -4660,7 +5262,9 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   if (maxParticipants !== undefined) {
     updatedRoom.maxParticipants = Math.min(Math.max(Math.trunc(Number(maxParticipants)) || 4, 2), 6);
   }
-  const currentParticipantCount = participants.get(id)?.size || 1;
+  const roleMap = participantRolesMap.get(id);
+  const currentParticipantCount = Array.from(participants.get(id)?.keys() || [])
+    .filter(userId => (roleMap?.get(userId) || 'PARTICIPANT') === 'PARTICIPANT').length || 1;
   if ((updatedRoom.maxParticipants || 2) < currentParticipantCount) {
     return res.status(409).json({ error: `현재 참여자 ${currentParticipantCount}명보다 최대 인원을 작게 설정할 수 없습니다.` });
   }
@@ -4673,6 +5277,35 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       Math.max(1, Math.trunc(Number(minResponseThreshold)) || 1)
     );
   }
+  if (externalVotersEnabled !== undefined) {
+    updatedRoom.externalVotersEnabled = externalVotersEnabled === true;
+  }
+  if (updatedRoom.externalVotersEnabled) {
+    updatedRoom.requiredVoterCount = Math.min(
+      30,
+      Math.max(1, Math.trunc(Number(requiredVoterCount ?? updatedRoom.requiredVoterCount)) || 1)
+    );
+  } else {
+    updatedRoom.requiredVoterCount = 0;
+  }
+
+  if (SUPABASE_CONFIGURED && updatedRoom.externalVotersEnabled &&
+      (externalVotersEnabled !== undefined || requiredVoterCount !== undefined)) {
+    const currentSetup = await loadVoterSetupState(room);
+    const occupiedVoterSlots = currentSetup.registeredCount + currentSetup.pendingCount;
+    if ((updatedRoom.requiredVoterCount || 0) < occupiedVoterSlots) {
+      return res.status(409).json({
+        error: `등록·예약된 외부 투표자 ${occupiedVoterSlots}명보다 필요 인원을 작게 설정할 수 없습니다.`
+      });
+    }
+  }
+
+  if (SUPABASE_CONFIGURED && externalVotersEnabled === false) {
+    const currentSetup = await loadVoterSetupState(room);
+    if (currentSetup.registeredCount + currentSetup.pendingCount > 0) {
+      return res.status(409).json({ error: '등록 또는 초대 대기 중인 외부 투표자를 먼저 취소한 뒤 사용 설정을 해제해 주세요.' });
+    }
+  }
 
   if (SUPABASE_CONFIGURED) {
     const { data: changedRows, error } = await supabase.from('rooms').update({
@@ -4681,7 +5314,9 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       category: updatedRoom.category,
       max_participants: updatedRoom.maxParticipants,
       target_winner_count: updatedRoom.targetWinnerCount,
-      min_response_threshold: updatedRoom.minResponseThreshold
+      min_response_threshold: updatedRoom.minResponseThreshold,
+      external_voters_enabled: updatedRoom.externalVotersEnabled,
+      required_voter_count: updatedRoom.requiredVoterCount
     }).eq('id', id).eq('host_id', reqUserId).select('id');
     if (error) return res.status(503).json({ error: '방 설정을 안전하게 저장하지 못했습니다.' });
     if (!changedRows || changedRows.length !== 1) {
@@ -4710,16 +5345,88 @@ app.post('/api/rooms/purge-dead-rooms', async (req, res) => {
   }
 });
 
+/** Lightweight polling endpoint. Full room details are fetched only when this changes. */
+app.get('/api/rooms/:id/state', async (req: AuthenticatedRequest, res) => {
+  if (SUPABASE_CONFIGURED) {
+    const { data, error } = await supabase.rpc('get_room_state_v9', {
+      p_room_id: req.params.id,
+      p_user_id: req.auth!.userId
+    });
+    if (error) {
+      if (error.code === 'P0002' || /ROOM_NOT_FOUND/i.test(error.message || '')) {
+        return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+      }
+      if (error.code === 'P0001' || /ROOM_ACCESS_DENIED/i.test(error.message || '')) {
+        return res.status(403).json({ error: '이 회의실에 접근할 권한이 없습니다.' });
+      }
+      return res.status(503).json({ error: '회의실 상태를 확인하지 못했습니다.' });
+    }
+    return res.json(data);
+  }
+  const room = rooms.get(req.params.id);
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  if (!(await isRoomMember(req.params.id, req.auth!.userId))) {
+    return res.status(403).json({ error: '이 회의실에 접근할 권한이 없습니다.' });
+  }
+  return res.json({
+    roomId: room.id,
+    status: room.status,
+    finalVoteStatus: room.finalVoteStatus,
+    currentRoundId: room.currentRoundId,
+    currentFinalVoteCycleId: room.currentFinalVoteCycleId,
+    stateVersion: room.stateVersion || '1'
+  });
+});
+
 /**
  * 3. Fetch detailed room info with strict anonymity gate filters
  */
 app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
+  const requestStartedAt = Date.now();
   const { id } = req.params;
   const userId = req.auth!.userId;
 
+  const hydrateStartedAt = Date.now();
   const room = await hydrateRoomFromSupabase(id);
+  const hydrateMs = Date.now() - hydrateStartedAt;
   if (!room) {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  const currentMemberRole = await getRoomMemberRole(id, userId) || 'PARTICIPANT';
+  const activatedFinalVoter = currentMemberRole === 'VOTER'
+    ? await isActivatedFinalVoter(id, userId)
+    : false;
+  if (currentMemberRole === 'VOTER' && !activatedFinalVoter) {
+    // 대기 투표자는 방 존재와 단계만 확인할 수 있다. 최종 명단 확정 전에는
+    // 아이디어·기준·점수·피드백을 어떤 형태로도 내려보내지 않는다.
+    const waitingResult: RoomDetails = {
+      room,
+      ideas: [],
+      criteria: [],
+      proposals: [],
+      proposalsCount: 0,
+      rounds: [],
+      evaluatorsCount: 0,
+      hasEvaluated: false,
+      minResponseThresholdMet: false,
+      scoreConfig: SCORE_CONFIG,
+      myParticipantRole: 'VOTER',
+      waitingForFinalVote: true,
+      participantCount: 0,
+      voterSetup: {
+        enabled: Boolean(room.externalVotersEnabled),
+        requiredCount: Number(room.requiredVoterCount || 0),
+        registeredCount: 0,
+        activeCount: 0,
+        pendingCount: 0,
+        remainingCount: 0,
+        rosterLocked: Boolean(room.finalVoteRosterLockedAt),
+        canStartFinalVote: false
+      },
+      hasMyCriterionProposal: false
+    };
+    return res.json(waitingResult);
   }
 
   await reconcileCompletedScoreTransition(room);
@@ -4741,6 +5448,11 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
 
   const allRoomEvals = evaluations.get(id) || [];
   const roomRounds = eliminationRounds.get(id) || [];
+  const roomParticipants = participants.get(id);
+  const roleMap = participantRolesMap.get(id);
+  const participantUserIds = Array.from(roomParticipants?.keys() || [])
+    .filter(participantId => (roleMap?.get(participantId) || 'PARTICIPANT') === 'PARTICIPANT');
+  const isExternalVoter = currentMemberRole === 'VOTER';
   const roomDecisionRounds = await loadDecisionRounds(id);
   const activeDecisionRound = getCurrentDecisionRound(room) as RefinementAwareDecisionRound | undefined;
   const scoreEvaluationRound = [...roomDecisionRounds].reverse().find(
@@ -4774,10 +5486,9 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   const evaluatorsCount = scoreEvaluationRound
     ? scoreProgress.submitted
     : activeCompletedEvaluators.length;
-  const roomParticipants = participants.get(id);
   const targetThreshold = scoreEvaluationRound
     ? scoreProgress.expected
-    : Math.max(room.minResponseThreshold || 1, roomParticipants ? roomParticipants.size : 1);
+    : Math.max(room.minResponseThreshold || 1, participantUserIds.length || 1);
   const minResponseThresholdMet = targetThreshold > 0 && evaluatorsCount >= targetThreshold;
   if (!scoreEvaluationRound) room.minResponseThreshold = targetThreshold;
 
@@ -4824,13 +5535,13 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     }
   }
   const ideaCompletedSet = ideaCompletedUsersMap.get(id) || new Set<string>();
-  const eligibleIdeaParticipants = new Set(roomParticipants?.keys() || []);
+  const eligibleIdeaParticipants = new Set(participantUserIds);
   const completedParticipantsCount = Array.from(ideaCompletedSet)
     .filter(completedUserId => eligibleIdeaParticipants.has(completedUserId)).length;
-  const participantCount = Math.max(1, roomParticipants?.size || 1);
+  const participantCount = Math.max(1, participantUserIds.length || 1);
   const ideasRevealed =
     room.status !== 'IDEA_SUBMISSION' || completedParticipantsCount >= participantCount;
-  const evaluationCards = scoreEvaluationRound
+  const evaluationCards = scoreEvaluationRound && !isExternalVoter
     ? await loadEvaluationCards(
         room,
         scoreEvaluationRound,
@@ -4838,9 +5549,11 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
         roomCriteria.filter(criterion => criterion.confirmed)
       )
     : {};
-  const visibleIdeas = (ideasRevealed
-    ? roomIdeas
-    : roomIdeas.filter(idea => idea.submitterId === userId)
+  const visibleIdeas = (isExternalVoter
+    ? roomIdeas.filter(idea => idea.status === 'ACTIVE' || idea.status === 'WINNER')
+    : ideasRevealed
+      ? roomIdeas
+      : roomIdeas.filter(idea => idea.submitterId === userId)
   ).map((idea, index) => {
     if (idea.submitterId === userId) {
       return {
@@ -4876,7 +5589,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     }
   }
   const criteriaParticipantSnapshot = room.status === 'IDEA_SUBMISSION'
-    ? new Set(roomParticipants?.keys() || [])
+    ? new Set(participantUserIds)
     : await loadOrCreatePhaseParticipants(id, criteriaPhase(room, 'CRITERIA_PROPOSAL'));
   const criteriaCompletedSet =
     criteriaCompletedUsersMap.get(criteriaCompletionCacheKey(room)) || new Set<string>();
@@ -4900,7 +5613,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     : new Map<string, 'APPROVE' | 'REVISE'>();
   const approvalParticipants = room.status === 'CRITERIA_REVIEW' || room.status === 'EVALUATION'
     ? await loadOrCreatePhaseParticipants(id, criteriaPhase(room, 'CRITERIA_REVIEW'))
-    : new Set(roomParticipants?.keys() || []);
+    : new Set(participantUserIds);
   const eligibleApprovalCount = Math.max(1, approvalParticipants.size);
   const requiredApproveCount = Math.max(1, Math.ceil(eligibleApprovalCount * 0.8));
   const approveCount = Array.from(approvalVotes.values()).filter(vote => vote === 'APPROVE').length;
@@ -4913,7 +5626,7 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   const finalVoteRoundId = v7FinalVoteState?.cycle?.roundId || activeDecisionRound?.id;
   const finalVoteParticipants = shouldLoadFinalVoteSnapshot && finalVoteRoundId
     ? await loadOrCreatePhaseParticipants(id, `FINAL_VOTE:${finalVoteRoundId}`)
-    : new Set(roomParticipants?.keys() || []);
+    : new Set(participantUserIds);
   const starVoteThreshold = Math.max(1, finalVoteParticipants.size || participantCount);
   let starVoteStatus: 'voting' | 'tie_pending' | 'finalized' = 'voting';
   if (room.finalVoteStatus === 'TIE_PENDING' || room.finalVoteStatus === 'CONSENT_PENDING' || room.finalVoteStatus === 'ROULETTE_PENDING') {
@@ -4924,7 +5637,12 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
 
   let finalSummary = aiFinalSummaries.get(id);
   if (room.status === 'CLOSED' && room.finalVoteStatus !== 'TIE_PENDING' && !finalSummary) {
-    finalSummary = await generateFinalRoomReport(id, room, roomIdeas, roomRounds);
+    if (!finalReportGenerationInFlight.has(id)) {
+      finalReportGenerationInFlight.add(id);
+      void generateFinalRoomReport(id, room, roomIdeas, roomRounds)
+        .catch(error => console.warn('[AI REPORT] 최종 리포트 생성 실패:', error))
+        .finally(() => finalReportGenerationInFlight.delete(id));
+    }
   }
   const finalResultsRevealed =
     room.finalVoteStatus === 'TIE_PENDING' ||
@@ -4932,13 +5650,18 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     room.finalVoteStatus === 'ROULETTE_PENDING' ||
     room.finalVoteStatus === 'FINALIZED' ||
     (room.status === 'CLOSED' && !room.finalVoteStatus);
+  const loadedVoterSetup = await loadVoterSetupState(room);
+  const voterSetup = room.hostId === userId
+    ? loadedVoterSetup
+    : { ...loadedVoterSetup, registrations: undefined };
+  const hasMyCriterionProposal = roomProposals.some(proposal => proposal.proposerId === userId);
 
   const result: RoomDetails = {
     room,
     ideas: visibleIdeas,
-    criteria: roomCriteria,
-    proposals: visibleProposals,
-    proposalsCount: visibleProposals.length,
+    criteria: isExternalVoter ? [] : roomCriteria,
+    proposals: isExternalVoter ? [] : visibleProposals,
+    proposalsCount: isExternalVoter ? 0 : visibleProposals.length,
     completedParticipantsCount,
     criteriaCompletedParticipantsCount,
     criteriaProposalsRevealed,
@@ -4951,11 +5674,11 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       myVote: userId ? approvalVotes.get(userId) : undefined,
       approved: approveCount >= requiredApproveCount
     },
-    rounds: roomRounds,
-    decisionRounds: roomDecisionRounds,
+    rounds: isExternalVoter ? [] : roomRounds,
+    decisionRounds: isExternalVoter ? [] : roomDecisionRounds,
     evaluatorsCount,
-    myEvaluations,
-    hasEvaluated,
+    myEvaluations: isExternalVoter ? [] : myEvaluations,
+    hasEvaluated: isExternalVoter ? false : hasEvaluated,
     minResponseThresholdMet,
     evaluationExpectedCount: scoreProgress.expected,
     evaluationSubmittedCount: scoreProgress.submitted,
@@ -4972,19 +5695,23 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     starVoteStatus,
     tieCandidateIdeaIds: room.tieCandidateIdeaIds || [],
     tieSlots: room.tieSlots || 0,
-    finalVoteExpectedCount: starVoteThreshold
+    finalVoteExpectedCount: starVoteThreshold,
+    myParticipantRole: currentMemberRole,
+    participantCount,
+    voterSetup,
+    hasMyCriterionProposal
   };
   (result as any).participantCount = participantCount;
   (result as any).hasCompletedIdeaSubmission = ideaCompletedSet.has(userId);
   (result as any).starVoteSubmittedCount = Array.from(rStarVotes.keys())
     .filter(voterId => finalVoteParticipants.has(voterId)).length;
-  (result as any).refinement = await buildRefinementState(room, userId);
+  if (!isExternalVoter) (result as any).refinement = await buildRefinementState(room, userId);
   result.activeScorePhase = room.status === 'EVALUATION'
     ? 'FIRST'
     : room.status === 'EVALUATION_ROUND_2'
       ? 'SECOND'
       : null;
-  result.scoreRounds = completedScoreRounds.map(scoreRound => {
+  result.scoreRounds = isExternalVoter ? [] : completedScoreRounds.map(scoreRound => {
     const snapshot = (scoreRound.resultSnapshot || {}) as Record<string, any>;
     const scoreRowsForRound = allRoomEvals.filter(evaluation => evaluation.roundId === scoreRound.id);
     const feedbackByIdea = scoreRound.evaluationMethod === 'SCORE_FEEDBACK'
@@ -5056,14 +5783,15 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   // anonymous ballot. A participant can therefore receive them only after the
   // final ballot has ended, or in the legacy pre-ballot elimination screen.
   // ---------------------------------------------------------------
-  const mayRevealEvaluationResults =
+  const mayRevealEvaluationResults = !isExternalVoter && (
     completedScoreRounds.length > 0 ||
     room.status === 'CLOSED' ||
     room.finalVoteStatus === 'FINALIZED' ||
     room.finalVoteStatus === 'TIE_PENDING' ||
     room.finalVoteStatus === 'CONSENT_PENDING' ||
     room.finalVoteStatus === 'ROULETTE_PENDING' ||
-    (room.status === 'ELIMINATION' && room.finalVoteStatus === 'NOT_STARTED');
+    (room.status === 'ELIMINATION' && room.finalVoteStatus === 'NOT_STARTED')
+  );
 
   const scoreSnapshot = resultScoreRound?.resultSnapshot as Record<string, any> | undefined;
   if (mayRevealEvaluationResults && scoreSnapshot?.scoreStats) {
@@ -5283,10 +6011,9 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
 
     result.aggregatedScores = aggregatedScores;
 
-    // 2. Fetch or calculate AI Summarized Comments
-    // Let's see if we have them cached
+    // 2. Return a deterministic anonymous fallback immediately. AI wording
+    // refinement runs in the background and never blocks the room response.
     if (!aiCommentsCache.has(id)) {
-      // Aggregate comments per idea
       const commentMap: Record<string, { text: string; type: 'OBJECTIVE_CONSTRAINT' | 'PREFERENCE' }[]> = {};
       roomIdeas.forEach(idea => {
         commentMap[idea.id] = [];
@@ -5301,21 +6028,49 @@ app.get('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
         }
       });
 
-      // We do rephrasing asynchronously or lazily. For instant UX in seed rooms,
-      // let's run them.
-      const summarized: Record<string, { objectiveComments: string[]; preferenceComments: string[] }> = {};
-
-      for (const idea of roomIdeas) {
+      aiCommentsCache.set(id, Object.fromEntries(roomIdeas.map(idea => {
         const commentsForIdea = commentMap[idea.id] || [];
-        summarized[idea.id] = await aiSummarizeComments(idea.title, commentsForIdea);
-      }
+        return [idea.id, {
+          objectiveComments: commentsForIdea
+            .filter(comment => comment.type === 'OBJECTIVE_CONSTRAINT')
+            .map(comment => maskAnonymousEvidence(comment.text)),
+          preferenceComments: commentsForIdea
+            .filter(comment => comment.type === 'PREFERENCE')
+            .map(comment => maskAnonymousEvidence(comment.text))
+        }];
+      })));
 
-      aiCommentsCache.set(id, summarized);
+      if (!aiCommentsGenerationInFlight.has(id)) {
+        aiCommentsGenerationInFlight.add(id);
+        void (async () => {
+          const refinedEntries: Array<readonly [string, { objectiveComments: string[]; preferenceComments: string[] }]> = [];
+          for (const idea of roomIdeas) {
+            refinedEntries.push([
+              idea.id,
+              await aiSummarizeComments(idea.title, commentMap[idea.id] || [])
+            ] as const);
+          }
+          aiCommentsCache.set(id, Object.fromEntries(refinedEntries));
+        })()
+          .catch(error => console.warn('[AI SUMMARY] 익명 피드백 문장 정리 실패:', error))
+          .finally(() => aiCommentsGenerationInFlight.delete(id));
+      }
     }
 
     result.aiSummarizedComments = aiCommentsCache.get(id);
   }
 
+  const elapsedMs = Date.now() - requestStartedAt;
+  if (elapsedMs >= 750 || process.env.PERFORMANCE_LOGS === 'true') {
+    console.info('[PERF] room-detail', {
+      roomId: id,
+      status: room.status,
+      elapsedMs,
+      hydrateMs,
+      ideaCount: result.ideas.length,
+      participantCount: result.participantCount || 0
+    });
+  }
   res.json(result);
 });
 
@@ -5672,10 +6427,10 @@ ${description}
 }
 `;
 
-    const response = await ai.models.generateContent({
+    const response = await withTimeout(ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
-    });
+    }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
 
     const raw = (response.text || '').replace(/```json|```/g, '').trim();
     let revisedDescription = description;
@@ -5780,11 +6535,11 @@ JSON 출력 예시:
         const ai = getGeminiClient();
         if (ai) {
           try {
-            const resp = await ai.models.generateContent({
+            const resp = await withTimeout(ai.models.generateContent({
               model: 'gemini-2.5-flash',
               contents: roomMetadataPrompt,
               config: { responseMimeType: 'application/json' }
-            });
+            }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
             rawText = resp.text || '';
           } catch (e) {}
         }
@@ -5945,10 +6700,10 @@ ${ideasListText}
       const ai = getGeminiClient();
       if (ai) {
         try {
-          const response = await ai.models.generateContent({
+          const response = await withTimeout(ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
-          });
+          }), AI_PROVIDER_TIMEOUT_MS, 'Gemini AI 응답 시간이 초과되었습니다.');
           rawResponseText = response.text || '';
         } catch (gErr) {
           console.warn('Gemini AI SDK call failed:', gErr);
@@ -6618,13 +7373,20 @@ async function loadCurrentFinalVoteCycle(room: Room): Promise<FinalVoteCycleReco
   const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`최종 투표 회차를 불러오지 못했습니다: ${error.message}`);
   if (!data) return null;
+  if (!room.currentFinalVoteCycleId && data.status === 'COMPLETED' && data.result_snapshot?.canceled === true) {
+    return null;
+  }
   const cycle = mapFinalVoteCycleRow(data);
   room.currentFinalVoteCycleId = cycle.id;
   finalVoteCyclesMap.set(room.id, cycle);
   return cycle;
 }
 
-async function ensureFinalVoteCycle(room: Room, candidateIdeas: Idea[]): Promise<FinalVoteCycleRecord | null> {
+async function ensureFinalVoteCycle(
+  room: Room,
+  candidateIdeas: Idea[],
+  startActorUserId?: string
+): Promise<FinalVoteCycleRecord | null> {
   const targetWinnerCount = Math.max(1, Math.min(room.targetWinnerCount || 1, candidateIdeas.length));
   room.status = 'ELIMINATION';
   room.tieCandidateIdeaIds = [];
@@ -6638,7 +7400,6 @@ async function ensureFinalVoteCycle(room: Room, candidateIdeas: Idea[]): Promise
     stage: 'FINAL_VOTE',
     evaluationMethod: 'LEGACY'
   }) as RefinementAwareDecisionRound;
-  const eligibleVoters = await loadOrCreatePhaseParticipants(room.id, `FINAL_VOTE:${finalRound.id}`);
 
   if (candidateIdeas.length <= targetWinnerCount) {
     await finalizeDecisionWinners(
@@ -6651,11 +7412,43 @@ async function ensureFinalVoteCycle(room: Room, candidateIdeas: Idea[]): Promise
     return null;
   }
 
+  if (SUPABASE_CONFIGURED) {
+    if (!startActorUserId) {
+      throw new Error('최종 투표 시작 요청자를 확인할 수 없습니다.');
+    }
+    const { error: rosterError } = await supabase.rpc('start_final_vote_roster_v9', {
+      p_room_id: room.id,
+      p_host_user_id: startActorUserId,
+      p_phase: `FINAL_VOTE:${finalRound.id}`
+    });
+    if (rosterError) {
+      const conflict = rosterError.code === 'P0001' || /방장|등록|투표자|단계|명단/i.test(rosterError.message || '');
+      const error = new Error(rosterError.message || '최종 투표 참여자 명단을 확정하지 못했습니다.');
+      (error as any).statusCode = conflict ? 409 : 503;
+      throw error;
+    }
+    room.finalVoteRosterLockedAt = new Date().toISOString();
+  }
+  const eligibleVoters = await loadOrCreatePhaseParticipants(room.id, `FINAL_VOTE:${finalRound.id}`);
+
+  let nextCycleNumber = 1;
+  if (SUPABASE_CONFIGURED) {
+    const { data: latestCycle, error: latestCycleError } = await supabase
+      .from('final_vote_cycles')
+      .select('cycle_number')
+      .eq('room_id', room.id)
+      .order('cycle_number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestCycleError) throw new Error(`최종 투표 회차 번호를 확인하지 못했습니다: ${latestCycleError.message}`);
+    nextCycleNumber = Math.max(1, Number(latestCycle?.cycle_number || 0) + 1);
+  }
+
   const cycle: FinalVoteCycleRecord = {
     id: `final-vote-cycle-${crypto.randomUUID()}`,
     roomId: room.id,
     roundId: finalRound.id,
-    cycleNumber: 1,
+    cycleNumber: nextCycleNumber,
     cycleKind: 'INITIAL',
     candidateIdeaIds: candidateIdeas.map(idea => idea.id),
     guaranteedWinnerIdeaIds: [],
@@ -6783,21 +7576,15 @@ async function finalizeDecisionWinners(
   room.tieSlots = 0;
 
   if (SUPABASE_CONFIGURED) {
-    for (const idea of roomIdeas) {
-      const { error } = await supabase
-        .from('ideas')
-        .update({
-          status: idea.status,
-          winner_selection_method: winnerIds.has(idea.id)
-            ? (selectionMethods[idea.id] || 'CUMULATIVE_STAR')
-            : null
-        })
-        .eq('id', idea.id)
-        .eq('room_id', room.id);
-      if (error) throw new Error('최종 후보 상태를 저장하지 못했습니다.');
-    }
+    const { error } = await supabase.rpc('finalize_room_winners_v9', {
+      p_room_id: room.id,
+      p_winner_idea_ids: winnerIdeaIds,
+      p_selection_methods: selectionMethods
+    });
+    if (error) throw new Error(`최종 후보 상태를 저장하지 못했습니다: ${error.message}`);
+  } else {
+    await persistFinalVoteRoomState(room);
   }
-  await persistFinalVoteRoomState(room);
   rooms.set(room.id, room);
   ideas.set(room.id, roomIdeas);
   await completeDecisionRound(room, roomIdeas, {
@@ -6807,8 +7594,77 @@ async function finalizeDecisionWinners(
     finalizedAt: new Date().toISOString()
   });
   aiCommentsCache.delete(room.id);
-  await generateFinalRoomReport(room.id, room, roomIdeas, eliminationRounds.get(room.id) || []);
+  // 최종 상태를 먼저 응답할 수 있도록 부가 리포트는 백그라운드에서 생성한다.
+  if (!finalReportGenerationInFlight.has(room.id)) {
+    finalReportGenerationInFlight.add(room.id);
+    void generateFinalRoomReport(room.id, room, roomIdeas, eliminationRounds.get(room.id) || [])
+      .catch(error => console.warn('[AI REPORT] 최종 리포트 생성 실패:', error))
+      .finally(() => finalReportGenerationInFlight.delete(room.id));
+  }
 }
+
+/** Host freezes the final electorate and starts one cumulative-star vote cycle. */
+app.post('/api/rooms/:id/final-vote/start', async (req: AuthenticatedRequest, res) => {
+  try {
+    const room = await hydrateRoomFromSupabase(req.params.id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    if (room.status !== 'ELIMINATION' && room.status !== 'IDEA_SUBMISSION') {
+      return res.status(409).json({ error: '최종 후보 확인 화면에서만 별 투표를 시작할 수 있습니다.' });
+    }
+    const candidateIdeas = (ideas.get(room.id) || []).filter(idea => idea.status === 'ACTIVE');
+    if (candidateIdeas.length === 0) {
+      return res.status(409).json({ error: '최종 투표 후보가 없습니다.' });
+    }
+    const cycle = await ensureFinalVoteCycle(room, candidateIdeas, req.auth!.userId);
+    return res.json({
+      success: true,
+      status: room.status,
+      finalVoteStatus: room.finalVoteStatus,
+      cycleId: cycle?.id || null
+    });
+  } catch (error) {
+    const statusCode = Number((error as any)?.statusCode || 500);
+    return res.status(statusCode).json({
+      error: error instanceof Error ? error.message : '최종 별 투표를 시작하지 못했습니다.'
+    });
+  }
+});
+
+/** Host cancels only an incomplete cycle, then may rebuild a fresh electorate. */
+app.post('/api/rooms/:id/final-vote/cancel', async (req: AuthenticatedRequest, res) => {
+  try {
+    const room = await hydrateRoomFromSupabase(req.params.id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const cycleId = room.currentFinalVoteCycleId;
+    if (!cycleId) return res.status(409).json({ error: '취소할 진행 중 최종 투표가 없습니다.' });
+    if (!SUPABASE_CONFIGURED) {
+      return res.status(503).json({ error: '최종 투표 회차 취소는 데이터베이스 연결 환경에서만 사용할 수 있습니다.' });
+    }
+    const { data, error } = await supabase.rpc('cancel_incomplete_final_vote_cycle_v9', {
+      p_room_id: room.id,
+      p_host_user_id: req.auth!.userId,
+      p_cycle_id: cycleId
+    });
+    if (error) {
+      const conflict = error.code === 'P0001' || /취소|완료|방장|회차/i.test(error.message || '');
+      return res.status(conflict ? 409 : 503).json({ error: error.message || '최종 투표 회차를 취소하지 못했습니다.' });
+    }
+    finalVoteCyclesMap.delete(room.id);
+    finalVoteBallotsMap.delete(cycleId);
+    finalRouletteConsentsMap.delete(cycleId);
+    finalRouletteDrawsMap.delete(cycleId);
+    starVotesMap.set(room.id, new Map());
+    room.currentFinalVoteCycleId = undefined;
+    room.finalVoteStatus = 'NOT_STARTED';
+    room.finalVoteRosterLockedAt = undefined;
+    rooms.set(room.id, room);
+    return res.json({ success: true, ...(data || {}) });
+  } catch (error) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : '최종 투표 회차를 취소하지 못했습니다.'
+    });
+  }
+});
 
 /**
  * Quick decisions keep the anonymity rule but skip criteria proposal/evaluation.
@@ -6859,7 +7715,7 @@ app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, re
     }
 
     if (Number(room.engineVersion || 1) >= 7) {
-      const cycle = await ensureFinalVoteCycle(room, roomIdeas);
+      const cycle = await ensureFinalVoteCycle(room, roomIdeas, req.auth!.userId);
       return res.json({
         success: true,
         status: room.status,

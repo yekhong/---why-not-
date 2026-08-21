@@ -1,286 +1,194 @@
-# WhyNot 프로젝트 ERD 및 데이터베이스 스키마 명세서 (ERD Schema Reference)
+# WhyNot ERD·스키마 기준서 (V9)
 
-본 문서는 프로젝트의 전체 ERD(Entity Relationship Diagram)와 데이터베이스 테이블 및 컬럼 구조를 정의하는 레퍼런스 명세서입니다.  
-버그/오류 수정 및 기능 개발 시 본 명세서를 참조하여 어떤 테이블과 컬럼이 직/간접적으로 영향을 받는지 검증해야 합니다.
+> 기준일: 2026-08-21
+> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260821_account_invite_voter_capacity_v9.sql`
 
----
-
-## 📊 1. ERD 개요 및 테이블 목록 (총 17개 테이블)
+## 1. 핵심 관계
 
 ```mermaid
 erDiagram
-    user_accounts ||--o{ user_sessions : "has sessions"
-    user_accounts ||--o| user_registrations : "registers"
-    rooms ||--o{ participants : "includes"
-    rooms ||--o{ ideas : "contains"
-    rooms ||--o{ criteria : "defines"
-    rooms ||--o{ criterion_proposals : "collects"
-    rooms ||--o{ evaluations : "has evaluations"
-    rooms ||--o{ room_invites : "generates"
-    rooms ||--o{ phase_completions : "tracks phase"
-    rooms ||--o{ room_phase_participants : "snapshots participants"
-    rooms ||--o{ criterion_approvals : "votes version"
-    rooms ||--o{ evaluation_rounds : "runs rounds"
-    rooms ||--o{ ai_reports : "stores AI reports"
-    evaluation_rounds ||--o{ round_candidates : "evaluates candidates"
-    evaluation_rounds ||--o{ decision_votes : "records votes"
-    evaluation_rounds ||--o{ ai_reports : "round AI reports"
-    ideas ||--o{ evaluations : "evaluated by"
+  USER_ACCOUNTS ||--o{ ROOM_ACCOUNT_INVITES : receives
+  ROOMS ||--o{ PARTICIPANTS : has
+  ROOMS ||--o{ ROOM_INVITES : issues
+  ROOMS ||--o{ ROOM_ACCOUNT_INVITES : reserves
+  ROOMS ||--o{ ROOM_VOTER_REGISTRATIONS : registers
+  ROOMS ||--o{ IDEAS : contains
+  ROOMS ||--o{ EVALUATION_ROUNDS : runs
+  EVALUATION_ROUNDS ||--o{ EVALUATIONS : collects
+  EVALUATION_ROUNDS ||--o{ FINAL_VOTE_CYCLES : leads_to
+  FINAL_VOTE_CYCLES ||--o{ FINAL_VOTE_BALLOTS : collects
 ```
 
----
+`rooms`가 회의 데이터의 최상위 부모입니다. 방이 삭제되면 대부분의 회의 종속 데이터는 `ON DELETE CASCADE`로 함께 삭제됩니다. 완료된 평가·투표는 회차 테이블과 결과 스냅샷으로 보존합니다.
 
-## 🗂️ 2. 테이블별 세부 스키마 (Tables & Columns)
+## 2. 테이블 목록
 
-### 1. `rooms` (의사결정 방 마스터)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 방 고유 식별자 (UUID 또는 문자열 ID) |
-| `title` | `TEXT` | NOT NULL | 방 제목 |
-| `description` | `TEXT` | DEFAULT '' | 방 설명/목적 |
-| `category` | `TEXT` | DEFAULT '기획' | 카테고리 |
-| `is_public` | `BOOLEAN` | DEFAULT false | 공개 방 여부 |
-| `max_participants` | `INT` | DEFAULT 6 | 최대 참여자 수 |
-| `target_winner_count` | `INT` | DEFAULT 1 | 목표 최종 선정 아이디어 수 |
-| `is_pinned` | `BOOLEAN` | DEFAULT false | 상단 고정 여부 |
-| `host_id` | `TEXT` | NOT NULL | 방장(생성자) 사용자 ID |
-| `status` | `TEXT` | DEFAULT 'IDEA_SUBMISSION' | 현재 진행 상태 (IDEA_SUBMISSION, CRITERIA_SETTING, EVALUATION, COMPLETED 등) |
-| `min_response_threshold` | `INT` | DEFAULT 1 | 최소 응답/투표 임계치 |
-| `elimination_config` | `JSONB` | DEFAULT '{"countPerRound": 1, "tieBreak": "random"}' | 라운드별 탈락 설정 |
-| `deadlines` | `JSONB` | DEFAULT '{}' | 페이즈별 마감시한 |
-| `engine_version` | `INT` | NOT NULL DEFAULT 3 | 의사결정 엔진 버전 |
-| `decision_mode` | `TEXT` | NOT NULL DEFAULT 'STRUCTURED' | 의사결정 모드 ('STRUCTURED', 'QUICK') |
-| `final_vote_status` | `TEXT` | NOT NULL DEFAULT 'NOT_STARTED' | 최종 투표 진행 상태 |
-| `tie_candidate_idea_ids` | `TEXT[]` | NOT NULL DEFAULT ARRAY[] | 동점 후보 아이디어 ID 목록 |
-| `tie_slots` | `INT` | NOT NULL DEFAULT 0 | 동점 발생 슬롯 수 |
-| `current_round_id` | `TEXT` | NULL | 현재 진행 중인 라운드 ID |
-| `criteria_set_version` | `INT` | NOT NULL DEFAULT 1 | 현재 적용된 평가 기준 버전 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 방 생성 일시 |
+| 영역 | 테이블 | 역할 |
+|---|---|---|
+| 계정 | `user_accounts` | 로그인 아이디, 닉네임, 비밀번호 해시, 계정 상태 |
+| 계정 | `user_sessions` | 서버 세션 토큰 해시와 만료 시각 |
+| 계정 | `user_registrations` | 회원가입 처리 이력 |
+| 회의실 | `rooms` | 단계, 정책, 외부 투표 설정, 현재 회차와 변경 버전 |
+| 회의실 | `participants` | 방에 속한 참여자 또는 활성화된 외부 투표자 |
+| 초대 | `room_invites` | 참여자·투표자 링크 토큰 |
+| 초대 | `room_account_invites` | 가입 계정 대상 초대와 좌석 예약 상태 |
+| 초대 | `room_voter_registrations` | 최종 투표 전 대기·활성 외부 투표자 |
+| 아이디어 | `ideas` | 후보 원문과 현재 상태 |
+| 아이디어 | `idea_versions` | 원본·익명화·보완본 버전 스냅샷 |
+| 기준 | `criterion_proposals` | 참여자가 낸 익명 기준 제안 |
+| 기준 | `criteria` | 확정 평가 기준 |
+| 기준 | `criterion_approvals` | 기준안 승인·수정 요청 |
+| 단계 | `phase_completions` | 단계별 사용자 완료 상태 |
+| 단계 | `room_phase_participants` | 회차 시작 시 고정된 대상자 명단과 역할 |
+| 평가 | `evaluation_rounds` | 1·2차 평가 회차와 결과 스냅샷 |
+| 평가 | `evaluation_round_participants` | 평가 회차 대상자 스냅샷 |
+| 평가 | `evaluations` | 아이디어별 점수·익명 피드백 |
+| 평가 | `round_candidates` | 회차별 후보와 결과 |
+| 평가 | `decision_votes` | 이전 의사결정 투표 호환 데이터 |
+| 보완 | `candidate_feedback` | 후보 보완용 피드백 호환 데이터 |
+| 보완 | `refinement_cycles` | 후보 보완 회차 호환 데이터 |
+| 보완 | `refinement_cycle_votes` | 보완 회차 진행 동의 투표 |
+| 감사 | `round_deadline_audit` | 마감 연장 이력 |
+| AI | `ai_reports` | AI 입력·결과·모델·프롬프트 버전 스냅샷 |
+| 최종 투표 | `final_vote_cycles` | 별 3개 누적 투표 회차 |
+| 최종 투표 | `final_vote_ballots` | 사용자별 최종 투표지 |
+| 최종 투표 | `final_roulette_consents` | 동률 룰렛 동의 |
+| 최종 투표 | `final_roulette_draws` | 순차 룰렛 결과 |
 
----
+## 3. V9 핵심 컬럼
 
-### 2. `participants` (방 참여자 목록)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `room_id` | `TEXT` | PK, FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `user_id` | `TEXT` | PK | 참여자 사용자 ID |
-| `nickname` | `TEXT` | NOT NULL | 해당 방에서 사용하는 닉네임 |
-| `joined_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 방 참여 일시 |
-| `hidden_at` | `TIMESTAMPTZ`| NULL | 사용자 목록에서 방 숨김 처리 일시 |
+### `rooms`
 
----
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `id` | `TEXT` | PK |
+| `host_id` | `TEXT` | 방장 사용자 ID |
+| `status` | `TEXT` | 현재 단계 |
+| `max_participants` | `INT` | 방장 포함 참여자 최대 6명 |
+| `external_voters_enabled` | `BOOLEAN` | 외부 투표자 사용 여부, 기본 `FALSE` |
+| `required_voter_count` | `INT` | 필요 외부 투표자 수, 비활성 0·활성 1~30 |
+| `final_vote_roster_locked_at` | `TIMESTAMPTZ` | 최종 투표 명단 고정 시각 |
+| `state_version` | `BIGINT` | 상세 데이터 변경 감지용 증가 버전 |
+| `current_final_vote_cycle_id` | `TEXT` | 현재 최종 투표 회차 |
+| `final_vote_status` | `TEXT` | 최종 투표 진행 상태 |
 
-### 3. `ideas` (제출된 후보 아이디어)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 아이디어 고유 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 소속 방 ID |
-| `title` | `TEXT` | NOT NULL | 아이디어 제목 |
-| `description` | `TEXT` | DEFAULT '' | 상세 설명 |
-| `submitter_id` | `TEXT` | NOT NULL | 제출자 사용자 ID |
-| `submitter_name` | `TEXT` | DEFAULT '익명 아이디어' | 제출자 표시 이름 |
-| `attachment_url` | `TEXT` | NULL | 첨부파일 URL |
-| `pdf_attachment_url` | `TEXT` | NULL | PDF 첨부파일 URL |
-| `tags` | `TEXT[]` | DEFAULT ARRAY[] | 아이디어 태그 |
-| `status` | `TEXT` | DEFAULT 'ACTIVE' | 아이디어 상태 ('ACTIVE', 'ELIMINATED', 'WINNER') |
-| `eliminated_round` | `INT` | NULL | 탈락된 라운드 번호 |
-| `revealed_at` | `TIMESTAMPTZ`| NULL | 제출자 공개 시점 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 생성 일시 |
+`rooms_external_voter_settings_check`는 외부 투표 비활성 시 필요 인원을 0으로, 활성 시 1~30명으로 제한합니다.
 
----
+### `participants`
 
-### 4. `criteria` (평가 기준)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 평가 기준 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `name` | `TEXT` | NOT NULL | 기준 명칭 (예: 비용, 효과성, 실현가능성) |
-| `description` | `TEXT` | DEFAULT '' | 기준 설명 |
-| `weight` | `NUMERIC` | DEFAULT 1.0 | 기준 가중치 |
-| `confirmed` | `BOOLEAN` | DEFAULT false | 최종 확정 여부 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 생성 일시 |
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `room_id` | `TEXT` | `rooms.id` FK, 방 삭제 시 연쇄 삭제 |
+| `user_id` | `TEXT` | 회의 내부 사용자 ID |
+| `nickname` | `TEXT` | 회의 표시 이름 |
+| `role` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
 
----
+기존 행은 모두 `PARTICIPANT`로 보정합니다. 외부 투표자는 최종 명단 확정 시에만 `participants`에 활성 역할로 반영됩니다.
 
-### 5. `criterion_proposals` (평가 기준 제안)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 제안 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `proposer_id` | `TEXT` | NOT NULL | 제안자 ID |
-| `raw_text` | `TEXT` | NOT NULL | 원본 제안 텍스트 |
-| `parsed_name` | `TEXT` | NULL | 파싱/정리된 기준 이름 |
-| `status` | `TEXT` | DEFAULT 'PENDING' | 제안 상태 ('PENDING', 'ACCEPTED', 'REJECTED') |
-| `is_ai_suggested` | `BOOLEAN` | DEFAULT false | AI 추천 기준 여부 |
-| `revealed_at` | `TIMESTAMPTZ`| NULL | 공개 시점 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 생성 일시 |
+### `room_invites`
 
----
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `room_id` | `TEXT` | `rooms.id` FK, 연쇄 삭제 |
+| `invite_token_hash` | `TEXT` | 원문을 저장하지 않는 링크 검증 해시 |
+| `invite_type` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
+| `expires_at` | `TIMESTAMPTZ` | 링크 만료 시각 |
+| `is_active` | `BOOLEAN` | 재발급 시 이전 링크 비활성화 |
 
-### 6. `evaluations` (아이디어 평가 및 점수 기록)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 평가 기록 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `evaluator_id` | `TEXT` | NOT NULL | 평가자 사용자 ID |
-| `idea_id` | `TEXT` | FK (`ideas.id` ON DELETE CASCADE) | 대상 아이디어 ID |
-| `decision` | `TEXT` | NOT NULL | 평가 결정 값 |
-| `excluded_criterion_ids` | `TEXT[]` | DEFAULT ARRAY[] | 제외된 평가 기준 ID 목록 |
-| `criteria_evaluations` | `JSONB` | DEFAULT '{}' | 기준별 상세 점수 JSON |
-| `reason_text` | `TEXT` | DEFAULT '' | 평가 이유 / 사유 |
-| `reason_type` | `TEXT` | DEFAULT 'PREFERENCE' | 평가 이유 유형 |
-| `round` | `INT` | DEFAULT 1 | 평가 라운드 번호 |
-| `round_id` | `TEXT` | NULL | 연결된 라운드 ID (`evaluation_rounds.id`) |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 평가 일시 |
+`room_invites_one_active_type_idx`는 방·유형별 활성 링크를 하나로 제한합니다.
 
----
+### `room_account_invites`
 
-### 7. `user_accounts` (사용자 계정 정보)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `UUID` | PRIMARY KEY DEFAULT gen_random_uuid() | 사용자 고유 ID |
-| `login_id` | `TEXT` | UNIQUE, NOT NULL | 로그인 아이디 |
-| `password_hash` | `TEXT` | NOT NULL | 해시화된 비밀번호 |
-| `nickname` | `TEXT` | NOT NULL | 기본 닉네임 |
-| `recovery_code_hash` | `TEXT` | NOT NULL | 복구 코드 해시 |
-| `status` | `TEXT` | DEFAULT 'ACTIVE' CHECK ('ACTIVE', 'SUSPENDED', 'DELETED') | 계정 상태 |
-| `failed_recovery_attempts` | `INT` | DEFAULT 0 | 복구 시도 실패 횟수 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 가입 일시 |
-| `updated_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 정보 수정 일시 |
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `id` | `TEXT` | PK |
+| `room_id` | `TEXT` | `rooms.id` FK, 연쇄 삭제 |
+| `invited_login_id` | `TEXT` | 정규화된 가입 아이디 |
+| `invited_user_id` | `UUID` | `user_accounts.id` FK, 계정 삭제 시 연쇄 삭제 |
+| `invite_role` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
+| `status` | `TEXT` | `PENDING`, `ACCEPTED`, `CANCELED`, `EXPIRED` |
+| `created_by` | `TEXT` | 초대를 만든 방장 ID |
+| `accepted_at` | `TIMESTAMPTZ` | 자동 매칭 완료 시각 |
 
----
+대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 초대는 좌석을 예약하며 1단계가 끝나면 자동 만료됩니다.
 
-### 8. `user_sessions` (사용자 로그인 세션)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `UUID` | PRIMARY KEY DEFAULT gen_random_uuid() | 세션 ID |
-| `user_id` | `UUID` | FK (`user_accounts.id` ON DELETE CASCADE) | 계정 ID |
-| `token_hash` | `TEXT` | UNIQUE, NOT NULL | 인증 토큰 해시 |
-| `expires_at` | `TIMESTAMPTZ`| NOT NULL | 만료 일시 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 세션 생성 일시 |
+### `room_voter_registrations`
 
----
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `room_id` | `TEXT` | `rooms.id` FK, 연쇄 삭제 |
+| `user_id` | `TEXT` | 등록 사용자 ID |
+| `nickname` | `TEXT` | 표시 이름 |
+| `source` | `TEXT` | `ACCOUNT`, `LINK`, `PARTICIPANT_FALLBACK` |
+| `status` | `TEXT` | `WAITING`, `ACTIVE`, `CANCELED` |
+| `activated_at` | `TIMESTAMPTZ` | 최종 명단 포함 시각 |
 
-### 9. `user_registrations` (회원 가입 이력)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `user_id` | `UUID` | PK, FK (`user_accounts.id` ON DELETE CASCADE) | 계정 ID |
-| `login_id` | `TEXT` | UNIQUE, NOT NULL | 로그인 아이디 |
-| `nickname` | `TEXT` | NOT NULL | 가입 당시 닉네임 |
-| `registration_status` | `TEXT` | DEFAULT 'COMPLETED' CHECK ('COMPLETED', 'CANCELLED') | 가입 상태 |
-| `registered_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 가입 처리 일시 |
+`(room_id, user_id)`가 PK입니다. 동일 계정의 중복 등록을 막고 최종 투표 시작 전까지 대기 상태로 관리합니다.
 
----
+### `room_phase_participants`
 
-### 10. `room_invites` (방 초대 정보)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `UUID` | PRIMARY KEY DEFAULT gen_random_uuid() | 초대 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `invite_token` | `TEXT` | UNIQUE, NULL | 초대 토큰 |
-| `invite_token_hash` | `TEXT` | UNIQUE, NULL | 초대 토큰 해시 |
-| `created_by` | `TEXT` | NOT NULL | 초대 생성자 사용자 ID |
-| `expires_at` | `TIMESTAMPTZ`| NOT NULL | 초대 만료 일시 |
-| `is_active` | `BOOLEAN` | DEFAULT true | 활성화 여부 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 생성 일시 |
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `room_id` | `TEXT` | `rooms.id` FK, 연쇄 삭제 |
+| `phase` | `TEXT` | 예: `FINAL_VOTE:{round_id}` |
+| `user_id` | `TEXT` | 고정된 대상자 |
+| `role` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
 
----
+최종 투표 시작 시 참여자와 활성 외부 투표자를 이 테이블에 고정합니다. 결과 공개 조건과 룰렛 동의 대상은 이 명단을 사용합니다.
 
-### 11. `phase_completions` (페이즈 완료 기록)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `room_id` | `TEXT` | PK, FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `phase` | `TEXT` | PK | 페이즈 명칭 (e.g., 'IDEA_SUBMISSION') |
-| `user_id` | `TEXT` | PK | 완료한 사용자 ID |
-| `completed_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 완료 시각 |
+### `evaluations`
 
----
+| 컬럼 | 타입 | 제약·의미 |
+|---|---|---|
+| `room_id` | `TEXT` | `rooms.id` FK |
+| `round_id` | `TEXT` | `evaluation_rounds` 복합 FK |
+| `idea_id` | `TEXT` | 평가 후보 |
+| `evaluator_id` | `TEXT` | 서버 내부 평가자 ID |
+| `overall_score` | `SMALLINT` | 종합점수 1~10 |
+| `feedback_text` | `TEXT` | 1차 필수 익명 피드백 |
+| `decision` | `TEXT NULL` | 이전 평가 방식 호환용 |
 
-### 12. `room_phase_participants` (페이즈 참여자 스냅샷)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `room_id` | `TEXT` | PK, FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `phase` | `TEXT` | PK | 페이즈 명칭 |
-| `user_id` | `TEXT` | PK | 스냅샷된 사용자 ID |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 스냅샷 일시 |
+평가자는 본인 아이디어를 제외한 모든 후보를 평가합니다. 같은 회차·아이디어·평가자의 중복 평가는 고유 제약으로 방지합니다.
 
----
+### 최종 투표 테이블
 
-### 13. `criterion_approvals` (평가 기준 동의/수정 투표)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `room_id` | `TEXT` | PK, FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `criteria_set_version` | `INT` | PK | 기준 버전 번호 |
-| `user_id` | `TEXT` | PK | 사용자 ID |
-| `vote` | `TEXT` | NOT NULL CHECK ('APPROVE', 'REVISE') | 투표 결과 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 투표 일시 |
-| `updated_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 수정 일시 |
+| 테이블 | 핵심 키 | 역할 |
+|---|---|---|
+| `final_vote_cycles` | `id`, `room_id`, `decision_round_id` | 후보 스냅샷·스티커 수·회차 상태 |
+| `final_vote_ballots` | `cycle_id`, `user_id` | 사용자당 별 3개 배분 결과 |
+| `final_roulette_consents` | `cycle_id`, `user_id` | 고정 명단 전원 동의 확인 |
+| `final_roulette_draws` | `cycle_id`, `draw_number` | 이미 뽑힌 후보를 제외하는 순차 추첨 기록 |
 
----
+## 4. 데이터 변경 감지
 
-### 14. `evaluation_rounds` (평가 라운드 관리)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 라운드 고유 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `round_number` | `INT` | NOT NULL CHECK (>= 1) | 라운드 회차 (1, 2, 3...) |
-| `decision_mode` | `TEXT` | NOT NULL CHECK ('STRUCTURED', 'QUICK') | 해당 라운드 진행 방식 |
-| `status` | `TEXT` | DEFAULT 'ACTIVE' CHECK ('ACTIVE', 'COMPLETED') | 라운드 상태 |
-| `started_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 시작 일시 |
-| `completed_at` | `TIMESTAMPTZ`| NULL | 종료/완료 일시 |
-| `result_snapshot` | `JSONB` | DEFAULT '{}' | 라운드 최종 계산 결과 스냅샷 |
+`rooms.state_version`은 다음 방 종속 데이터가 `INSERT`, `UPDATE`, `DELETE`될 때 증가합니다.
 
----
+- 참여자·초대·투표자 등록
+- 아이디어·버전·기준·기준 제안·승인
+- 단계 완료·단계별 명단
+- 평가·평가 회차·후보·투표·AI 보고서
+- 보완 호환 데이터·마감 이력
+- 최종 별 투표·동의·룰렛 결과
 
-### 15. `round_candidates` (라운드별 대상 후보 및 생존 상태)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 기록 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `round_id` | `TEXT` | FK (`evaluation_rounds.id` ON DELETE CASCADE) | 라운드 ID |
-| `idea_id` | `TEXT` | NOT NULL | 후보 아이디어 ID |
-| `outcome` | `TEXT` | DEFAULT 'ACTIVE' CHECK ('ACTIVE', 'ELIMINATED', 'WINNER') | 라운드 결과 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 등록 일시 |
+프론트엔드는 `get_room_state_v9` 단일 RPC를 사용하는 가벼운 상태 API로 접근 권한과 버전을 함께 확인하고, 값이 달라졌을 때 상세 데이터를 다시 조회합니다.
 
----
+## 5. 권한·삭제·무결성 원칙
 
-### 16. `decision_votes` (의사결정 투표)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 투표 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `round_id` | `TEXT` | FK (`evaluation_rounds.id` ON DELETE CASCADE) | 라운드 ID |
-| `user_id` | `TEXT` | NOT NULL | 투표자 ID |
-| `selected_idea_ids` | `TEXT[]` | NOT NULL CHECK (cardinality >= 1) | 선택한 아이디어 ID 배열 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 투표 일시 |
+- 신규 초대·투표자 테이블은 RLS를 켜고 `anon`, `authenticated`의 직접 접근을 제거합니다.
+- 브라우저는 DB에 직접 쓰지 않고 인증된 서버 API를 사용합니다.
+- 방장 검증, 좌석 계산, 최종 명단 고정은 `SECURITY DEFINER` RPC 내부에서 `rooms ... FOR UPDATE`로 원자 처리합니다.
+- `room_account_invites`, `room_voter_registrations`, `room_invites`, `participants`는 방 삭제 시 연쇄 삭제됩니다.
+- 평가·최종 투표의 완료 결과는 회차 스냅샷을 기준으로 재사용하며 과거 투표지를 새 회차에 재사용하지 않습니다.
+- 외부 투표자는 1·2차 평가 정족수와 최소 응답 정족수에 포함하지 않습니다.
 
----
+## 6. V9 데이터 조작 요약
 
-### 17. `ai_reports` (AI 리포트 저장)
-| 컬럼명 | 데이터 타입 | 제약 조건 / 기본값 | 설명 |
-| :--- | :--- | :--- | :--- |
-| `id` | `TEXT` | PRIMARY KEY | 리포트 ID |
-| `room_id` | `TEXT` | FK (`rooms.id` ON DELETE CASCADE) | 방 ID |
-| `round_id` | `TEXT` | NULL, FK (`evaluation_rounds.id` ON DELETE CASCADE) | 라운드 ID |
-| `report_text` | `TEXT` | NOT NULL | 생성된 AI 분석 보고서 본문 |
-| `input_snapshot` | `JSONB` | DEFAULT '{}' | AI 프롬프트 입력 데이터 스냅샷 |
-| `result_snapshot` | `JSONB` | DEFAULT '{}' | AI 응답 결과 구조체 스냅샷 |
-| `model_name` | `TEXT` | NOT NULL | 사용된 AI 모델명 (e.g., gemini-2.5-flash) |
-| `prompt_version` | `TEXT` | NOT NULL | 프롬프트 버전 문자열 |
-| `created_at` | `TIMESTAMPTZ`| DEFAULT NOW() | 생성 일시 |
-
----
-
-## 🔄 3. 작업 시 영향도 평가 체크리스트 (Impact Analysis Checklist)
-
-새로운 기능을 추가하거나 버그/오류를 수정할 때 아래 4가지 관점에서 DB 영향을 반드시 확인하고 설명해야 합니다.
-
-1. **직접 변경 테이블 & 컬럼 (Direct Mutation Table & Column)**
-   - `INSERT`, `UPDATE`, `DELETE` 가 일어나는 테이블과 특정 컬럼
-2. **조회 및 조건검색 영향 (Query & Index Impact)**
-   - `SELECT` 조건문(`WHERE`), `JOIN`, `ORDER BY` 변경으로 영향을 받는 컬럼 및 인덱스
-3. **연관 외래키 및 종속성 (Foreign Key & Cascades)**
-   - `ON DELETE CASCADE`로 인해 같이 삭제되는 하위 데이터 (`rooms` 삭제 시 `ideas`, `evaluations`, `participants` 등 연쇄 삭제)
-4. **상태값 / JSONB 내부 구조 (State & Semi-structured Schema)**
-   - `rooms.status`, `ideas.status`, `round_candidates.outcome` 등의 ENUM / TEXT 상태값 변경
-   - `rooms.elimination_config`, `evaluations.criteria_evaluations`, `ai_reports.result_snapshot` 등 `JSONB` 내부 구조 변경 여부
+| 동작 | 주요 테이블 | 조작 |
+|---|---|---|
+| 방 생성 | `rooms`, `participants`, `room_invites` | 단일 RPC `INSERT` |
+| 계정 초대 | `room_account_invites` | 좌석 확인 후 `INSERT` |
+| 로그인 자동 입장 | `room_account_invites`, `participants` 또는 `room_voter_registrations` | `UPDATE` + `UPSERT` |
+| 링크 입장 | `participants` 또는 `room_voter_registrations` | 잠금 후 `UPSERT` |
+| 최종 투표 시작 | `participants`, `room_voter_registrations`, `room_phase_participants`, `rooms` | 명단 활성화·고정 |
+| 미완료 회차 취소 | `final_vote_cycles`, `room_phase_participants`, `room_voter_registrations`, `rooms` | 이전 투표지 보존, 새 회차용 명단 재구성 |
+| 최종 확정 | `ideas`, `rooms` | 단일 RPC 일괄 `UPDATE` |
