@@ -3425,10 +3425,6 @@ app.use(async (req: AuthenticatedRequest, res, next) => {
 
     if (!isRoomApi) return next();
     if (req.path === '/api/rooms') return next();
-    if (req.path === '/api/rooms/purge-dead-rooms') {
-      return res.status(404).json({ error: '운영에서 사용할 수 없는 기능입니다.' });
-    }
-
     const match = req.path.match(/^\/api\/rooms\/([^/]+)(?:\/|$)/);
     const roomId = match?.[1];
     if (!roomId) return res.status(400).json({ error: '회의실 정보가 올바르지 않습니다.' });
@@ -5328,21 +5324,6 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
 
   rooms.set(id, updatedRoom);
   res.json({ success: true, room: updatedRoom });
-});
-
-/**
- * Automated Dead Rooms Batch Purge Endpoint
- * Deletes rooms from DB only when ALL participants have deleted/left for > 30 days
- */
-app.post('/api/rooms/purge-dead-rooms', async (req, res) => {
-  try {
-    const { data: count, error } = await supabase.rpc('purge_dead_rooms');
-    if (error && error.code !== 'PGRST202') throw error;
-    res.json({ success: true, purgedCount: count || 0, message: `성공적으로 ${count || 0}개의 만료된 회의실 데이터를 정제했습니다.` });
-  } catch (err: any) {
-    console.warn('Purge dead rooms notice:', err?.message || err);
-    res.json({ success: true, purgedCount: 0 });
-  }
 });
 
 /** Lightweight polling endpoint. Full room details are fetched only when this changes. */
@@ -9152,4 +9133,3 @@ export default app;
 if (!process.env.VERCEL) {
   startServer();
 }
-

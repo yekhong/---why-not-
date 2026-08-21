@@ -871,17 +871,22 @@ CREATE TRIGGER rooms_expire_participant_invites_v9
 AFTER UPDATE OF status ON public.rooms
 FOR EACH ROW EXECUTE FUNCTION public.expire_participant_invites_v9();
 
-REVOKE ALL ON FUNCTION public.create_room_account_invite_v9(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.create_room_with_host_v9(JSONB, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.create_room_invite_v9(TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.cancel_room_account_invite_v9(TEXT, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.accept_room_account_invites_v9(UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.join_room_v9(TEXT, TEXT, TEXT, TEXT, BOOLEAN) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.cancel_room_voter_registration_v9(TEXT, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.start_final_vote_roster_v9(TEXT, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.cancel_incomplete_final_vote_cycle_v9(TEXT, TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.finalize_room_winners_v9(TEXT, TEXT[], JSONB) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.get_room_state_v9(TEXT, TEXT) FROM PUBLIC;
+-- V9 RPCs are server-only. Revoking PUBLIC alone does not remove grants that
+-- were assigned directly to Supabase's anon/authenticated roles.
+REVOKE ALL PRIVILEGES ON FUNCTION public.bump_parent_room_state_version_v9() FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.bump_room_row_state_version_v9() FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.expire_participant_invites_v9() FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.create_room_account_invite_v9(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.create_room_with_host_v9(JSONB, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.create_room_invite_v9(TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.cancel_room_account_invite_v9(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.accept_room_account_invites_v9(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.join_room_v9(TEXT, TEXT, TEXT, TEXT, BOOLEAN) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.cancel_room_voter_registration_v9(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.start_final_vote_roster_v9(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.cancel_incomplete_final_vote_cycle_v9(TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.finalize_room_winners_v9(TEXT, TEXT[], JSONB) FROM PUBLIC, anon, authenticated;
+REVOKE ALL PRIVILEGES ON FUNCTION public.get_room_state_v9(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.create_room_account_invite_v9(TEXT, TEXT, TEXT, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.create_room_with_host_v9(JSONB, TEXT, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.create_room_invite_v9(TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT) TO service_role;
