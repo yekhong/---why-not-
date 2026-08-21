@@ -10,6 +10,8 @@ export type RoomStatus =
   | 'CLOSED';
 
 export type DecisionMode = 'STRUCTURED' | 'QUICK';
+export type ParticipantRole = 'PARTICIPANT' | 'VOTER';
+export type InviteType = 'PARTICIPANT' | 'VOTER';
 export type FinalVoteStatus =
   | 'NOT_STARTED'
   | 'VOTING'
@@ -53,6 +55,10 @@ export interface Room {
   currentRoundId?: string;
   currentFinalVoteCycleId?: string;
   criteriaSetVersion?: number;
+  externalVotersEnabled?: boolean;
+  requiredVoterCount?: number;
+  finalVoteRosterLockedAt?: string;
+  stateVersion?: string;
 }
 
 export interface Idea {
@@ -176,7 +182,7 @@ export interface Participant {
   roomId: string;
   userId: string;
   nickname: string;
-  role?: string;
+  role?: ParticipantRole;
   isIdeaDone?: boolean;
 }
 
@@ -238,6 +244,38 @@ export interface RoomDetails {
   scoreRounds?: ScoreRoundResult[];
   activeScorePhase?: 'FIRST' | 'SECOND' | null;
   finalVoteCycle?: FinalVoteCycleState;
+  myParticipantRole?: ParticipantRole;
+  waitingForFinalVote?: boolean;
+  participantCount?: number;
+  voterSetup?: VoterSetupState;
+  hasMyCriterionProposal?: boolean;
+}
+
+export interface VoterSetupState {
+  enabled: boolean;
+  requiredCount: number;
+  registeredCount: number;
+  activeCount: number;
+  pendingCount: number;
+  remainingCount: number;
+  rosterLocked: boolean;
+  canStartFinalVote: boolean;
+  registrations?: Array<{
+    userId: string;
+    nickname: string;
+    status: 'WAITING' | 'ACTIVE';
+  }>;
+}
+
+export interface AccountRoomInvite {
+  id: string;
+  roomId: string;
+  loginId: string;
+  role: ParticipantRole;
+  status: 'PENDING' | 'ACCEPTED' | 'CANCELED' | 'EXPIRED';
+  createdAt: string;
+  acceptedAt?: string;
+  canceledAt?: string;
 }
 
 export interface ScoreRoundResult {
@@ -334,6 +372,7 @@ export interface RoomInvite {
   createdBy: string;
   expiresAt: string;
   isActive: boolean;
+  inviteType?: InviteType;
   createdAt?: string;
 }
 
@@ -345,6 +384,9 @@ export interface InviteDetailsResponse {
   hostNickname?: string;
   participantCount?: number;
   maxParticipants?: number;
+  inviteType?: InviteType;
+  waiting?: boolean;
+  canJoinAsVoter?: boolean;
   expiresAt?: string;
   secondsRemaining?: number;
 }

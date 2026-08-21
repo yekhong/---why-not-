@@ -44,7 +44,9 @@ import {
   DecisionMode,
   RoomDetails,
   Participant,
-  InviteDetailsResponse
+  InviteDetailsResponse,
+  AccountRoomInvite,
+  ParticipantRole
 } from './types';
 
 type RefinementFeedbackDraft = {
@@ -269,7 +271,22 @@ export default function App() {
         setUserEmail(uEmail);
         setIsLoggedIn(true);
         setShowLoginModal(false);
-        triggerToast(`${uName}님 환영합니다!`);
+        const matchedInvite = Array.isArray(data.matchedInvites) ? data.matchedInvites[0] : null;
+        if (matchedInvite?.roomId) {
+          const matchedRoomId = String(matchedInvite.roomId);
+          setActiveRoomId(matchedRoomId);
+          setRoomDetails(null);
+          localStorage.setItem('why_not_active_room_id', matchedRoomId);
+          window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(matchedRoomId)}`);
+          triggerToast(
+            matchedInvite.waiting
+              ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
+              : '초대된 회의실에 자동으로 입장했습니다.'
+          );
+          await fetchRoomDetails(matchedRoomId);
+        } else {
+          triggerToast(`${uName}님 환영합니다!`);
+        }
         return;
       }
       const message = data?.error || (
@@ -369,7 +386,10 @@ export default function App() {
   const [fetchRoomError, setFetchRoomError] = useState(false);
   const [showIdeaSubmissionGate, setShowIdeaSubmissionGate] = useState(false);
   const isFetchingRoomRef = useRef(false);
+  const isCheckingRoomStateRef = useRef(false);
+  const roomStateVersionRef = useRef<string | null>(null);
   const roomFetchSequenceRef = useRef(0);
+  const activeRoomFetchControllerRef = useRef<AbortController | null>(null);
   const [refinementFeedbackDrafts, setRefinementFeedbackDrafts] = useState<Record<string, RefinementFeedbackDraft>>({});
   const [refinementRevisionDrafts, setRefinementRevisionDrafts] = useState<Record<string, { title: string; description: string }>>({});
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
@@ -383,6 +403,11 @@ export default function App() {
   const [activeInviteToken, setActiveInviteToken] = useState<string | null>(null);
   const [inviteTokenExpiresAt, setInviteTokenExpiresAt] = useState<string | null>(null);
   const [inviteSecondsLeft, setInviteSecondsLeft] = useState<number>(180);
+  const [activeVoterInviteToken, setActiveVoterInviteToken] = useState<string | null>(null);
+  const [voterInviteExpiresAt, setVoterInviteExpiresAt] = useState<string | null>(null);
+  const [accountInvites, setAccountInvites] = useState<AccountRoomInvite[]>([]);
+  const [voterLoginIdInput, setVoterLoginIdInput] = useState('');
+  const [isManagingInvites, setIsManagingInvites] = useState(false);
 
   const [landingInviteToken, setLandingInviteToken] = useState<string | null>(null);
   const [landingInviteData, setLandingInviteData] = useState<InviteDetailsResponse | null>(null);
@@ -404,6 +429,8 @@ export default function App() {
   const [newRoomVoteStartTime, setNewRoomVoteStartTime] = useState('');
   const [newRoomVoteEndTime, setNewRoomVoteEndTime] = useState('');
   const [newRoomThreshold, setNewRoomThreshold] = useState(3);
+  const [newRoomExternalVotersEnabled, setNewRoomExternalVotersEnabled] = useState(false);
+  const [newRoomRequiredVoterCount, setNewRoomRequiredVoterCount] = useState(1);
 
   // Submitting Idea (IDEA-02 & IDEA-03)
   const [ideaTitle, setIdeaTitle] = useState('');
@@ -522,15 +549,15 @@ export default function App() {
     }
     if (!activeRoomId) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/status`, {
+      const response = await fetch(`/api/rooms/${activeRoomId}/final-vote/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ELIMINATION', startFinalVote: true })
+        body: JSON.stringify({})
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '최종 익명 투표를 시작하지 못했습니다.');
       setShowWinnerModal(false);
-      setShowFinalVoteModal(true);
+      setShowFinalVoteModal(Boolean(data?.cycleId));
       await fetchRoomDetails(activeRoomId, true);
     } catch (err) {
       triggerToast(err instanceof Error ? err.message : '최종 익명 투표를 시작하지 못했습니다.', 'error');
@@ -541,6 +568,9 @@ export default function App() {
   useEffect(() => {
     setMySelectedStarIdeaIds([]);
     setShowFinalVoteModal(false);
+    if (!roomDetails || roomDetails.room.id !== activeRoomId) {
+      roomStateVersionRef.current = null;
+    }
   }, [activeRoomId]);
 
   // Quick rooms can enter voting immediately. Structured V7 rooms first show
@@ -604,6 +634,8 @@ export default function App() {
   const [editRoomMaxParticipants, setEditRoomMaxParticipants] = useState(4);
   const [editRoomTargetWinnerCount, setEditRoomTargetWinnerCount] = useState(1);
   const [editRoomMinThreshold, setEditRoomMinThreshold] = useState(3);
+  const [editExternalVotersEnabled, setEditExternalVotersEnabled] = useState(false);
+  const [editRequiredVoterCount, setEditRequiredVoterCount] = useState(1);
   const [isUpdatingRoomSettings, setIsUpdatingRoomSettings] = useState(false);
   // On-Demand Demo Seed Data Handler
   const [isGeneratingDemo, setIsGeneratingDemo] = useState(false);
@@ -634,6 +666,8 @@ export default function App() {
     setEditRoomMaxParticipants(roomDetails.room.maxParticipants || 4);
     setEditRoomTargetWinnerCount(roomDetails.room.targetWinnerCount || 1);
     setEditRoomMinThreshold(roomDetails.room.minResponseThreshold || 3);
+    setEditExternalVotersEnabled(Boolean(roomDetails.room.externalVotersEnabled));
+    setEditRequiredVoterCount(Math.max(1, roomDetails.room.requiredVoterCount || 1));
     setShowRoomSettingsModal(true);
   };
 
@@ -642,6 +676,10 @@ export default function App() {
     if (!activeRoomId || !roomDetails?.room) return;
     if (!editRoomTitle.trim()) {
       triggerToast('방 제목을 입력해주세요.', 'error');
+      return;
+    }
+    if (editExternalVotersEnabled && (editRequiredVoterCount < 1 || editRequiredVoterCount > 30)) {
+      triggerToast('필요 투표자 수는 1명부터 30명까지 설정할 수 있습니다.', 'error');
       return;
     }
 
@@ -657,7 +695,9 @@ export default function App() {
           category: editRoomCategory,
           maxParticipants: editRoomMaxParticipants,
           targetWinnerCount: editRoomTargetWinnerCount,
-          minResponseThreshold: editRoomMinThreshold
+          minResponseThreshold: editRoomMinThreshold,
+          externalVotersEnabled: editExternalVotersEnabled,
+          requiredVoterCount: editExternalVotersEnabled ? editRequiredVoterCount : 0
         })
       });
 
@@ -686,13 +726,14 @@ export default function App() {
 
   const handleSendEmailInvite = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmailInput.trim()) return;
-    triggerToast('이메일 발송 기능은 아직 연결되지 않았습니다. 아래 초대 링크를 복사해 전달해 주세요.', 'error');
+    void handleCreateAccountInvite('PARTICIPANT');
   };
 
   // Return to Lobby (Clean active room ID, role, local state, and URL query params)
   const handleLeaveRoom = () => {
     roomFetchSequenceRef.current += 1;
+    activeRoomFetchControllerRef.current?.abort();
+    activeRoomFetchControllerRef.current = null;
     isFetchingRoomRef.current = false;
     setActiveRoomId(null);
     setRoomDetails(null);
@@ -915,6 +956,8 @@ export default function App() {
     setNickname('');
     setUserEmail('');
     roomFetchSequenceRef.current += 1;
+    activeRoomFetchControllerRef.current?.abort();
+    activeRoomFetchControllerRef.current = null;
     isFetchingRoomRef.current = false;
     setActiveRoomId(null);
     setRoomDetails(null);
@@ -937,6 +980,19 @@ export default function App() {
           setTempNickname(data.user.nickname || '');
           setUserEmail(data.user.loginId || '');
           setIsLoggedIn(true);
+          const matchedInvite = Array.isArray(data.matchedInvites) ? data.matchedInvites[0] : null;
+          if (matchedInvite?.roomId) {
+            const matchedRoomId = String(matchedInvite.roomId);
+            setActiveRoomId(matchedRoomId);
+            setRoomDetails(null);
+            localStorage.setItem('why_not_active_room_id', matchedRoomId);
+            window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(matchedRoomId)}`);
+            triggerToast(
+              matchedInvite.waiting
+                ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
+                : '초대된 회의실에 자동으로 입장했습니다.'
+            );
+          }
         } else {
           setUserId('');
           setNickname('');
@@ -1053,42 +1109,68 @@ export default function App() {
     if (!activeRoomId || !isLoggedIn) return;
 
     setAiSuggestedCriteria([]);
-    const refreshVisibleRoom = (silent: boolean) => {
-      if (document.visibilityState === 'visible') {
-        fetchRoomDetails(activeRoomId, silent);
+    const checkRoomState = async (forceDetails = false) => {
+      if (document.visibilityState !== 'visible' || isCheckingRoomStateRef.current) return;
+      if (forceDetails || !roomStateVersionRef.current) {
+        await fetchRoomDetails(activeRoomId, forceDetails);
+        return;
+      }
+      isCheckingRoomStateRef.current = true;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`/api/rooms/${activeRoomId}/state`, {
+          signal: controller.signal,
+          cache: 'no-store'
+        });
+        const data = await response.json().catch(() => null);
+        if (response.ok && data?.stateVersion && String(data.stateVersion) !== roomStateVersionRef.current) {
+          await fetchRoomDetails(activeRoomId, true);
+        }
+      } catch (error) {
+        if ((error as Error)?.name !== 'AbortError') console.warn('Room state check failed:', error);
+      } finally {
+        clearTimeout(timeoutId);
+        isCheckingRoomStateRef.current = false;
       }
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        fetchRoomDetails(activeRoomId, true);
-      }
+      if (document.visibilityState === 'visible') void checkRoomState(false);
     };
 
-    refreshVisibleRoom(false);
-
-    const interval = setInterval(() => {
-      refreshVisibleRoom(true);
-    }, 3000);
+    void checkRoomState(false);
+    const pollDelay = roomDetails?.myParticipantRole === 'VOTER' ? 12000 : 3000;
+    const interval = setInterval(() => void checkRoomState(false), pollDelay);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeRoomId, isLoggedIn]);
+  }, [activeRoomId, isLoggedIn, roomDetails?.myParticipantRole]);
 
-  // Generate or Refresh 3-Minute Invite Token
-  const handleGenerateNewInviteToken = async (roomId: string) => {
+  // Generate or refresh a participant/voter invite token.
+  const handleGenerateNewInviteToken = async (
+    roomId: string,
+    inviteType: ParticipantRole = 'PARTICIPANT'
+  ) => {
     try {
       const res = await fetch(`/api/rooms/${roomId}/invites`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inviteType })
       });
       const apiData = await res.json();
       if (res.ok && apiData.success && apiData.invite) {
-        setActiveInviteToken(apiData.invite.inviteToken);
-        setInviteTokenExpiresAt(apiData.invite.expiresAt);
-        triggerToast('3분 초대 링크가 클립보드용으로 준비되었습니다. (3분간 유효)');
+        if (inviteType === 'VOTER') {
+          setActiveVoterInviteToken(apiData.invite.inviteToken);
+          setVoterInviteExpiresAt(apiData.invite.expiresAt);
+          triggerToast('투표자 초대 링크가 준비되었습니다. 방장이 언제든 폐기할 수 있습니다.');
+        } else {
+          setActiveInviteToken(apiData.invite.inviteToken);
+          setInviteTokenExpiresAt(apiData.invite.expiresAt);
+          triggerToast('3분 참여자 초대 링크가 준비되었습니다.');
+        }
         return apiData.invite.inviteToken;
       }
       throw new Error(apiData?.error || '초대 링크를 생성할 수 없습니다.');
@@ -1100,20 +1182,126 @@ export default function App() {
   };
 
   // Deactivate active invite token for room
-  const handleDeactivateInviteToken = async (roomId: string) => {
+  const handleDeactivateInviteToken = async (
+    roomId: string,
+    inviteType: ParticipantRole = 'PARTICIPANT'
+  ) => {
     try {
-      const response = await fetch(`/api/rooms/${roomId}/invites`, { method: 'DELETE' });
+      const response = await fetch(`/api/rooms/${roomId}/invites?inviteType=${inviteType}`, { method: 'DELETE' });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(data?.error || '초대 링크를 비활성화할 수 없습니다.');
       }
-      setActiveInviteToken(null);
-      setInviteTokenExpiresAt(null);
+      if (inviteType === 'VOTER') {
+        setActiveVoterInviteToken(null);
+        setVoterInviteExpiresAt(null);
+      } else {
+        setActiveInviteToken(null);
+        setInviteTokenExpiresAt(null);
+      }
       triggerToast('초대 링크가 비활성화되었습니다.');
     } catch (err: any) {
       console.error('Failed to deactivate invite token:', err);
     }
   };
+
+  const fetchAccountInvites = async (roomId: string) => {
+    try {
+      const response = await fetch(`/api/rooms/${roomId}/account-invites`, { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '계정 초대 현황을 불러오지 못했습니다.');
+      setAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '계정 초대 현황을 불러오지 못했습니다.', 'error');
+    }
+  };
+
+  const handleCancelFinalVoteCycle = async () => {
+    if (!activeRoomId || !window.confirm('진행 중인 최종 투표를 취소하고 새 명단으로 다시 시작하시겠습니까? 제출된 별 투표는 재사용되지 않습니다.')) return;
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/final-vote/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '최종 투표 회차를 취소하지 못했습니다.');
+      setShowFinalVoteModal(false);
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast('최종 투표 회차를 취소했습니다. 투표자 설정을 변경한 뒤 다시 시작할 수 있습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '최종 투표 회차를 취소하지 못했습니다.', 'error');
+    }
+  };
+
+  const handleCreateAccountInvite = async (role: ParticipantRole) => {
+    if (!activeRoomId || isManagingInvites) return;
+    const loginId = (role === 'VOTER' ? voterLoginIdInput : inviteEmailInput).trim();
+    if (!loginId) {
+      triggerToast('가입된 로그인 아이디를 입력해 주세요.', 'error');
+      return;
+    }
+    setIsManagingInvites(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/account-invites`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loginId, role })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '계정 초대를 만들지 못했습니다.');
+      if (role === 'VOTER') setVoterLoginIdInput('');
+      else setInviteEmailInput('');
+      await fetchAccountInvites(activeRoomId);
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast(`${role === 'VOTER' ? '투표자' : '참여자'} 계정 초대를 등록했습니다.`);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '계정 초대를 만들지 못했습니다.', 'error');
+    } finally {
+      setIsManagingInvites(false);
+    }
+  };
+
+  const handleCancelAccountInvite = async (inviteId: string) => {
+    if (!activeRoomId || isManagingInvites) return;
+    setIsManagingInvites(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/account-invites/${inviteId}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '계정 초대를 취소하지 못했습니다.');
+      await fetchAccountInvites(activeRoomId);
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast('계정 초대를 취소했습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '계정 초대를 취소하지 못했습니다.', 'error');
+    } finally {
+      setIsManagingInvites(false);
+    }
+  };
+
+  const handleCancelRegisteredVoter = async (voterUserId: string) => {
+    if (!activeRoomId || isManagingInvites) return;
+    setIsManagingInvites(true);
+    try {
+      const response = await fetch(`/api/rooms/${activeRoomId}/voters/${encodeURIComponent(voterUserId)}`, {
+        method: 'DELETE'
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '외부 투표자 등록을 취소하지 못했습니다.');
+      await fetchRoomDetails(activeRoomId, true);
+      triggerToast('외부 투표자 등록을 취소했습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '외부 투표자 등록을 취소하지 못했습니다.', 'error');
+    } finally {
+      setIsManagingInvites(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showShareModal && activeRoomId && roomDetails?.room.hostId === userId) {
+      void fetchAccountInvites(activeRoomId);
+    }
+  }, [showShareModal, activeRoomId, roomDetails?.room.hostId, userId]);
 
   // Fetch Invite Landing Details
   const fetchInviteLandingDetails = async (token: string) => {
@@ -1149,12 +1337,22 @@ export default function App() {
     const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
 
     try {
-      const response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+      let response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nickname: nameToUse })
       });
-      const data = await response.json().catch(() => null);
+      let data = await response.json().catch(() => null);
+      if (!response.ok && data?.canJoinAsVoter) {
+        const agreed = window.confirm('정원이 마감되었습니다. 투표자로 참여하시겠습니까?');
+        if (!agreed) throw new Error('참여자 입장을 취소했습니다.');
+        response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nickname: nameToUse, allowVoterFallback: true })
+        });
+        data = await response.json().catch(() => null);
+      }
       if (!response.ok) {
         if (response.status === 401) setShowLoginModal(true);
         throw new Error(data?.error || '참가에 실패했습니다.');
@@ -1169,7 +1367,11 @@ export default function App() {
       setLandingInviteData(null);
       setInviteTokenExpiresAt(null);
       window.history.replaceState({}, '', '/');
-      triggerToast('회의실 참가가 완료되었습니다!');
+      triggerToast(
+        data?.waiting
+          ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
+          : '회의실 참가가 완료되었습니다!'
+      );
       await handleSelectRoom(targetRoomId, userId, nameToUse);
     } catch (err: any) {
       console.error('Join room error:', err);
@@ -1262,7 +1464,7 @@ export default function App() {
     criteria: [],
     proposals: [],
     proposalsCount: 0,
-    participants: [{ roomId: 'room-gominhajo', userId: 'user_gominhajo_test', nickname: 'GOMINHAJO', role: 'HOST', isIdeaDone: true }],
+    participants: [{ roomId: 'room-gominhajo', userId: 'user_gominhajo_test', nickname: 'GOMINHAJO', role: 'PARTICIPANT', isIdeaDone: true }],
     rounds: [],
     evaluatorsCount: 1,
     myEvaluations: [],
@@ -1323,6 +1525,7 @@ export default function App() {
     if (isFetchingRoomRef.current && isSilent) {
       return; // Skip overlapping background poll if previous fetch is still processing
     }
+    activeRoomFetchControllerRef.current?.abort();
     const requestSequence = ++roomFetchSequenceRef.current;
     isFetchingRoomRef.current = true;
 
@@ -1335,6 +1538,7 @@ export default function App() {
     // A stalled background request must release the polling lock so every
     // participant can receive the next authoritative room state.
     const controller = new AbortController();
+    activeRoomFetchControllerRef.current = controller;
     const timeoutId = setTimeout(() => controller.abort(), isSilent ? 10000 : 30000);
 
     let isFetched = false;
@@ -1353,6 +1557,7 @@ export default function App() {
 
         if (data.room && data.room.id) {
           localStorage.setItem(`why_not_room_decision_mode_${data.room.id}`, data.room.decisionMode || 'STRUCTURED');
+          roomStateVersionRef.current = String(data.room.stateVersion || '1');
         }
 
         // The authenticated server response is authoritative. Preserving an
@@ -1422,6 +1627,7 @@ export default function App() {
     } finally {
       if (requestSequence === roomFetchSequenceRef.current) {
         isFetchingRoomRef.current = false;
+        activeRoomFetchControllerRef.current = null;
       }
     }
 
@@ -1507,6 +1713,8 @@ export default function App() {
           maxParticipants: Math.min(newRoomMaxParticipants, 6),
           targetWinnerCount: newRoomTargetWinners,
           decisionMode: newRoomDecisionMode,
+          externalVotersEnabled: newRoomExternalVotersEnabled,
+          requiredVoterCount: newRoomExternalVotersEnabled ? newRoomRequiredVoterCount : 0,
           isPublic: false,
           minResponseThreshold: 1,
           eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
@@ -1523,6 +1731,13 @@ export default function App() {
       const createdRoomId = createdRoom.id;
       const finalDecisionMode = createdRoom.decisionMode || newRoomDecisionMode;
       localStorage.setItem(`why_not_room_decision_mode_${createdRoomId}`, finalDecisionMode);
+      const initialInvites = Array.isArray(createdRoom.invites) ? createdRoom.invites : [];
+      const participantInvite = initialInvites.find((invite: any) => invite.inviteType === 'PARTICIPANT');
+      const voterInvite = initialInvites.find((invite: any) => invite.inviteType === 'VOTER');
+      setActiveInviteToken(participantInvite?.inviteToken || null);
+      setInviteTokenExpiresAt(participantInvite?.expiresAt || null);
+      setActiveVoterInviteToken(voterInvite?.inviteToken || null);
+      setVoterInviteExpiresAt(voterInvite?.expiresAt || null);
 
       triggerToast(`회의실이 성공적으로 생성되었습니다! (방장 닉네임: ${hostNick})`);
       setIsCreatingRoom(false);
@@ -1532,14 +1747,21 @@ export default function App() {
       setNewRoomDecisionMode('STRUCTURED');
       setNewRoomVoteStartTime('');
       setNewRoomVoteEndTime('');
+      setNewRoomExternalVotersEnabled(false);
+      setNewRoomRequiredVoterCount(1);
 
       // Select newly created room, open share modal and refresh dashboard list
       setActiveRoomId(createdRoomId);
-      setRoomDetails(null);
+      if (createdRoom.details?.room?.id === createdRoomId) {
+        const initialDetails = createdRoom.details as RoomDetails;
+        roomStateVersionRef.current = String(initialDetails.room.stateVersion || '1');
+        setRoomDetails(initialDetails);
+      } else {
+        setRoomDetails(null);
+      }
       setShowShareModal(true);
-      await handleGenerateNewInviteToken(createdRoomId);
-      await fetchRoomDetails(createdRoomId);
-      await fetchRooms();
+      if (!createdRoom.details?.room?.id) await fetchRoomDetails(createdRoomId);
+      void fetchRooms();
     } catch (err: any) {
       console.error('Room Creation Failed:', err);
       triggerToast(err.message || '회의실 생성 도중 오류가 발생했습니다.', 'error');
@@ -2086,6 +2308,10 @@ export default function App() {
 
   const handleCompleteCriteriaProposal = async () => {
     if (!activeRoomId) return;
+    if (!roomDetails?.hasMyCriterionProposal) {
+      triggerToast('평가 기준을 최소 1개 등록해야 완료할 수 있습니다.', 'error');
+      return;
+    }
     try {
       const res = await fetch(`/api/rooms/${activeRoomId}/criteria/complete`, { method: 'POST' });
       const data = await res.json().catch(() => null);
@@ -3020,7 +3246,7 @@ export default function App() {
                     {landingInviteData.room?.isPublic ? '🌐 공개 회의실' : '🔒 비공개 회의실'}
                   </span>
 
-                  {/* 3-Minute Live Countdown Badge */}
+                  {/* Server-authoritative invite expiration countdown */}
                   <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border ${
                     inviteSecondsLeft <= 30
                       ? 'bg-rose-50 text-rose-600 border-rose-200 animate-pulse'
@@ -3029,8 +3255,10 @@ export default function App() {
                     <Clock className="w-3.5 h-3.5 text-amber-600" />
                     <span>
                       {inviteSecondsLeft > 0
-                        ? `⏱️ 만료까지 ${Math.floor(inviteSecondsLeft / 60)}분 ${inviteSecondsLeft % 60}초`
-                        : '⏱️ 만료됨 (3분 초과)'}
+                        ? landingInviteData.inviteType === 'VOTER'
+                          ? `⏱️ 만료까지 ${Math.ceil(inviteSecondsLeft / 86400)}일`
+                          : `⏱️ 만료까지 ${Math.floor(inviteSecondsLeft / 60)}분 ${inviteSecondsLeft % 60}초`
+                        : '⏱️ 만료됨'}
                     </span>
                   </div>
                 </div>
@@ -3054,7 +3282,9 @@ export default function App() {
                   <div className="space-y-1">
                     <span className="text-slate-400 font-bold block">👥 현재 참가 인원</span>
                     <span className="font-extrabold text-indigo-600">
-                      {landingInviteData.participantCount} / {landingInviteData.maxParticipants}명 (최대 6명)
+                      {landingInviteData.inviteType === 'VOTER'
+                        ? '외부 투표자 등록'
+                        : `${landingInviteData.participantCount} / ${landingInviteData.maxParticipants}명 (최대 6명)`}
                     </span>
                   </div>
                 </div>
@@ -3076,7 +3306,11 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleJoinRoomViaInvite(landingInviteToken)}
-                    disabled={joiningInvite || inviteSecondsLeft <= 0 || (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6)}
+                    disabled={joiningInvite || inviteSecondsLeft <= 0 || (
+                      landingInviteData.inviteType !== 'VOTER' &&
+                      (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6) &&
+                      !landingInviteData.canJoinAsVoter
+                    )}
                     className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-2xl text-xs font-black transition shadow-md flex items-center justify-center gap-2 cursor-pointer"
                   >
                     {joiningInvite ? (
@@ -3086,8 +3320,12 @@ export default function App() {
                       </>
                     ) : inviteSecondsLeft <= 0 ? (
                       <span>⚠️ 생성 후 3분이 지나 만료되었습니다</span>
-                    ) : (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6) ? (
+                    ) : landingInviteData.inviteType === 'VOTER' ? (
+                      <span>외부 투표자로 등록하기</span>
+                    ) : (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6) && !landingInviteData.canJoinAsVoter ? (
                       <span>⚠️ 정원이 가득 찬 회의실입니다</span>
+                    ) : landingInviteData.canJoinAsVoter ? (
+                      <span>정원 마감 · 투표자 전환 선택</span>
                     ) : (
                       <>
                         <Users className="w-4 h-4" />
@@ -3463,6 +3701,35 @@ export default function App() {
                       </div>
                     </div>
 
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newRoomExternalVotersEnabled}
+                          onChange={e => setNewRoomExternalVotersEnabled(e.target.checked)}
+                          className="mt-0.5 w-4 h-4 accent-indigo-600"
+                        />
+                        <span>
+                          <strong className="block text-xs text-slate-900">최종 별 투표에 외부 투표자 포함</strong>
+                          <span className="block text-[10px] text-slate-500 mt-1">기본값은 참여자만 투표입니다. 외부 투표자는 아이디어·기준·점수 평가에는 참여하지 않습니다.</span>
+                        </span>
+                      </label>
+                      {newRoomExternalVotersEnabled && (
+                        <div className="flex items-center gap-3">
+                          <label className="text-xs font-bold text-slate-700 shrink-0">필요 투표자 수</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={30}
+                            value={newRoomRequiredVoterCount}
+                            onChange={e => setNewRoomRequiredVoterCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
+                            className="w-24 px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold bg-white"
+                          />
+                          <span className="text-[10px] text-slate-500">최대 30명</span>
+                        </div>
+                      )}
+                    </div>
+
                     {/* 2차 투표 가능 시간 (시작~마감 일시) */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
                       <div className="space-y-1">
@@ -3675,7 +3942,9 @@ export default function App() {
 
                       const myRoleBadge = (room.isHost || room.hostId === userId)
                         ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">👑 방장</span>
-                        : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
+                        : room.myRole === '투표자'
+                          ? <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">⭐ 투표자</span>
+                          : <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">👤 참여자</span>;
 
                       const formattedDate = new Date(room.updatedAt || room.createdAt).toLocaleDateString('ko-KR', {
                         month: 'short',
@@ -3817,7 +4086,30 @@ export default function App() {
               </div>
             )}
 
-            {roomDetails && roomDetails.room && (
+            {roomDetails?.waitingForFinalVote && (
+              <div className="max-w-xl mx-auto my-12 bg-white border border-amber-200 rounded-3xl p-8 shadow-xl text-center space-y-5">
+                <div className="w-14 h-14 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center mx-auto">
+                  <Clock className="w-7 h-7 text-amber-600" />
+                </div>
+                <div className="space-y-2">
+                  <span className="text-[10px] font-black tracking-widest text-amber-700">외부 투표자 등록 완료</span>
+                  <h2 className="text-xl font-black text-slate-900">아직 최종 별 투표 단계가 아닙니다</h2>
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    방장이 최종 후보를 확인하고 투표를 시작하면 이 화면에서 바로 별 3개 누적 투표에 참여할 수 있습니다.
+                  </p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-left">
+                  <p className="text-xs font-bold text-slate-700">회의실</p>
+                  <p className="text-sm font-extrabold text-slate-900 mt-1">{roomDetails.room.title}</p>
+                  <p className="text-[11px] text-slate-500 mt-2">현재 단계: {roomDetails.room.status}</p>
+                </div>
+                <button type="button" onClick={() => activeRoomId && fetchRoomDetails(activeRoomId, true)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold">
+                  상태 다시 확인
+                </button>
+              </div>
+            )}
+
+            {roomDetails && roomDetails.room && !roomDetails.waitingForFinalVote && (
               <div className="flex flex-col lg:flex-row gap-8 items-start">
 
                 {/* 1. SIDEBAR (SLEEK THEME DESIGN) */}
@@ -3962,13 +4254,15 @@ export default function App() {
                               </button>
                             </>
                           )}
-                          <button
-                            onClick={() => setShowShareModal(true)}
-                            className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
-                          >
-                            <Copy className="w-3 h-3" />
-                            🔗 공유 링크 발급/관리
-                          </button>
+                          {roomDetails.room?.hostId === userId && (
+                            <button
+                              onClick={() => setShowShareModal(true)}
+                              className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 border border-indigo-600 px-3 py-1 rounded-full transition flex items-center gap-1.5 shadow-xs"
+                            >
+                              <Copy className="w-3 h-3" />
+                              🔗 초대 관리
+                            </button>
+                          )}
                         </div>
 
                         <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
@@ -4739,9 +5033,10 @@ export default function App() {
                           <button
                             type="button"
                             onClick={handleCompleteCriteriaProposal}
-                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold transition"
+                            disabled={!roomDetails.hasMyCriterionProposal}
+                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white rounded-xl text-xs font-extrabold transition"
                           >
-                            기준 제안 완료하기
+                            {roomDetails.hasMyCriterionProposal ? '기준 제안 완료하기' : '평가 기준 1개 등록 후 완료 가능'}
                           </button>
                         </div>
 
@@ -5703,6 +5998,40 @@ export default function App() {
                                 2차 점수 평가 화면으로 이동
                               </button>
                             </div>
+                          ) : roomDetails.room.finalVoteStatus === 'NOT_STARTED' && !cycle ? (
+                            <div className="bg-slate-900 text-white p-5 rounded-2xl shadow-md space-y-4">
+                              <div>
+                                <span className="text-[10px] font-black text-amber-300">최종 후보 확인 완료</span>
+                                <h3 className="text-base font-extrabold mt-1">최종 별 투표 준비</h3>
+                                <p className="text-xs text-slate-300 mt-1 leading-relaxed">방 설정에 따라 최종 투표 참여 인원을 확인한 뒤 방장이 시작합니다.</p>
+                              </div>
+                              {roomDetails.voterSetup?.enabled ? (
+                                <div className="bg-white/10 rounded-xl p-3 space-y-1 text-xs">
+                                  <p className="font-bold">외부 투표자 등록 {roomDetails.voterSetup.registeredCount}/{roomDetails.voterSetup.requiredCount}명</p>
+                                  {roomDetails.voterSetup.pendingCount > 0 && <p className="text-slate-300">계정 초대 수락 대기 {roomDetails.voterSetup.pendingCount}명</p>}
+                                </div>
+                              ) : (
+                                <p className="bg-white/10 rounded-xl p-3 text-xs font-bold">기존 참여자만 최종 투표에 참여합니다.</p>
+                              )}
+                              {roomDetails.room.hostId === userId ? (
+                                <>
+                                  <button type="button" onClick={() => setShowShareModal(true)} className="w-full py-3 bg-white text-slate-900 rounded-xl text-xs font-black">투표자 초대 관리</button>
+                                  <button
+                                    type="button"
+                                    onClick={handleStartFinalVote}
+                                    disabled={!roomDetails.voterSetup?.canStartFinalVote}
+                                    className="w-full py-3 bg-amber-400 text-slate-950 rounded-xl text-xs font-black disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    최종 별 투표 시작
+                                  </button>
+                                  {!roomDetails.voterSetup?.canStartFinalVote && (
+                                    <p className="text-[10px] text-amber-200">설정한 외부 투표자 등록이 완료되면 시작할 수 있습니다.</p>
+                                  )}
+                                </>
+                              ) : (
+                                <p className="text-xs font-bold text-amber-200">방장이 최종 별 투표를 준비하고 있습니다.</p>
+                              )}
+                            </div>
                           ) : cycle?.status === 'VOTING' ? (
                             <div className="bg-gradient-to-br from-amber-400 to-amber-500 text-slate-950 p-5 rounded-2xl shadow-md space-y-4">
                               <div>
@@ -5717,6 +6046,9 @@ export default function App() {
                                 </>
                               ) : (
                                 <button type="button" onClick={() => setShowFinalVoteModal(true)} className="w-full py-3 bg-slate-950 text-amber-300 rounded-xl text-xs font-black">별 3개 투표하기</button>
+                              )}
+                              {roomDetails.room.hostId === userId && cycle.submittedCount < cycle.expectedCount && (
+                                <button type="button" onClick={handleCancelFinalVoteCycle} className="w-full py-2.5 bg-white/60 text-rose-800 border border-rose-300 rounded-xl text-[11px] font-black">미완료 회차 취소 후 명단 다시 설정</button>
                               )}
                             </div>
                           ) : cycle?.status === 'CONSENT' ? (
@@ -7175,7 +7507,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white p-6 md:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-6 text-left"
+              className="bg-white p-6 md:p-8 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl space-y-6 text-left"
             >
               <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                 <div className="flex items-center gap-3">
@@ -7196,7 +7528,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Card 1: ① 참여자 전용 링크 */}
+              {/* Card 1: participant account / link invite */}
               <div className="p-5 bg-indigo-50/50 rounded-3xl border border-indigo-100/80 space-y-4">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold px-3 py-1 rounded-full bg-indigo-600 text-white">
@@ -7209,20 +7541,21 @@ export default function App() {
                   회의에 직접 동참하여 아이디어를 발제하고 익명 평가 기준을 제출하는 핵심 참여자 링크입니다. (입장 시 닉네임 최대 6자 설정)
                 </p>
 
-                {/* Email invitation form */}
+                {/* Existing account invitation form */}
                 <form onSubmit={handleSendEmailInvite} className="flex gap-2.5">
                   <input
-                    type="email"
+                    type="text"
                     value={inviteEmailInput}
                     onChange={e => setInviteEmailInput(e.target.value)}
-                    placeholder="참여자 이메일 입력 (예: member@company.com)"
+                    placeholder="가입된 참여자 로그인 아이디"
                     className="flex-1 px-4 py-3 border border-indigo-200/80 rounded-2xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium bg-white"
                   />
                   <button
                     type="submit"
+                    disabled={isManagingInvites || roomDetails?.room.status !== 'IDEA_SUBMISSION'}
                     className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl text-xs font-bold transition shadow-xs shrink-0"
                   >
-                    이메일 초대
+                    계정 초대
                   </button>
                 </form>
 
@@ -7250,6 +7583,96 @@ export default function App() {
                   <span>참여자 전용 복사 링크</span>
                 </button>
               </div>
+
+              {roomDetails?.room.externalVotersEnabled && (
+                <div className="p-5 bg-amber-50/70 rounded-3xl border border-amber-200 space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-950 text-amber-300">② 외부 투표자 초대</span>
+                    <span className="text-xs font-bold text-slate-800">
+                      등록 {roomDetails.voterSetup?.registeredCount || 0}/{roomDetails.voterSetup?.requiredCount || roomDetails.room.requiredVoterCount || 0}명
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 leading-relaxed">외부 투표자는 최종 별 투표에만 참여합니다. 그 전에는 대기 화면만 표시됩니다.</p>
+                  <div className="flex gap-2.5">
+                    <input
+                      type="text"
+                      value={voterLoginIdInput}
+                      onChange={e => setVoterLoginIdInput(e.target.value)}
+                      placeholder="가입된 투표자 로그인 아이디"
+                      className="flex-1 px-4 py-3 border border-amber-200 rounded-2xl text-xs focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium bg-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={isManagingInvites || Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                      onClick={() => void handleCreateAccountInvite('VOTER')}
+                      className="px-5 py-3 bg-slate-950 text-amber-300 rounded-2xl text-xs font-bold disabled:opacity-40"
+                    >
+                      계정 초대
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      disabled={Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                      onClick={async () => {
+                        let token = activeVoterInviteToken;
+                        if (!token && activeRoomId) token = await handleGenerateNewInviteToken(activeRoomId, 'VOTER');
+                        if (!token) return;
+                        await copyToClipboard(`${window.location.origin}/invite/${token}`);
+                        triggerToast('투표자 초대 링크가 복사되었습니다.');
+                      }}
+                      className="py-3 bg-white border border-amber-200 text-slate-900 rounded-2xl text-xs font-bold disabled:opacity-40"
+                    >
+                      <Copy className="w-4 h-4 inline mr-1" /> 투표자 링크 복사
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!activeVoterInviteToken || Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                      onClick={() => activeRoomId && void handleDeactivateInviteToken(activeRoomId, 'VOTER')}
+                      className="py-3 bg-white border border-rose-200 text-rose-700 rounded-2xl text-xs font-bold disabled:opacity-40"
+                    >
+                      투표자 링크 폐기
+                    </button>
+                  </div>
+                  {voterInviteExpiresAt && <p className="text-[10px] text-slate-500">현재 링크 만료: {new Date(voterInviteExpiresAt).toLocaleString()}</p>}
+                  {(roomDetails.voterSetup?.registrations || []).length > 0 && (
+                    <div className="rounded-2xl border border-amber-200 bg-white p-3 space-y-2">
+                      <h4 className="text-[11px] font-extrabold text-slate-900">등록된 외부 투표자</h4>
+                      {(roomDetails.voterSetup?.registrations || []).map(registration => (
+                        <div key={registration.userId} className="flex items-center justify-between gap-3 rounded-xl bg-amber-50 px-3 py-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-800 truncate">{registration.nickname}</p>
+                            <p className="text-[10px] text-slate-500">{registration.status === 'ACTIVE' ? '최종 투표 참여 중' : '최종 투표 대기 중'}</p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isManagingInvites || registration.status === 'ACTIVE' || Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                            onClick={() => void handleCancelRegisteredVoter(registration.userId)}
+                            className="text-[10px] font-bold text-rose-600 disabled:opacity-40"
+                          >
+                            등록 취소
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {accountInvites.filter(invite => invite.status === 'PENDING').length > 0 && (
+                <div className="rounded-2xl border border-slate-200 p-4 space-y-2">
+                  <h4 className="text-xs font-extrabold text-slate-900">대기 중 계정 초대</h4>
+                  {accountInvites.filter(invite => invite.status === 'PENDING').map(invite => (
+                    <div key={invite.id} className="flex items-center justify-between gap-3 bg-slate-50 rounded-xl px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-800 truncate">{invite.loginId}</p>
+                        <p className="text-[10px] text-slate-500">{invite.role === 'VOTER' ? '외부 투표자' : '참여자'}</p>
+                      </div>
+                      <button type="button" disabled={isManagingInvites} onClick={() => void handleCancelAccountInvite(invite.id)} className="text-[10px] font-bold text-rose-600">초대 취소</button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Footer close button */}
               <div className="pt-1 text-right">
@@ -7811,6 +8234,40 @@ export default function App() {
                       className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-3">
+                  <label className={`flex items-start gap-3 ${roomDetails?.room.finalVoteRosterLockedAt ? 'opacity-60' : 'cursor-pointer'}`}>
+                    <input
+                      type="checkbox"
+                      checked={editExternalVotersEnabled}
+                      disabled={Boolean(roomDetails?.room.finalVoteRosterLockedAt)}
+                      onChange={e => setEditExternalVotersEnabled(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-indigo-600"
+                    />
+                    <span>
+                      <strong className="block text-xs text-slate-900">최종 별 투표에 외부 투표자 포함</strong>
+                      <span className="block text-[10px] text-slate-500 mt-1">체크하지 않으면 기존 참여자만 최종 투표에 참여합니다.</span>
+                    </span>
+                  </label>
+                  {editExternalVotersEnabled && (
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs font-bold text-slate-700 shrink-0">필요 투표자 수</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        disabled={Boolean(roomDetails?.room.finalVoteRosterLockedAt)}
+                        value={editRequiredVoterCount}
+                        onChange={e => setEditRequiredVoterCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-24 px-3 py-2 border border-indigo-200 rounded-xl text-xs font-bold bg-white disabled:bg-slate-100"
+                      />
+                      <span className="text-[10px] text-slate-500">최대 30명</span>
+                    </div>
+                  )}
+                  {roomDetails?.room.finalVoteRosterLockedAt && (
+                    <p className="text-[10px] text-slate-500">현재 최종 투표 회차의 명단이 확정되어 이 설정을 변경할 수 없습니다.</p>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
