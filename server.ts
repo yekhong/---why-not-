@@ -256,7 +256,7 @@ async function acceptPendingRoomAccountInvites(userId: string): Promise<Array<{
   waiting: boolean;
 }>> {
   if (!SUPABASE_CONFIGURED) return [];
-  const { data, error } = await supabase.rpc('accept_room_account_invites_v9', {
+  const { data, error } = await supabase.rpc('accept_participant_account_invites_v10', {
     p_user_id: userId
   });
   if (error) {
@@ -3293,6 +3293,47 @@ app.post('/api/auth/logout', async (req, res) => {
   return res.json({ ok: true });
 });
 
+
+// V10 lightweight voter-account-invite endpoints. These routes deliberately sit
+// outside /api/rooms because a pending invitee is not a room member yet.
+app.get('/api/account-invites/voters/pending', async (req: AuthenticatedRequest, res) => {
+  await requireAuth(req, res, async () => {
+    if (!SUPABASE_CONFIGURED) return res.json({ invites: [] });
+    const { data, error } = await supabase.rpc('list_pending_voter_account_invites_v10', {
+      p_user_id: req.auth!.userId
+    });
+    if (error) {
+      return res.status(503).json({ error: '투표자 초대 상태를 확인하지 못했습니다.' });
+    }
+    return res.json({ invites: Array.isArray(data) ? data : [] });
+  });
+});
+
+app.post('/api/account-invites/voters/:inviteId/respond', async (req: AuthenticatedRequest, res) => {
+  await requireAuth(req, res, async () => {
+    if (!SUPABASE_CONFIGURED) {
+      return res.status(503).json({ error: '투표자 초대 저장소가 연결되지 않았습니다.' });
+    }
+    const response = typeof req.body?.response === 'string' ? req.body.response.trim().toUpperCase() : '';
+    if (response !== 'ACCEPT' && response !== 'DECLINE') {
+      return res.status(400).json({ error: '초대 수락 또는 거절을 선택해 주세요.' });
+    }
+    const { data, error } = await supabase.rpc('respond_voter_account_invite_v10', {
+      p_user_id: req.auth!.userId,
+      p_invite_id: req.params.inviteId,
+      p_response: response
+    });
+    if (error) {
+      const conflict = error.code === 'P0001' || error.code === '23505';
+      const message = /외부 투표자 인원|외부 투표자.*등록|정원/i.test(error.message || '')
+        ? '투표 정원이 마감되었습니다.'
+        : error.message || '투표자 초대 응답을 처리하지 못했습니다.';
+      return res.status(conflict ? 409 : 503).json({ error: message });
+    }
+    return res.json(data || { success: true });
+  });
+});
+
 async function isRoomMember(roomId: string, userId: string): Promise<boolean> {
   const inMemoryRoom = rooms.get(roomId);
   if (!SUPABASE_CONFIGURED) {
@@ -3986,14 +4027,17 @@ app.post('/api/rooms/:id/account-invites', async (req: AuthenticatedRequest, res
   });
   if (error) {
     const conflict = error.code === 'P0001' || error.code === '23505';
-    return res.status(conflict ? 409 : 503).json({ error: error.message || '계정 초대를 만들지 못했습니다.' });
+    const message = role === 'VOTER' && /외부 투표자 인원|예약|정원/i.test(error.message || '')
+      ? '투표 정원이 마감되었습니다.'
+      : error.message || '계정 초대를 만들지 못했습니다.';
+    return res.status(conflict ? 409 : 503).json({ error: message });
   }
   return res.status(201).json({ success: true, invite: data });
 });
 
 app.delete('/api/rooms/:id/account-invites/:inviteId', async (req: AuthenticatedRequest, res) => {
   if (!SUPABASE_CONFIGURED) return res.status(503).json({ error: '계정 초대 저장소가 연결되지 않았습니다.' });
-  const { data, error } = await supabase.rpc('cancel_room_account_invite_v9', {
+  const { data, error } = await supabase.rpc('cancel_room_account_invite_v10', {
     p_room_id: req.params.id,
     p_host_user_id: req.auth!.userId,
     p_invite_id: req.params.inviteId
@@ -4109,7 +4153,7 @@ app.get('/api/invites/:token', async (req, res) => {
     return res.json({
       isValid: false,
       errorCode: 'VOTER_CAPACITY_FULL',
-      errorMessage: '설정한 외부 투표자 인원이 모두 등록되었습니다.'
+      errorMessage: '투표 정원이 마감되었습니다.'
     });
   }
 
@@ -4239,11 +4283,14 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
     if (error) {
       const conflict = error.code === 'P0001' || /단계|인원|회의실|찾을 수/i.test(error.message || '');
       const participantFull = /PARTICIPANT_FULL_VOTER_AVAILABLE/.test(error.message || '');
+      const voterFull = inv.inviteType === 'VOTER' && /외부 투표자 인원|등록|정원/i.test(error.message || '');
       return res.status(conflict ? 409 : 503).json({
         error: participantFull
           ? '정원이 마감되었습니다. 투표자로 참여하시겠습니까?'
-          : error.message || '참여 정보를 안전하게 저장하지 못했습니다.',
-        errorCode: participantFull ? 'PARTICIPANT_FULL_VOTER_AVAILABLE' : undefined,
+          : voterFull
+            ? '투표 정원이 마감되었습니다.'
+            : error.message || '참여 정보를 안전하게 저장하지 못했습니다.',
+        errorCode: participantFull ? 'PARTICIPANT_FULL_VOTER_AVAILABLE' : voterFull ? 'VOTER_CAPACITY_FULL' : undefined,
         canJoinAsVoter: participantFull
       });
     }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Plus,
@@ -46,6 +47,7 @@ import {
   Participant,
   InviteDetailsResponse,
   AccountRoomInvite,
+  PendingVoterAccountInvite,
   ParticipantRole
 } from './types';
 
@@ -73,6 +75,21 @@ type RefinementState = {
     suggestionText: string;
   }>>;
 };
+
+function getRoomStageLabel(status: RoomStatus): string {
+  switch (status) {
+    case 'DRAFT': return '준비 중';
+    case 'IDEA_SUBMISSION': return '아이디어 등록';
+    case 'CRITERIA_PROPOSAL': return '평가 기준 제안';
+    case 'CRITERIA_REVIEW': return '평가 기준 확인';
+    case 'EVALUATION': return '1차 평가';
+    case 'EVALUATION_ROUND_2': return '2차 평가';
+    case 'ELIMINATION':
+    case 'FINAL_VOTE': return '최종 별 투표';
+    case 'CLOSED': return '회의 종료';
+    default: return status;
+  }
+}
 
 
 // Custom lightweight Markdown-to-JSX Parser for the AI reports
@@ -406,6 +423,9 @@ export default function App() {
   const [activeVoterInviteToken, setActiveVoterInviteToken] = useState<string | null>(null);
   const [voterInviteExpiresAt, setVoterInviteExpiresAt] = useState<string | null>(null);
   const [accountInvites, setAccountInvites] = useState<AccountRoomInvite[]>([]);
+  const [pendingVoterAccountInvites, setPendingVoterAccountInvites] = useState<PendingVoterAccountInvite[]>([]);
+  const voterInviteCheckInFlightRef = useRef(false);
+  const [isRespondingVoterAccountInvite, setIsRespondingVoterAccountInvite] = useState(false);
   const [voterLoginIdInput, setVoterLoginIdInput] = useState('');
   const [isManagingInvites, setIsManagingInvites] = useState(false);
 
@@ -1015,6 +1035,89 @@ export default function App() {
     };
   }, []);
 
+  const fetchPendingVoterAccountInvites = async (showError = false) => {
+    if (!isLoggedIn || !userId || voterInviteCheckInFlightRef.current) return;
+    voterInviteCheckInFlightRef.current = true;
+    try {
+      const response = await fetch('/api/account-invites/voters/pending', { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401) return;
+        throw new Error(data?.error || '투표자 초대 상태를 확인하지 못했습니다.');
+      }
+      setPendingVoterAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
+    } catch (error) {
+      if (showError) {
+        triggerToast(error instanceof Error ? error.message : '투표자 초대 상태를 확인하지 못했습니다.', 'error');
+      }
+    } finally {
+      voterInviteCheckInFlightRef.current = false;
+    }
+  };
+
+  // V10: voter account invitations are checked independently from the room payload.
+  // This keeps the poll lightweight and prevents voter invites from being auto-accepted.
+  useEffect(() => {
+    if (!isLoggedIn || !userId) {
+      setPendingVoterAccountInvites([]);
+      return;
+    }
+
+    void fetchPendingVoterAccountInvites(false);
+    const interval = window.setInterval(() => {
+      void fetchPendingVoterAccountInvites(false);
+    }, 45000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchPendingVoterAccountInvites(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isLoggedIn, userId]);
+
+  const handleRespondVoterAccountInvite = async (
+    invite: PendingVoterAccountInvite,
+    responseType: 'ACCEPT' | 'DECLINE'
+  ) => {
+    if (isRespondingVoterAccountInvite) return;
+    setIsRespondingVoterAccountInvite(true);
+    try {
+      const response = await fetch(`/api/account-invites/voters/${encodeURIComponent(invite.id)}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ response: responseType })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '투표자 초대 응답을 처리하지 못했습니다.');
+
+      setPendingVoterAccountInvites(current => current.filter(item => item.id !== invite.id));
+
+      if (responseType === 'ACCEPT') {
+        const targetRoomId = String(data?.roomId || invite.roomId);
+        setActiveRoomId(targetRoomId);
+        setRoomDetails(null);
+        localStorage.setItem('why_not_active_room_id', targetRoomId);
+        localStorage.setItem('why_not_user_role', 'VOTER');
+        window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(targetRoomId)}&role=voter`);
+        triggerToast('투표자 초대를 수락했습니다. 아직 투표를 진행할 단계가 아니라면 대기 화면이 표시됩니다.');
+        await fetchRoomDetails(targetRoomId);
+        void fetchRooms();
+      } else {
+        triggerToast('투표자 초대를 거절했습니다. 예약된 투표 좌석이 반환되었습니다.');
+      }
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '투표자 초대 응답을 처리하지 못했습니다.', 'error');
+      void fetchPendingVoterAccountInvites(false);
+    } finally {
+      setIsRespondingVoterAccountInvite(false);
+    }
+  };
+
   // Invite landing data is public only for an unexpired, unrevoked token.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1205,14 +1308,16 @@ export default function App() {
     }
   };
 
-  const fetchAccountInvites = async (roomId: string) => {
+  const fetchAccountInvites = async (roomId: string, silent = false) => {
     try {
       const response = await fetch(`/api/rooms/${roomId}/account-invites`, { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '계정 초대 현황을 불러오지 못했습니다.');
       setAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
     } catch (error) {
-      triggerToast(error instanceof Error ? error.message : '계정 초대 현황을 불러오지 못했습니다.', 'error');
+      if (!silent) {
+        triggerToast(error instanceof Error ? error.message : '계정 초대 현황을 불러오지 못했습니다.', 'error');
+      }
     }
   };
 
@@ -1298,9 +1403,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (showShareModal && activeRoomId && roomDetails?.room.hostId === userId) {
-      void fetchAccountInvites(activeRoomId);
-    }
+    if (!(showShareModal && activeRoomId && roomDetails?.room.hostId === userId)) return;
+
+    void fetchAccountInvites(activeRoomId, false);
+    const interval = window.setInterval(() => {
+      void fetchAccountInvites(activeRoomId, true);
+    }, 15000);
+
+    return () => window.clearInterval(interval);
   }, [showShareModal, activeRoomId, roomDetails?.room.hostId, userId]);
 
   // Fetch Invite Landing Details
@@ -2961,6 +3071,50 @@ export default function App() {
   const myDirectProposalsCount = Math.max(0, myProposals.length - myAiProposalsCount);
   const myProposalsCount = myProposals.length;
   const totalProposalsCount = roomDetails?.proposalsCount || (roomDetails?.proposals || []).length;
+  const currentPendingVoterInvite = pendingVoterAccountInvites[0] || null;
+  const waitingVoterNotice = roomDetails?.waitingForFinalVote ? (() => {
+    const waitingRoom = roomDetails.room;
+    if (waitingRoom.status === 'CLOSED' && waitingRoom.finalVoteStatus === 'FINALIZED') {
+      if (!waitingRoom.finalVoteRosterLockedAt) {
+        return {
+          eyebrow: '최종 투표 생략',
+          title: '최종 투표가 생략되었습니다.',
+          description: '후보 수가 최종 결정 수 이하라 별 투표 없이 결과가 확정되었습니다.'
+        };
+      }
+      return {
+        eyebrow: '결과 확정',
+        title: '최종 결과가 확정되었습니다.',
+        description: '최종 별 투표가 종료되어 결과가 확정되었습니다.'
+      };
+    }
+    if (waitingRoom.finalVoteStatus === 'FINALIZED') {
+      return {
+        eyebrow: '결과 확정',
+        title: '최종 결과가 확정되었습니다.',
+        description: '최종 별 투표 결과가 확정되어 더 이상 투표를 제출할 수 없습니다.'
+      };
+    }
+    if (waitingRoom.finalVoteRosterLockedAt) {
+      return {
+        eyebrow: '투표 종료',
+        title: '투표 참여가 종료되었습니다.',
+        description: '최종 투표 명단이 이미 확정되어 현재 계정은 이번 투표에 참여할 수 없습니다.'
+      };
+    }
+    if (waitingRoom.status === 'CLOSED') {
+      return {
+        eyebrow: '투표 종료',
+        title: '투표가 종료되었습니다.',
+        description: '회의가 종료되어 더 이상 최종 투표에 참여할 수 없습니다.'
+      };
+    }
+    return {
+      eyebrow: '투표자 등록 완료',
+      title: '아직 투표를 진행할 단계가 아닙니다.',
+      description: '방장이 최종 후보를 확인하고 투표를 시작하면 이 화면에서 별 3개 누적 투표에 참여할 수 있습니다.'
+    };
+  })() : null;
 
   // ----------------------------------------------------------------
   // Render Main Body
@@ -3025,23 +3179,108 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Toast Alert */}
+      {/* V10 voter account invitation consent popup */}
       <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg flex items-center gap-2 border text-sm max-w-sm ${toast.type === 'success'
-              ? 'bg-indigo-900 text-white border-indigo-800'
-              : 'bg-rose-50 text-rose-800 border-rose-200'
-              }`}
+        {currentPendingVoterInvite && (
+          <div
+            className="fixed inset-0 z-[100] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voter-account-invite-title"
           >
-            {toast.type === 'success' ? <Check className="w-4 h-4 text-emerald-400" /> : <AlertCircle className="w-4 h-4 text-rose-500" />}
-            <span className="font-medium">{toast.message}</span>
-          </motion.div>
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 12 }}
+              className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-amber-200 overflow-hidden"
+            >
+              <div className="bg-slate-950 px-6 py-5 text-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black tracking-[0.18em] text-amber-300">VOTER INVITATION</p>
+                    <h2 id="voter-account-invite-title" className="text-xl font-black mt-1">투표자로 초대받았습니다.</h2>
+                  </div>
+                  {pendingVoterAccountInvites.length > 1 && (
+                    <span className="shrink-0 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-bold text-slate-200">
+                      대기 {pendingVoterAccountInvites.length}건
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-6 space-y-5">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 divide-y divide-slate-200">
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">회의실</span>
+                    <span className="text-sm font-extrabold text-slate-900 text-right">{currentPendingVoterInvite.roomTitle}</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">초대한 사람</span>
+                    <span className="text-sm font-bold text-slate-800 text-right">{currentPendingVoterInvite.invitedBy}</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">초대 역할</span>
+                    <span className="text-sm font-black text-amber-700">투표자</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">현재 진행 단계</span>
+                    <span className="text-sm font-bold text-slate-800 text-right">{getRoomStageLabel(currentPendingVoterInvite.roomStatus)}</span>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+                  <p className="text-xs leading-relaxed font-semibold text-amber-950">
+                    투표자는 아이디어 등록·평가 기준·점수 평가에는 참여하지 않으며, 방장이 시작하는 최종 별 투표에만 참여합니다.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    disabled={isRespondingVoterAccountInvite}
+                    onClick={() => void handleRespondVoterAccountInvite(currentPendingVoterInvite, 'DECLINE')}
+                    className="py-3.5 rounded-2xl border border-slate-300 bg-white text-slate-700 text-sm font-extrabold hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    거절
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRespondingVoterAccountInvite}
+                    onClick={() => void handleRespondVoterAccountInvite(currentPendingVoterInvite, 'ACCEPT')}
+                    className="py-3.5 rounded-2xl bg-slate-950 text-amber-300 text-sm font-extrabold hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isRespondingVoterAccountInvite ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    수락
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
+
+      {/* Toast Alert: render above every modal through the document-body portal. */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              role="alert"
+              aria-live="assertive"
+              className={`fixed top-4 right-4 z-[110] px-4 py-3 rounded-xl shadow-lg flex items-start gap-2 border text-sm max-w-sm whitespace-pre-line ${toast.type === 'success'
+                ? 'bg-indigo-900 text-white border-indigo-800'
+                : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}
+            >
+              {toast.type === 'success' ? <Check className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />}
+              <span className="font-medium">{toast.message}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* Global Navigation Header (Sleek Interface Style) */}
       <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm backdrop-blur-md">
@@ -3214,6 +3453,7 @@ export default function App() {
                     {landingInviteData?.errorCode === 'EXPIRED' ? '생성된 지 3분이 지나 만료된 초대 링크입니다' :
                      landingInviteData?.errorCode === 'DEACTIVATED' ? '방장에 의해 비활성화된 초대 링크입니다' :
                      landingInviteData?.errorCode === 'CAPACITY_FULL' ? '최대 참가 가능 인원이 초과된 회의실입니다' :
+                     landingInviteData?.errorCode === 'VOTER_CAPACITY_FULL' ? '투표 정원이 마감되었습니다.' :
                      (landingInviteData as any)?.errorCode === 'ROOM_STARTED' ? '이미 진행이 시작된 회의실입니다' :
                      landingInviteData?.errorCode === 'ROOM_CLOSED' ? '이미 종료된 회의실입니다' :
                      landingInviteData?.errorCode === 'ROOM_DELETED' ? '삭제된 회의실입니다' :
@@ -4092,16 +4332,16 @@ export default function App() {
                   <Clock className="w-7 h-7 text-amber-600" />
                 </div>
                 <div className="space-y-2">
-                  <span className="text-[10px] font-black tracking-widest text-amber-700">외부 투표자 등록 완료</span>
-                  <h2 className="text-xl font-black text-slate-900">아직 최종 별 투표 단계가 아닙니다</h2>
+                  <span className="text-[10px] font-black tracking-widest text-amber-700">{waitingVoterNotice?.eyebrow}</span>
+                  <h2 className="text-xl font-black text-slate-900">{waitingVoterNotice?.title}</h2>
                   <p className="text-sm text-slate-600 leading-relaxed">
-                    방장이 최종 후보를 확인하고 투표를 시작하면 이 화면에서 바로 별 3개 누적 투표에 참여할 수 있습니다.
+                    {waitingVoterNotice?.description}
                   </p>
                 </div>
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-left">
                   <p className="text-xs font-bold text-slate-700">회의실</p>
                   <p className="text-sm font-extrabold text-slate-900 mt-1">{roomDetails.room.title}</p>
-                  <p className="text-[11px] text-slate-500 mt-2">현재 단계: {roomDetails.room.status}</p>
+                  <p className="text-[11px] text-slate-500 mt-2">현재 단계: {getRoomStageLabel(roomDetails.room.status)}</p>
                 </div>
                 <button type="button" onClick={() => activeRoomId && fetchRoomDetails(activeRoomId, true)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold">
                   상태 다시 확인
@@ -7593,6 +7833,11 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 leading-relaxed">외부 투표자는 최종 별 투표에만 참여합니다. 그 전에는 대기 화면만 표시됩니다.</p>
+                  {(roomDetails.voterSetup?.remainingCount ?? 0) <= 0 && (
+                    <p className="rounded-xl border border-amber-300 bg-amber-100 px-3 py-2 text-xs font-extrabold text-amber-900">
+                      투표 정원이 마감되었습니다.
+                    </p>
+                  )}
                   <div className="flex gap-2.5">
                     <input
                       type="text"
@@ -7603,7 +7848,11 @@ export default function App() {
                     />
                     <button
                       type="button"
-                      disabled={isManagingInvites || Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                      disabled={
+                        isManagingInvites ||
+                        Boolean(roomDetails.room.finalVoteRosterLockedAt) ||
+                        (roomDetails.voterSetup?.remainingCount ?? 0) <= 0
+                      }
                       onClick={() => void handleCreateAccountInvite('VOTER')}
                       className="px-5 py-3 bg-slate-950 text-amber-300 rounded-2xl text-xs font-bold disabled:opacity-40"
                     >
@@ -7613,7 +7862,10 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button
                       type="button"
-                      disabled={Boolean(roomDetails.room.finalVoteRosterLockedAt)}
+                      disabled={
+                        Boolean(roomDetails.room.finalVoteRosterLockedAt) ||
+                        (roomDetails.voterSetup?.remainingCount ?? 0) <= 0
+                      }
                       onClick={async () => {
                         let token = activeVoterInviteToken;
                         if (!token && activeRoomId) token = await handleGenerateNewInviteToken(activeRoomId, 'VOTER');

@@ -272,10 +272,23 @@ export interface AccountRoomInvite {
   roomId: string;
   loginId: string;
   role: ParticipantRole;
-  status: 'PENDING' | 'ACCEPTED' | 'CANCELED' | 'EXPIRED';
+  status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELED' | 'EXPIRED';
   createdAt: string;
   acceptedAt?: string;
   canceledAt?: string;
+  respondedAt?: string;
+}
+
+export interface PendingVoterAccountInvite {
+  id: string;
+  roomId: string;
+  roomTitle: string;
+  invitedBy: string;
+  role: 'VOTER';
+  status: 'PENDING';
+  roomStatus: RoomStatus;
+  finalVoteStatus?: FinalVoteStatus;
+  createdAt: string;
 }
 
 export interface ScoreRoundResult {
@@ -378,7 +391,7 @@ export interface RoomInvite {
 
 export interface InviteDetailsResponse {
   isValid: boolean;
-  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'ERROR';
+  errorCode?: 'NOT_FOUND' | 'DEACTIVATED' | 'EXPIRED' | 'ROOM_DELETED' | 'ROOM_CLOSED' | 'CAPACITY_FULL' | 'VOTER_CAPACITY_FULL' | 'ERROR';
   errorMessage?: string;
   room?: Room;
   hostNickname?: string;

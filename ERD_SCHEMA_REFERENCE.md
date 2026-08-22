@@ -106,11 +106,12 @@ erDiagram
 | `invited_login_id` | `TEXT` | 정규화된 가입 아이디 |
 | `invited_user_id` | `UUID` | `user_accounts.id` FK, 계정 삭제 시 연쇄 삭제 |
 | `invite_role` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
-| `status` | `TEXT` | `PENDING`, `ACCEPTED`, `CANCELED`, `EXPIRED` |
+| `status` | `TEXT` | `PENDING`, `ACCEPTED`, `DECLINED`, `CANCELED`, `EXPIRED` |
 | `created_by` | `TEXT` | 초대를 만든 방장 ID |
-| `accepted_at` | `TIMESTAMPTZ` | 자동 매칭 완료 시각 |
+| `accepted_at` | `TIMESTAMPTZ` | 초대 수락 완료 시각 |
+| `responded_at` | `TIMESTAMPTZ` | 수락·거절·취소·만료 등 초대 응답/종료 시각 |
 
-대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 초대는 좌석을 예약하며 1단계가 끝나면 자동 만료됩니다.
+대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 초대는 좌석을 예약하며 로그인 시 자동 수락되고 1단계가 끝나면 자동 만료됩니다. 투표자 계정 초대는 좌석만 예약하며 초대받은 사용자가 명시적으로 수락해야 `room_voter_registrations`에 등록되고, 거절 시 예약 좌석을 즉시 반환합니다.
 
 ### `room_voter_registrations`
 
@@ -181,13 +182,14 @@ erDiagram
 - 평가·최종 투표의 완료 결과는 회차 스냅샷을 기준으로 재사용하며 과거 투표지를 새 회차에 재사용하지 않습니다.
 - 외부 투표자는 1·2차 평가 정족수와 최소 응답 정족수에 포함하지 않습니다.
 
-## 6. V9 데이터 조작 요약
+## 6. V10 데이터 조작 요약
 
 | 동작 | 주요 테이블 | 조작 |
 |---|---|---|
 | 방 생성 | `rooms`, `participants`, `room_invites` | 단일 RPC `INSERT` |
 | 계정 초대 | `room_account_invites` | 좌석 확인 후 `INSERT` |
-| 로그인 자동 입장 | `room_account_invites`, `participants` 또는 `room_voter_registrations` | `UPDATE` + `UPSERT` |
+| 참여자 로그인 자동 입장 | `room_account_invites`, `participants` | `UPDATE` + `UPSERT` |
+| 투표자 초대 수락·거절 | `room_account_invites`, `room_voter_registrations` | 명시적 응답 후 `UPDATE` + 필요 시 `UPSERT` |
 | 링크 입장 | `participants` 또는 `room_voter_registrations` | 잠금 후 `UPSERT` |
 | 최종 투표 시작 | `participants`, `room_voter_registrations`, `room_phase_participants`, `rooms` | 명단 활성화·고정 |
 | 미완료 회차 취소 | `final_vote_cycles`, `room_phase_participants`, `room_voter_registrations`, `rooms` | 이전 투표지 보존, 새 회차용 명단 재구성 |
