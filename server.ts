@@ -135,7 +135,8 @@ interface AuthenticatedRequest extends Request {
 }
 
 const SESSION_COOKIE_NAME = 'whynot_session';
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const SESSION_TTL_SECONDS = 60 * 60 * 24;
+const SESSION_ACTIVITY_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const sessionStore = new Map<string, UserSession>();
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -234,6 +235,19 @@ function normalizeNickname(value: unknown): string | null {
   return normalized;
 }
 
+function normalizeRoomNickname(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (
+    normalized.length < 1 ||
+    normalized.length > 6 ||
+    /[\u0000-\u001F\u007F]/.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
 function normalizeOptionalHttpUrl(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string' || value.length > 2048) {
@@ -248,30 +262,6 @@ function normalizeOptionalHttpUrl(value: unknown): string | undefined {
   } catch {
     throw new Error('참고 링크는 http 또는 https 주소만 사용할 수 있습니다.');
   }
-}
-
-async function acceptPendingRoomAccountInvites(userId: string): Promise<Array<{
-  roomId: string;
-  role: ParticipantRole;
-  waiting: boolean;
-}>> {
-  if (!SUPABASE_CONFIGURED) return [];
-  const { data, error } = await supabase.rpc('accept_participant_account_invites_v10', {
-    p_user_id: userId
-  });
-  if (error) {
-    // 로그인 자체를 초대 처리 실패와 묶지 않는다. 사용자는 로그인 후 다시
-    // 접속하면 다음 상태 갱신에서 안전하게 재시도할 수 있다.
-    console.warn('Account invite auto-match notice:', error.message);
-    return [];
-  }
-  return Array.isArray(data)
-    ? data.map((item: any): { roomId: string; role: ParticipantRole; waiting: boolean } => ({
-        roomId: String(item.roomId || item.room_id || ''),
-        role: item.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT',
-        waiting: Boolean(item.waiting)
-      })).filter(item => item.roomId)
-    : [];
 }
 
 function parseCookies(req: Request): Record<string, string> {
@@ -360,7 +350,10 @@ async function resolveSession(req: Request): Promise<UserSession | null> {
   const tokenHash = hashOpaqueSecret(rawToken);
   const cached = sessionStore.get(tokenHash);
   if (cached) {
-    if (cached.expiresAt > Date.now()) return cached;
+    const now = Date.now();
+    const maxAllowedExpiry = now + SESSION_TTL_SECONDS * 1000;
+    if (cached.expiresAt > maxAllowedExpiry) cached.expiresAt = maxAllowedExpiry;
+    if (cached.expiresAt > now) return cached;
     sessionStore.delete(tokenHash);
   }
 
@@ -373,6 +366,18 @@ async function resolveSession(req: Request): Promise<UserSession | null> {
   if (error) throw new Error(`로그인 세션을 확인하지 못했습니다: ${error.message}`);
   if (!data || new Date(data.expires_at).getTime() <= Date.now()) return null;
 
+  const now = Date.now();
+  const storedExpiry = new Date(data.expires_at).getTime();
+  const maxAllowedExpiry = now + SESSION_TTL_SECONDS * 1000;
+  const effectiveExpiry = Math.min(storedExpiry, maxAllowedExpiry);
+  if (storedExpiry > maxAllowedExpiry) {
+    const { error: capError } = await supabase
+      .from('user_sessions')
+      .update({ expires_at: new Date(effectiveExpiry).toISOString() })
+      .eq('token_hash', tokenHash);
+    if (capError) throw new Error(`로그인 세션 만료 시간을 갱신하지 못했습니다: ${capError.message}`);
+  }
+
   const relatedAccount = Array.isArray(data.user_accounts)
     ? data.user_accounts[0]
     : data.user_accounts;
@@ -381,10 +386,52 @@ async function resolveSession(req: Request): Promise<UserSession | null> {
     userId: data.user_id,
     loginId: relatedAccount.login_id,
     nickname: relatedAccount.nickname,
-    expiresAt: new Date(data.expires_at).getTime()
+    expiresAt: effectiveExpiry
   };
   sessionStore.set(tokenHash, session);
   return session;
+}
+
+async function refreshSessionActivity(req: AuthenticatedRequest, res: Response): Promise<number> {
+  const rawToken = parseCookies(req)[SESSION_COOKIE_NAME];
+  const session = req.auth;
+  if (!rawToken || !session) throw new Error('로그인 세션을 확인할 수 없습니다.');
+
+  const now = Date.now();
+  const ttlMs = SESSION_TTL_SECONDS * 1000;
+  // The browser reports real user interaction at most once per five minutes.
+  // Skip a DB write when the current expiration is already close to a full TTL.
+  if (session.expiresAt - now > ttlMs - SESSION_ACTIVITY_REFRESH_INTERVAL_MS) {
+    return session.expiresAt;
+  }
+
+  const tokenHash = hashOpaqueSecret(rawToken);
+  const expiresAt = now + ttlMs;
+  if (SUPABASE_CONFIGURED) {
+    const { data: refreshedRow, error } = await supabase
+      .from('user_sessions')
+      .update({ expires_at: new Date(expiresAt).toISOString() })
+      .eq('token_hash', tokenHash)
+      .eq('user_id', session.userId)
+      .select('token_hash')
+      .maybeSingle();
+    if (error) throw new Error(`로그인 세션 활동 시간을 갱신하지 못했습니다: ${error.message}`);
+    // A session may have been revoked by account recovery in another server
+    // instance. Never recreate or extend a token that no longer exists in DB.
+    if (!refreshedRow) {
+      sessionStore.delete(tokenHash);
+      clearSessionCookie(res);
+      return 0;
+    }
+  } else if (IS_PRODUCTION) {
+    throw new Error('운영 환경에서는 영구 세션 저장소가 필요합니다.');
+  }
+
+  const refreshed = { ...session, expiresAt };
+  sessionStore.set(tokenHash, refreshed);
+  req.auth = refreshed;
+  setSessionCookie(res, rawToken);
+  return expiresAt;
 }
 
 async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -3047,7 +3094,6 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
     }
   }
 
-  const matchedInvites = await acceptPendingRoomAccountInvites(newUserId);
   res.status(201).json({
     ok: true,
     user: {
@@ -3055,8 +3101,7 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
       loginId: normalizedId,
       nickname: normalizedNickname
     },
-    recoveryCode, // Provided ONCE on signup
-    matchedInvites
+    recoveryCode // Provided ONCE on signup
   });
 });
 
@@ -3136,15 +3181,13 @@ app.post('/api/auth/login', enforceAuthRateLimit, async (req, res) => {
     return res.status(503).json({ error: '로그인 세션을 안전하게 만들지 못했습니다.' });
   }
 
-  const matchedInvites = await acceptPendingRoomAccountInvites(account.id);
   res.json({
     ok: true,
     user: {
       id: account.id,
       loginId: account.loginId,
       nickname: account.nickname
-    },
-    matchedInvites
+    }
   });
 });
 
@@ -3265,7 +3308,6 @@ app.get('/api/auth/session', async (req, res) => {
     clearSessionCookie(res);
     return res.status(401).json({ authenticated: false });
   }
-  const matchedInvites = await acceptPendingRoomAccountInvites(session.userId);
   return res.json({
     authenticated: true,
     user: {
@@ -3273,7 +3315,25 @@ app.get('/api/auth/session', async (req, res) => {
       loginId: session.loginId,
       nickname: session.nickname
     },
-    matchedInvites
+    expiresAt: new Date(session.expiresAt).toISOString()
+  });
+});
+
+// V11 sliding idle timeout: only this endpoint extends a session. The client
+// calls it for real user interaction, never for background polling.
+app.post('/api/auth/activity', async (req: AuthenticatedRequest, res) => {
+  await requireAuth(req, res, async () => {
+    try {
+      const expiresAt = await refreshSessionActivity(req, res);
+      if (!expiresAt) {
+        return res.status(401).json({ error: '로그인이 필요합니다.' });
+      }
+      return res.json({ ok: true, expiresAt: new Date(expiresAt).toISOString() });
+    } catch (error) {
+      return res.status(503).json({
+        error: error instanceof Error ? error.message : '로그인 세션 활동 시간을 갱신하지 못했습니다.'
+      });
+    }
   });
 });
 
@@ -3294,8 +3354,54 @@ app.post('/api/auth/logout', async (req, res) => {
 });
 
 
-// V10 lightweight voter-account-invite endpoints. These routes deliberately sit
-// outside /api/rooms because a pending invitee is not a room member yet.
+// V11: one lightweight queue for the logged-in user's own pending account invites.
+// No room ideas, criteria, scores, participant list, or other invitees are returned.
+app.get('/api/account-invites/pending', async (req: AuthenticatedRequest, res) => {
+  await requireAuth(req, res, async () => {
+    if (!SUPABASE_CONFIGURED) return res.json({ invites: [] });
+    const { data, error } = await supabase.rpc('list_pending_account_invites_v11', {
+      p_user_id: req.auth!.userId
+    });
+    if (error) {
+      return res.status(503).json({ error: '대기 중인 초대 상태를 확인하지 못했습니다.' });
+    }
+    return res.json({ invites: Array.isArray(data) ? data : [] });
+  });
+});
+
+app.post('/api/account-invites/participants/:inviteId/respond', async (req: AuthenticatedRequest, res) => {
+  await requireAuth(req, res, async () => {
+    if (!SUPABASE_CONFIGURED) {
+      return res.status(503).json({ error: '참여자 초대 저장소가 연결되지 않았습니다.' });
+    }
+    const response = typeof req.body?.response === 'string' ? req.body.response.trim().toUpperCase() : '';
+    if (response !== 'ACCEPT' && response !== 'DECLINE') {
+      return res.status(400).json({ error: '초대 수락 또는 거절을 선택해 주세요.' });
+    }
+    const roomNickname = response === 'ACCEPT' ? normalizeRoomNickname(req.body?.nickname) : null;
+    if (response === 'ACCEPT' && !roomNickname) {
+      return res.status(400).json({ error: '입장할 닉네임을 1~6자로 입력해 주세요.' });
+    }
+
+    const { data, error } = await supabase.rpc('respond_participant_account_invite_v11', {
+      p_user_id: req.auth!.userId,
+      p_invite_id: req.params.inviteId,
+      p_response: response,
+      p_nickname: roomNickname || ''
+    });
+    if (error) {
+      const conflict = error.code === 'P0001' || error.code === '23505';
+      const message = /참여자.*정원|정원이 마감|예약 좌석/i.test(error.message || '')
+        ? '참여자 정원이 마감되었습니다.'
+        : error.message || '참여자 초대 응답을 처리하지 못했습니다.';
+      return res.status(conflict ? 409 : 503).json({ error: message });
+    }
+    return res.json(data || { success: true });
+  });
+});
+
+// V10 voter endpoints remain available for compatibility. V11's UI uses the
+// unified pending queue above and the existing voter response transaction below.
 app.get('/api/account-invites/voters/pending', async (req: AuthenticatedRequest, res) => {
   await requireAuth(req, res, async () => {
     if (!SUPABASE_CONFIGURED) return res.json({ invites: [] });
@@ -3994,7 +4100,7 @@ app.get('/api/rooms/:id/account-invites', async (req: AuthenticatedRequest, res)
   if (!SUPABASE_CONFIGURED) return res.json({ invites: [] });
   const { data, error } = await supabase
     .from('room_account_invites')
-    .select('id,room_id,invited_login_id,invite_role,status,created_at,accepted_at,canceled_at')
+    .select('id,room_id,invited_login_id,invite_role,status,created_at,accepted_at,canceled_at,responded_at')
     .eq('room_id', req.params.id)
     .order('created_at', { ascending: false });
   if (error) return res.status(503).json({ error: '계정 초대 현황을 불러오지 못했습니다.' });
@@ -4007,7 +4113,8 @@ app.get('/api/rooms/:id/account-invites', async (req: AuthenticatedRequest, res)
       status: row.status,
       createdAt: row.created_at,
       acceptedAt: row.accepted_at || undefined,
-      canceledAt: row.canceled_at || undefined
+      canceledAt: row.canceled_at || undefined,
+      respondedAt: row.responded_at || undefined
     }))
   });
 });
@@ -4198,8 +4305,7 @@ app.get('/api/invites/:token', async (req, res) => {
 app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
   const { token } = req.params;
   const userId = req.auth!.userId;
-  const requestedNickname = String(req.body?.nickname || '').trim().slice(0, 6);
-  const nickname = requestedNickname || req.auth!.nickname || '참여자';
+  const requestedNickname = normalizeRoomNickname(req.body?.nickname);
 
   if (!userId) {
     return res.status(400).json({ error: '사용자 ID가 필요합니다.' });
@@ -4232,6 +4338,11 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
   if (!inv) {
     return res.status(404).json({ error: '존재하지 않는 초대 링크입니다.' });
   }
+
+  if (inv.inviteType === 'PARTICIPANT' && !requestedNickname) {
+    return res.status(400).json({ error: '입장할 닉네임을 1~6자로 입력해 주세요.' });
+  }
+  const nickname = requestedNickname || normalizeRoomNickname(req.auth!.nickname) || '투표자';
 
   if (!inv.isActive) {
     return res.status(400).json({ error: '비활성화된 초대 링크입니다.' });
@@ -5361,7 +5472,12 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       external_voters_enabled: updatedRoom.externalVotersEnabled,
       required_voter_count: updatedRoom.requiredVoterCount
     }).eq('id', id).eq('host_id', reqUserId).select('id');
-    if (error) return res.status(503).json({ error: '방 설정을 안전하게 저장하지 못했습니다.' });
+    if (error) {
+      if (/참여자와 예약 좌석|예약 좌석.*최대 참여/i.test(error.message || '')) {
+        return res.status(409).json({ error: error.message });
+      }
+      return res.status(503).json({ error: '방 설정을 안전하게 저장하지 못했습니다.' });
+    }
     if (!changedRows || changedRows.length !== 1) {
       return res.status(409).json({ error: '회의실이 다른 요청에서 변경되거나 삭제되었습니다. 새로고침해 주세요.' });
     }

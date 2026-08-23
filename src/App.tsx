@@ -47,6 +47,8 @@ import {
   Participant,
   InviteDetailsResponse,
   AccountRoomInvite,
+  PendingAccountInvite,
+  PendingParticipantAccountInvite,
   PendingVoterAccountInvite,
   ParticipantRole
 } from './types';
@@ -143,6 +145,25 @@ function SafeMarkdown({ content }: { content: string }) {
 
 import { getSingleExamplePlaceholder, getCriteriaPlaceholder, getIdeaTitlePlaceholder, getIdeaDescPlaceholder } from './prompts/roomPlaceholderPrompt';
 
+const SESSION_EXPIRED_EVENT = 'whynot:session-expired-v11';
+const SESSION_ACTIVITY_THROTTLE_MS = 5 * 60 * 1000;
+const AUTH_401_EXEMPT_PATHS = ['/api/auth/session', '/api/auth/login', '/api/auth/signup', '/api/auth/register', '/api/auth/recover'];
+
+async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await window.fetch(input, init);
+  const rawUrl = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+  const isApiRequest = rawUrl.includes('/api/');
+  const isExempt = AUTH_401_EXEMPT_PATHS.some(path => rawUrl.includes(path));
+  if (response.status === 401 && isApiRequest && !isExempt) {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+  return response;
+}
+
 export default function App() {
   // ----------------------------------------------------------------
   // User Authentication / Email & Password Identity (AUTH-01 & Email Auth Spec)
@@ -210,7 +231,7 @@ export default function App() {
     setIsAuthSubmitting(true);
     setAuthError(null);
     try {
-      const res = await fetch('/api/auth/signup', {
+      const res = await apiFetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -235,6 +256,8 @@ export default function App() {
       setNickname(uName);
       setUserEmail(uEmail);
       setIsLoggedIn(true);
+      sessionExpiryHandledRef.current = false;
+      lastSessionActivitySentAtRef.current = Date.now();
 
       if (data.recoveryCode) {
         setRecoveryCodeOutput(data.recoveryCode);
@@ -268,7 +291,7 @@ export default function App() {
 
     setIsAuthSubmitting(true);
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -288,22 +311,9 @@ export default function App() {
         setUserEmail(uEmail);
         setIsLoggedIn(true);
         setShowLoginModal(false);
-        const matchedInvite = Array.isArray(data.matchedInvites) ? data.matchedInvites[0] : null;
-        if (matchedInvite?.roomId) {
-          const matchedRoomId = String(matchedInvite.roomId);
-          setActiveRoomId(matchedRoomId);
-          setRoomDetails(null);
-          localStorage.setItem('why_not_active_room_id', matchedRoomId);
-          window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(matchedRoomId)}`);
-          triggerToast(
-            matchedInvite.waiting
-              ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
-              : '초대된 회의실에 자동으로 입장했습니다.'
-          );
-          await fetchRoomDetails(matchedRoomId);
-        } else {
-          triggerToast(`${uName}님 환영합니다!`);
-        }
+        sessionExpiryHandledRef.current = false;
+        lastSessionActivitySentAtRef.current = Date.now();
+        triggerToast(`${uName}님 환영합니다!`);
         return;
       }
       const message = data?.error || (
@@ -350,7 +360,7 @@ export default function App() {
     setAuthError(null);
 
     try {
-      const res = await fetch('/api/auth/recover', {
+      const res = await apiFetch('/api/auth/recover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -374,6 +384,8 @@ export default function App() {
         setNickname(data.user.nickname);
         setUserEmail(data.loginId);
         setIsLoggedIn(true);
+        sessionExpiryHandledRef.current = false;
+        lastSessionActivitySentAtRef.current = Date.now();
       }
 
       triggerToast('비밀번호가 재설정되었습니다! 새 복구 코드를 반드시 보관하세요.');
@@ -423,9 +435,12 @@ export default function App() {
   const [activeVoterInviteToken, setActiveVoterInviteToken] = useState<string | null>(null);
   const [voterInviteExpiresAt, setVoterInviteExpiresAt] = useState<string | null>(null);
   const [accountInvites, setAccountInvites] = useState<AccountRoomInvite[]>([]);
-  const [pendingVoterAccountInvites, setPendingVoterAccountInvites] = useState<PendingVoterAccountInvite[]>([]);
-  const voterInviteCheckInFlightRef = useRef(false);
-  const [isRespondingVoterAccountInvite, setIsRespondingVoterAccountInvite] = useState(false);
+  const [pendingAccountInvites, setPendingAccountInvites] = useState<PendingAccountInvite[]>([]);
+  const accountInviteCheckInFlightRef = useRef(false);
+  const [isRespondingAccountInvite, setIsRespondingAccountInvite] = useState(false);
+  const [participantInviteNicknameInput, setParticipantInviteNicknameInput] = useState('');
+  const sessionExpiryHandledRef = useRef(false);
+  const lastSessionActivitySentAtRef = useRef(0);
   const [voterLoginIdInput, setVoterLoginIdInput] = useState('');
   const [isManagingInvites, setIsManagingInvites] = useState(false);
 
@@ -519,7 +534,7 @@ export default function App() {
     }
     if (activeRoomId && userId) {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ isReEditing: true })
@@ -539,7 +554,7 @@ export default function App() {
   const handleCancelReEditingEvaluation = async () => {
     if (activeRoomId && userId) {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/re-edit-status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ isReEditing: false })
@@ -569,7 +584,7 @@ export default function App() {
     }
     if (!activeRoomId) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/final-vote/start`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/final-vote/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -663,7 +678,7 @@ export default function App() {
   const handleLoadDemoData = async () => {
     setIsGeneratingDemo(true);
     try {
-      const res = await fetch('/api/demo/seed', { method: 'POST' });
+      const res = await apiFetch('/api/demo/seed', { method: 'POST' });
       if (res.ok) {
         triggerToast('🚀 데모 샘플 방(고민하조 팀 프로젝트)이 1초 만에 생성되었습니다!', 'success');
         await fetchRooms();
@@ -705,7 +720,7 @@ export default function App() {
 
     setIsUpdatingRoomSettings(true);
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -749,8 +764,8 @@ export default function App() {
     void handleCreateAccountInvite('PARTICIPANT');
   };
 
-  // Return to Lobby (Clean active room ID, role, local state, and URL query params)
-  const handleLeaveRoom = () => {
+  // Clear only the client view; DB room stage/state is never rewound by browser navigation.
+  const clearActiveRoomView = (historyMode: 'push' | 'replace' | 'none' = 'none') => {
     roomFetchSequenceRef.current += 1;
     activeRoomFetchControllerRef.current?.abort();
     activeRoomFetchControllerRef.current = null;
@@ -765,16 +780,23 @@ export default function App() {
     }
     localStorage.removeItem('why_not_active_room_id');
     localStorage.removeItem('why_not_user_role');
-    if (window.location.search || window.location.pathname.startsWith('/invite')) {
-      window.history.replaceState({}, '', '/');
-    }
+
+    const alreadyLobby = window.location.pathname === '/' && !window.location.search;
+    if (historyMode === 'push' && !alreadyLobby) window.history.pushState({}, '', '/');
+    if (historyMode === 'replace' && !alreadyLobby) window.history.replaceState({}, '', '/');
+  };
+
+  // Explicit logo / "로비로 나가기" action becomes a real browser-history entry.
+  const handleLeaveRoom = () => {
+    clearActiveRoomView('push');
+    void fetchPendingAccountInvites(false);
   };
 
   // Stage 1 Gate helper functions
   const handleEnterIdeaGate = async () => {
     if (activeRoomId) {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/ideas/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
@@ -793,7 +815,7 @@ export default function App() {
   const handleExitIdeaGate = async () => {
     if (activeRoomId) {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/ideas/uncomplete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
@@ -813,7 +835,7 @@ export default function App() {
     if (!activeRoomId || !roomDetails) return;
     if (roomDetails.room.decisionMode === 'QUICK') {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({})
@@ -847,7 +869,7 @@ export default function App() {
     }
     if (!activeRoomId) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/review/restart`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/review/restart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -870,7 +892,7 @@ export default function App() {
     if (!window.confirm('기존 1차 평가 결과를 보존하고 후보 피드백·보완을 시작하시겠습니까?')) return;
     setIsSubmittingRefinement(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/start`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/refinement/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -907,7 +929,7 @@ export default function App() {
     if (!window.confirm('최종 제출한 익명 피드백은 수정할 수 없습니다. 제출하시겠습니까?')) return;
     setIsSubmittingRefinement(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/feedback`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/refinement/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -935,7 +957,7 @@ export default function App() {
     if (!window.confirm('이 보완안을 작성자 승인본으로 확정하시겠습니까? 승인 후에는 수정할 수 없습니다.')) return;
     setIsSubmittingRefinement(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/refinement/revision`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/refinement/revision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ideaId: idea.id, title: draft.title, description: draft.description })
@@ -953,7 +975,7 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      const response = await fetch('/api/auth/logout', {
+      const response = await apiFetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -971,6 +993,8 @@ export default function App() {
       'why_not_user_email'
     ].forEach((key) => localStorage.removeItem(key));
     localStorage.removeItem('why_not_active_room_id');
+    sessionStorage.removeItem('why_not_pending_room_id');
+    setPendingAccountInvites([]);
     setIsLoggedIn(false);
     setUserId('');
     setNickname('');
@@ -981,6 +1005,7 @@ export default function App() {
     isFetchingRoomRef.current = false;
     setActiveRoomId(null);
     setRoomDetails(null);
+    if (!landingInviteToken) window.history.replaceState({}, '', '/');
     triggerToast('로그아웃되었습니다.');
   };
 
@@ -990,7 +1015,7 @@ export default function App() {
 
     const restoreServerSession = async () => {
       try {
-        const response = await fetch('/api/auth/session', { cache: 'no-store' });
+        const response = await apiFetch('/api/auth/session', { cache: 'no-store' });
         const data = await response.json().catch(() => null);
         if (cancelled) return;
 
@@ -1000,19 +1025,10 @@ export default function App() {
           setTempNickname(data.user.nickname || '');
           setUserEmail(data.user.loginId || '');
           setIsLoggedIn(true);
-          const matchedInvite = Array.isArray(data.matchedInvites) ? data.matchedInvites[0] : null;
-          if (matchedInvite?.roomId) {
-            const matchedRoomId = String(matchedInvite.roomId);
-            setActiveRoomId(matchedRoomId);
-            setRoomDetails(null);
-            localStorage.setItem('why_not_active_room_id', matchedRoomId);
-            window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(matchedRoomId)}`);
-            triggerToast(
-              matchedInvite.waiting
-                ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
-                : '초대된 회의실에 자동으로 입장했습니다.'
-            );
-          }
+          sessionExpiryHandledRef.current = false;
+          // Reopening a visible app counts as real user activity; let the
+          // activity effect refresh immediately instead of waiting five minutes.
+          lastSessionActivitySentAtRef.current = 0;
         } else {
           setUserId('');
           setNickname('');
@@ -1035,41 +1051,106 @@ export default function App() {
     };
   }, []);
 
-  const fetchPendingVoterAccountInvites = async (showError = false) => {
-    if (!isLoggedIn || !userId || voterInviteCheckInFlightRef.current) return;
-    voterInviteCheckInFlightRef.current = true;
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      if (sessionExpiryHandledRef.current || !isLoggedIn) return;
+      sessionExpiryHandledRef.current = true;
+      setIsLoggedIn(false);
+      setUserId('');
+      setNickname('');
+      setUserEmail('');
+      setPendingAccountInvites([]);
+      roomFetchSequenceRef.current += 1;
+      activeRoomFetchControllerRef.current?.abort();
+      activeRoomFetchControllerRef.current = null;
+      isFetchingRoomRef.current = false;
+      setActiveRoomId(null);
+      setRoomDetails(null);
+      setAuthMode('LOGIN');
+      setAuthError('마지막 사용 후 1일이 지나 로그인 세션이 만료되었습니다. 다시 로그인해 주세요.');
+      setShowLoginModal(true);
+      triggerToast('로그인 유지 기간이 만료되었습니다. 다시 로그인해 주세요.', 'error');
+    };
+
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, [isLoggedIn]);
+
+  // Only real user interaction extends the 24-hour idle timeout. Polling and room
+  // synchronization requests never call this endpoint, so an unattended tab expires.
+  useEffect(() => {
+    if (!isLoggedIn || !userId) return;
+
+    const reportActivity = () => {
+      const now = Date.now();
+      if (now - lastSessionActivitySentAtRef.current < SESSION_ACTIVITY_THROTTLE_MS) return;
+      lastSessionActivitySentAtRef.current = now;
+      void window.fetch('/api/auth/activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(response => {
+        if (response.status === 401) {
+          window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+        } else if (!response.ok) {
+          lastSessionActivitySentAtRef.current = 0;
+        }
+      }).catch(() => {
+        lastSessionActivitySentAtRef.current = 0;
+      });
+    };
+
+    const handleVisibilityActivity = () => {
+      if (document.visibilityState === 'visible') reportActivity();
+    };
+    window.addEventListener('pointerdown', reportActivity, { passive: true });
+    window.addEventListener('keydown', reportActivity);
+    window.addEventListener('touchstart', reportActivity, { passive: true });
+    document.addEventListener('visibilitychange', handleVisibilityActivity);
+    if (document.visibilityState === 'visible') reportActivity();
+    return () => {
+      window.removeEventListener('pointerdown', reportActivity);
+      window.removeEventListener('keydown', reportActivity);
+      window.removeEventListener('touchstart', reportActivity);
+      document.removeEventListener('visibilitychange', handleVisibilityActivity);
+    };
+  }, [isLoggedIn, userId]);
+
+  const fetchPendingAccountInvites = async (showError = false) => {
+    if (!isLoggedIn || !userId || accountInviteCheckInFlightRef.current) return;
+    accountInviteCheckInFlightRef.current = true;
     try {
-      const response = await fetch('/api/account-invites/voters/pending', { cache: 'no-store' });
+      const response = await apiFetch('/api/account-invites/pending', { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         if (response.status === 401) return;
-        throw new Error(data?.error || '투표자 초대 상태를 확인하지 못했습니다.');
+        throw new Error(data?.error || '대기 중인 초대 상태를 확인하지 못했습니다.');
       }
-      setPendingVoterAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
+      setPendingAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
     } catch (error) {
       if (showError) {
-        triggerToast(error instanceof Error ? error.message : '투표자 초대 상태를 확인하지 못했습니다.', 'error');
+        triggerToast(error instanceof Error ? error.message : '대기 중인 초대 상태를 확인하지 못했습니다.', 'error');
       }
     } finally {
-      voterInviteCheckInFlightRef.current = false;
+      accountInviteCheckInFlightRef.current = false;
     }
   };
 
-  // V10: voter account invitations are checked independently from the room payload.
-  // This keeps the poll lightweight and prevents voter invites from being auto-accepted.
+  // V11: one lightweight poll for both participant and voter account invitations.
+  // The popup itself is shown only in the lobby, so accepting one room never
+  // interrupts another meeting. Remaining invitations stay PENDING in the queue.
   useEffect(() => {
     if (!isLoggedIn || !userId) {
-      setPendingVoterAccountInvites([]);
+      setPendingAccountInvites([]);
       return;
     }
 
-    void fetchPendingVoterAccountInvites(false);
+    void fetchPendingAccountInvites(false);
     const interval = window.setInterval(() => {
-      void fetchPendingVoterAccountInvites(false);
+      void fetchPendingAccountInvites(false);
     }, 45000);
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void fetchPendingVoterAccountInvites(false);
+        void fetchPendingAccountInvites(false);
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -1080,14 +1161,64 @@ export default function App() {
     };
   }, [isLoggedIn, userId]);
 
+  useEffect(() => {
+    setParticipantInviteNicknameInput('');
+  }, [pendingAccountInvites[0]?.id]);
+
+  const handleRespondParticipantAccountInvite = async (
+    invite: PendingParticipantAccountInvite,
+    responseType: 'ACCEPT' | 'DECLINE'
+  ) => {
+    if (isRespondingAccountInvite) return;
+    const roomNickname = participantInviteNicknameInput.trim();
+    if (responseType === 'ACCEPT' && (roomNickname.length < 1 || roomNickname.length > 6)) {
+      triggerToast('입장할 닉네임을 1~6자로 입력해 주세요.', 'error');
+      return;
+    }
+
+    setIsRespondingAccountInvite(true);
+    try {
+      const response = await apiFetch(`/api/account-invites/participants/${encodeURIComponent(invite.id)}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ response: responseType, nickname: roomNickname })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '참여자 초대 응답을 처리하지 못했습니다.');
+
+      setPendingAccountInvites(current => current.filter(item => item.id !== invite.id));
+      setParticipantInviteNicknameInput('');
+
+      if (responseType === 'ACCEPT') {
+        const targetRoomId = String(data?.roomId || invite.roomId);
+        const acceptedNickname = String(data?.nickname || roomNickname).trim().slice(0, 6);
+        if (acceptedNickname) {
+          setNickname(acceptedNickname);
+          localStorage.setItem('why_not_room_nickname', acceptedNickname);
+        }
+        localStorage.setItem('why_not_user_role', 'MEMBER');
+        triggerToast('참여자 초대를 수락했습니다.');
+        await handleSelectRoom(targetRoomId, userId, acceptedNickname || roomNickname, 'push', 'MEMBER');
+        void fetchRooms();
+      } else {
+        triggerToast('참여자 초대를 거절했습니다. 예약된 참여자 좌석이 반환되었습니다.');
+      }
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '참여자 초대 응답을 처리하지 못했습니다.', 'error');
+      void fetchPendingAccountInvites(false);
+    } finally {
+      setIsRespondingAccountInvite(false);
+    }
+  };
+
   const handleRespondVoterAccountInvite = async (
     invite: PendingVoterAccountInvite,
     responseType: 'ACCEPT' | 'DECLINE'
   ) => {
-    if (isRespondingVoterAccountInvite) return;
-    setIsRespondingVoterAccountInvite(true);
+    if (isRespondingAccountInvite) return;
+    setIsRespondingAccountInvite(true);
     try {
-      const response = await fetch(`/api/account-invites/voters/${encodeURIComponent(invite.id)}/respond`, {
+      const response = await apiFetch(`/api/account-invites/voters/${encodeURIComponent(invite.id)}/respond`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ response: responseType })
@@ -1095,26 +1226,22 @@ export default function App() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '투표자 초대 응답을 처리하지 못했습니다.');
 
-      setPendingVoterAccountInvites(current => current.filter(item => item.id !== invite.id));
+      setPendingAccountInvites(current => current.filter(item => item.id !== invite.id));
 
       if (responseType === 'ACCEPT') {
         const targetRoomId = String(data?.roomId || invite.roomId);
-        setActiveRoomId(targetRoomId);
-        setRoomDetails(null);
-        localStorage.setItem('why_not_active_room_id', targetRoomId);
         localStorage.setItem('why_not_user_role', 'VOTER');
-        window.history.replaceState({}, '', `/?roomId=${encodeURIComponent(targetRoomId)}&role=voter`);
         triggerToast('투표자 초대를 수락했습니다. 아직 투표를 진행할 단계가 아니라면 대기 화면이 표시됩니다.');
-        await fetchRoomDetails(targetRoomId);
+        await handleSelectRoom(targetRoomId, userId, nickname, 'push', 'VOTER');
         void fetchRooms();
       } else {
         triggerToast('투표자 초대를 거절했습니다. 예약된 투표 좌석이 반환되었습니다.');
       }
     } catch (error) {
       triggerToast(error instanceof Error ? error.message : '투표자 초대 응답을 처리하지 못했습니다.', 'error');
-      void fetchPendingVoterAccountInvites(false);
+      void fetchPendingAccountInvites(false);
     } finally {
-      setIsRespondingVoterAccountInvite(false);
+      setIsRespondingAccountInvite(false);
     }
   };
 
@@ -1137,22 +1264,18 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const urlRoomId = params.get('room') || params.get('roomId');
     const urlRole = params.get('role') || 'member';
-    const savedRoomId = localStorage.getItem('why_not_active_room_id');
-    const targetRoomId = urlRoomId || savedRoomId;
 
-    if (targetRoomId) {
-      if (targetRoomId.startsWith('inv_')) {
-        localStorage.removeItem('why_not_active_room_id');
-        setLandingInviteToken(targetRoomId);
-        fetchInviteLandingDetails(targetRoomId);
+    if (urlRoomId) {
+      if (urlRoomId.startsWith('inv_')) {
+        setLandingInviteToken(urlRoomId);
+        fetchInviteLandingDetails(urlRoomId);
         return;
       }
-      if (urlRole === 'voter') {
-        localStorage.setItem('why_not_user_role', 'VOTER');
-      } else {
-        localStorage.setItem('why_not_user_role', 'MEMBER');
-      }
-      handleSelectRoom(targetRoomId, userId, nickname);
+      localStorage.setItem('why_not_user_role', urlRole === 'voter' ? 'VOTER' : 'MEMBER');
+      void handleSelectRoom(urlRoomId, userId, nickname, 'none', urlRole === 'voter' ? 'VOTER' : 'MEMBER');
+    } else if (!landingInviteToken) {
+      // A normal root re-entry is the lobby, not a continuation of the last room role.
+      localStorage.removeItem('why_not_user_role');
     }
   }, [isSessionChecked, isLoggedIn, userId]);
 
@@ -1160,34 +1283,52 @@ export default function App() {
   useEffect(() => {
     if (!isLoggedIn) return;
 
-    const params = new URLSearchParams(window.location.search);
-    const urlRoomId = params.get('room') || params.get('roomId');
-    const urlRole = params.get('role') || 'member';
-    const savedPendingRoomId = localStorage.getItem('why_not_pending_room_id');
-    const targetRoomId = pendingRoomId || savedPendingRoomId || urlRoomId;
+    const savedPendingRoomId = sessionStorage.getItem('why_not_pending_room_id');
+    const targetRoomId = pendingRoomId || savedPendingRoomId;
 
     if (targetRoomId && !activeRoomId) {
-      if (targetRoomId.startsWith('inv_')) {
-        localStorage.removeItem('why_not_active_room_id');
-        localStorage.removeItem('why_not_pending_room_id');
-        setLandingInviteToken(targetRoomId);
-        fetchInviteLandingDetails(targetRoomId);
-        return;
-      }
-      if (urlRole === 'voter') {
-        localStorage.setItem('why_not_user_role', 'VOTER');
-      } else {
-        localStorage.setItem('why_not_user_role', 'MEMBER');
-      }
-      console.log('[AUTO-REDIRECT] Login successful, auto-entering room:', targetRoomId);
-      setActiveRoomId(targetRoomId);
-      localStorage.setItem('why_not_active_room_id', targetRoomId);
-      localStorage.removeItem('why_not_pending_room_id');
+      sessionStorage.removeItem('why_not_pending_room_id');
       setPendingRoomId(null);
       setShowLoginModal(false);
-      fetchRoomDetails(targetRoomId);
+      void handleSelectRoom(targetRoomId, userId, nickname, 'push');
     }
   }, [isLoggedIn, pendingRoomId, activeRoomId]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const inviteMatch = window.location.pathname.match(/\/invite\/([a-zA-Z0-9_-]+)/);
+      const inviteToken = inviteMatch ? inviteMatch[1] : params.get('inviteToken');
+      const roomId = params.get('room') || params.get('roomId');
+      const role = params.get('role') || 'member';
+
+      if (inviteToken) {
+        clearActiveRoomView('none');
+        setLandingInviteToken(inviteToken);
+        void fetchInviteLandingDetails(inviteToken);
+        return;
+      }
+
+      setLandingInviteToken(null);
+      setLandingInviteData(null);
+      if (roomId && isLoggedIn) {
+        localStorage.setItem('why_not_user_role', role === 'voter' ? 'VOTER' : 'MEMBER');
+        void handleSelectRoom(roomId, userId, nickname, 'none', role === 'voter' ? 'VOTER' : 'MEMBER');
+      } else {
+        clearActiveRoomView('none');
+        if (isLoggedIn) void fetchPendingAccountInvites(false);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [isLoggedIn, userId, nickname, activeRoomId]);
+
+  useEffect(() => {
+    if (landingInviteToken && nickname && !landingNicknameInput.trim()) {
+      setLandingNicknameInput(nickname.slice(0, 6));
+    }
+  }, [landingInviteToken, nickname]);
 
   // 3-Minute Live Expiration Timer
   useEffect(() => {
@@ -1222,7 +1363,7 @@ export default function App() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/state`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/state`, {
           signal: controller.signal,
           cache: 'no-store'
         });
@@ -1258,7 +1399,7 @@ export default function App() {
     inviteType: ParticipantRole = 'PARTICIPANT'
   ) => {
     try {
-      const res = await fetch(`/api/rooms/${roomId}/invites`, {
+      const res = await apiFetch(`/api/rooms/${roomId}/invites`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inviteType })
@@ -1290,7 +1431,7 @@ export default function App() {
     inviteType: ParticipantRole = 'PARTICIPANT'
   ) => {
     try {
-      const response = await fetch(`/api/rooms/${roomId}/invites?inviteType=${inviteType}`, { method: 'DELETE' });
+      const response = await apiFetch(`/api/rooms/${roomId}/invites?inviteType=${inviteType}`, { method: 'DELETE' });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(data?.error || '초대 링크를 비활성화할 수 없습니다.');
@@ -1310,7 +1451,7 @@ export default function App() {
 
   const fetchAccountInvites = async (roomId: string, silent = false) => {
     try {
-      const response = await fetch(`/api/rooms/${roomId}/account-invites`, { cache: 'no-store' });
+      const response = await apiFetch(`/api/rooms/${roomId}/account-invites`, { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '계정 초대 현황을 불러오지 못했습니다.');
       setAccountInvites(Array.isArray(data?.invites) ? data.invites : []);
@@ -1324,7 +1465,7 @@ export default function App() {
   const handleCancelFinalVoteCycle = async () => {
     if (!activeRoomId || !window.confirm('진행 중인 최종 투표를 취소하고 새 명단으로 다시 시작하시겠습니까? 제출된 별 투표는 재사용되지 않습니다.')) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/final-vote/cancel`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/final-vote/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -1348,7 +1489,7 @@ export default function App() {
     }
     setIsManagingInvites(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/account-invites`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/account-invites`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ loginId, role })
@@ -1371,7 +1512,7 @@ export default function App() {
     if (!activeRoomId || isManagingInvites) return;
     setIsManagingInvites(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/account-invites/${inviteId}`, { method: 'DELETE' });
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/account-invites/${inviteId}`, { method: 'DELETE' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '계정 초대를 취소하지 못했습니다.');
       await fetchAccountInvites(activeRoomId);
@@ -1388,7 +1529,7 @@ export default function App() {
     if (!activeRoomId || isManagingInvites) return;
     setIsManagingInvites(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/voters/${encodeURIComponent(voterUserId)}`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/voters/${encodeURIComponent(voterUserId)}`, {
         method: 'DELETE'
       });
       const data = await response.json().catch(() => null);
@@ -1419,7 +1560,7 @@ export default function App() {
     if (nickname) setLandingNicknameInput(nickname);
 
     try {
-      const response = await fetch(`/api/invites/${encodeURIComponent(token)}`, {
+      const response = await apiFetch(`/api/invites/${encodeURIComponent(token)}`, {
         cache: 'no-store'
       });
       const data: InviteDetailsResponse = await response.json();
@@ -1442,12 +1583,20 @@ export default function App() {
   // Atomic Join Room via Invite Token
   const handleJoinRoomViaInvite = async (token: string) => {
     if (joiningInvite) return;
+    const participantLink = landingInviteData?.inviteType === 'PARTICIPANT';
+    const enteredNickname = landingNicknameInput.trim();
+    if (participantLink && (enteredNickname.length < 1 || enteredNickname.length > 6)) {
+      triggerToast('입장할 닉네임을 1~6자로 입력해 주세요.', 'error');
+      return;
+    }
     setJoiningInvite(true);
 
-    const nameToUse = landingNicknameInput.trim() || nickname || '참여자';
+    const nameToUse = participantLink
+      ? enteredNickname
+      : enteredNickname || nickname.slice(0, 6) || '투표자';
 
     try {
-      let response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+      let response = await apiFetch(`/api/invites/${encodeURIComponent(token)}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nickname: nameToUse })
@@ -1456,7 +1605,7 @@ export default function App() {
       if (!response.ok && data?.canJoinAsVoter) {
         const agreed = window.confirm('정원이 마감되었습니다. 투표자로 참여하시겠습니까?');
         if (!agreed) throw new Error('참여자 입장을 취소했습니다.');
-        response = await fetch(`/api/invites/${encodeURIComponent(token)}/join`, {
+        response = await apiFetch(`/api/invites/${encodeURIComponent(token)}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ nickname: nameToUse, allowVoterFallback: true })
@@ -1472,17 +1621,20 @@ export default function App() {
       if (!targetRoomId) throw new Error('참가한 회의실 정보를 받지 못했습니다.');
       setNickname(nameToUse);
       localStorage.setItem('why_not_room_nickname', nameToUse);
-      localStorage.setItem('why_not_active_room_id', targetRoomId);
+      localStorage.setItem('why_not_user_role', data?.role === 'VOTER' || data?.waiting ? 'VOTER' : 'MEMBER');
       setLandingInviteToken(null);
       setLandingInviteData(null);
       setInviteTokenExpiresAt(null);
+      setLandingNicknameInput('');
+      // Replace the consumed invite URL with the lobby, then push the room entry.
+      // Browser Back therefore returns to the lobby instead of reopening the invite.
       window.history.replaceState({}, '', '/');
       triggerToast(
         data?.waiting
           ? '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때까지 대기해 주세요.'
           : '회의실 참가가 완료되었습니다!'
       );
-      await handleSelectRoom(targetRoomId, userId, nameToUse);
+      await handleSelectRoom(targetRoomId, userId, nameToUse, 'push', data?.role === 'VOTER' || data?.waiting ? 'VOTER' : 'MEMBER');
     } catch (err: any) {
       console.error('Join room error:', err);
       triggerToast(err.message || '참가에 실패했습니다.', 'error');
@@ -1597,7 +1749,7 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch('/api/rooms', { signal: controller.signal, cache: 'no-store' });
+      const response = await apiFetch('/api/rooms', { signal: controller.signal, cache: 'no-store' });
       clearTimeout(timeoutId);
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -1657,7 +1809,7 @@ export default function App() {
       const fetchOptions: RequestInit = { cache: 'no-store' };
       fetchOptions.signal = controller.signal;
 
-      const res = await fetch(`/api/rooms/${id}`, fetchOptions);
+      const res = await apiFetch(`/api/rooms/${id}`, fetchOptions);
       clearTimeout(timeoutId);
       if (res.ok) {
         const data: RoomDetails = await res.json();
@@ -1765,7 +1917,7 @@ export default function App() {
 
     if (activeRoomId && !pendingRoomId) {
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/me`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/me`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ nickname: trimmed }),
@@ -1813,7 +1965,7 @@ export default function App() {
     setNickname(hostNick);
 
     try {
-      const response = await fetch('/api/rooms', {
+      const response = await apiFetch('/api/rooms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1860,7 +2012,12 @@ export default function App() {
       setNewRoomExternalVotersEnabled(false);
       setNewRoomRequiredVoterCount(1);
 
-      // Select newly created room, open share modal and refresh dashboard list
+      // Select newly created room and create a real browser-history entry.
+      localStorage.setItem('why_not_user_role', 'MEMBER');
+      const createdRoomUrl = `/?roomId=${encodeURIComponent(createdRoomId)}`;
+      if (`${window.location.pathname}${window.location.search}` !== createdRoomUrl) {
+        window.history.pushState({}, '', createdRoomUrl);
+      }
       setActiveRoomId(createdRoomId);
       if (createdRoom.details?.room?.id === createdRoomId) {
         const initialDetails = createdRoom.details as RoomDetails;
@@ -1894,7 +2051,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
+      const res = await apiFetch(`/api/rooms/${roomId}/pin`, { method: 'POST' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || '고정 상태를 저장하지 못했습니다.');
       await fetchRooms();
@@ -1910,7 +2067,7 @@ export default function App() {
     if (!userId) return;
 
     try {
-      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'POST' });
+      const response = await apiFetch(`/api/rooms/${roomId}/hide`, { method: 'POST' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 저장하지 못했습니다.');
       await fetchRooms();
@@ -1926,7 +2083,7 @@ export default function App() {
     if (!userId) return;
 
     try {
-      const response = await fetch(`/api/rooms/${roomId}/hide`, { method: 'DELETE' });
+      const response = await apiFetch(`/api/rooms/${roomId}/hide`, { method: 'DELETE' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 해제하지 못했습니다.');
       await fetchRooms();
@@ -1941,7 +2098,7 @@ export default function App() {
     if (!activeRoomId) return false;
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/status`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus, isForce: true })
@@ -1964,10 +2121,16 @@ export default function App() {
   // Target pending room selection
 
   // Join existing Room (Prompt nickname modal if not specified)
-  const handleSelectRoom = async (id: string, customUserId?: string, customNickname?: string) => {
+  const handleSelectRoom = async (
+    id: string,
+    customUserId?: string,
+    customNickname?: string,
+    historyMode: 'push' | 'replace' | 'none' = 'push',
+    explicitRole?: 'MEMBER' | 'VOTER'
+  ) => {
     if (!isLoggedIn) {
       setPendingRoomId(id);
-      localStorage.setItem('why_not_pending_room_id', id);
+      sessionStorage.setItem('why_not_pending_room_id', id);
       setShowLoginModal(true);
       return;
     }
@@ -1975,6 +2138,7 @@ export default function App() {
     const currentSavedNickname = localStorage.getItem('why_not_room_nickname');
     if (!currentSavedNickname && !customNickname) {
       setPendingRoomId(id);
+      sessionStorage.setItem('why_not_pending_room_id', id);
       setTempNickname('');
       setIsRegisteringUser(true);
       return;
@@ -1987,9 +2151,20 @@ export default function App() {
     setIsReEditingEvaluation(false);
     setShowIdeaSubmissionGate(false);
     localStorage.removeItem(`why_not_idea_step_gate_${id}`);
-    localStorage.setItem('why_not_active_room_id', id);
+    localStorage.removeItem('why_not_active_room_id');
+    sessionStorage.removeItem('why_not_pending_room_id');
     const nick = customNickname || currentSavedNickname || nickname;
     if (nick && nick !== nickname) setNickname(nick);
+
+    const listedRoom = roomsList.find(room => room?.id === id);
+    const resolvedRole: 'MEMBER' | 'VOTER' = explicitRole
+      || (listedRoom?.myRole === '투표자' ? 'VOTER' : 'MEMBER');
+    localStorage.setItem('why_not_user_role', resolvedRole);
+    const targetUrl = `/?roomId=${encodeURIComponent(id)}${resolvedRole === 'VOTER' ? '&role=voter' : ''}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (historyMode === 'push' && currentUrl !== targetUrl) window.history.pushState({}, '', targetUrl);
+    if (historyMode === 'replace' && currentUrl !== targetUrl) window.history.replaceState({}, '', targetUrl);
+
     await fetchRoomDetails(id);
   };
 
@@ -2048,7 +2223,7 @@ export default function App() {
     };
 
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/ideas`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/ideas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newIdeaObj),
@@ -2084,7 +2259,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2114,7 +2289,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/ideas/${ideaId}`, {
         method: 'DELETE',
       });
       const data = await res.json().catch(() => null);
@@ -2182,7 +2357,7 @@ export default function App() {
       if (!text) continue;
 
       try {
-        const res = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+        const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rawText: text, isAiSuggested: true })
@@ -2205,7 +2380,7 @@ export default function App() {
 
     // 1. First, attempt Express Gemini AI Server Endpoint (/api/rooms/:id/criteria/suggest)
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/suggest`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/suggest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2311,7 +2486,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/criteria/propose`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2344,7 +2519,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rawText: updatedText })
@@ -2366,7 +2541,7 @@ export default function App() {
     if (!activeRoomId || !proposalId) return;
 
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/criteria/proposals/${proposalId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -2394,7 +2569,7 @@ export default function App() {
     }
     setIsDevelopingIdea(true);
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/ideas/develop`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/ideas/develop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: ideaTitle, description: ideaDesc })
@@ -2423,7 +2598,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/complete`, { method: 'POST' });
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/complete`, { method: 'POST' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || '기준 제안 완료 처리에 실패했습니다.');
       triggerToast(
@@ -2441,7 +2616,7 @@ export default function App() {
   const handleTriggerClustering = async () => {
     setIsClusteringLoading(true);
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/cluster`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/cluster`, {
         method: 'POST',
       });
       const data = await res.json().catch(() => null);
@@ -2468,7 +2643,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmedCriteria: targetCriteria }),
@@ -2582,7 +2757,7 @@ export default function App() {
     }));
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/evaluations`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/evaluations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2612,7 +2787,7 @@ export default function App() {
     const phaseLabel = roomDetails?.room.status === 'EVALUATION_ROUND_2' ? '2차' : '1차';
     setIsFinalizingScreening(true);
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/screening/finalize`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/screening/finalize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -2632,7 +2807,7 @@ export default function App() {
   const handleSeedMockEvaluations = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/seed-evaluations`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/seed-evaluations`, {
         method: 'POST',
       });
       const data = await res.json();
@@ -2655,7 +2830,7 @@ export default function App() {
         payload.eliminateIdeaIds = [forcedIdeaId];
       }
 
-      const res = await fetch(`/api/rooms/${activeRoomId}/elimination/next`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/elimination/next`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -2731,7 +2906,7 @@ export default function App() {
   const handleReopenStarVote = async () => {
     if (!activeRoomId) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/reopen`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/star-vote/reopen`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
       });
       const data = await response.json().catch(() => ({}));
@@ -2747,7 +2922,7 @@ export default function App() {
   const handleRouletteConsent = async (consent: boolean) => {
     if (!activeRoomId) return;
     try {
-      const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/roulette-consent`, {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/star-vote/roulette-consent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ consent })
@@ -2776,7 +2951,7 @@ export default function App() {
     setIsSubmittingStarVote(true);
 
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/star-vote`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/star-vote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2834,7 +3009,7 @@ export default function App() {
 
     setLoading(true);
     try {
-      const res = await fetch(`/api/rooms/${activeRoomId}/seed-star-votes`, {
+      const res = await apiFetch(`/api/rooms/${activeRoomId}/seed-star-votes`, {
         method: 'POST',
       });
       const data = await res.json().catch(() => ({}));
@@ -3001,7 +3176,7 @@ export default function App() {
         return;
       }
       try {
-        const response = await fetch(`/api/rooms/${activeRoomId}/star-vote/resolve-tie`, {
+        const response = await apiFetch(`/api/rooms/${activeRoomId}/star-vote/resolve-tie`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3071,7 +3246,11 @@ export default function App() {
   const myDirectProposalsCount = Math.max(0, myProposals.length - myAiProposalsCount);
   const myProposalsCount = myProposals.length;
   const totalProposalsCount = roomDetails?.proposalsCount || (roomDetails?.proposals || []).length;
-  const currentPendingVoterInvite = pendingVoterAccountInvites[0] || null;
+  const currentPendingAccountInvite = !activeRoomId && !landingInviteToken ? (pendingAccountInvites[0] || null) : null;
+  const currentPendingParticipantInvite: PendingParticipantAccountInvite | null =
+    currentPendingAccountInvite?.role === 'PARTICIPANT' ? currentPendingAccountInvite : null;
+  const currentPendingVoterInvite: PendingVoterAccountInvite | null =
+    currentPendingAccountInvite?.role === 'VOTER' ? currentPendingAccountInvite : null;
   const waitingVoterNotice = roomDetails?.waitingForFinalVote ? (() => {
     const waitingRoom = roomDetails.room;
     if (waitingRoom.status === 'CLOSED' && waitingRoom.finalVoteStatus === 'FINALIZED') {
@@ -3179,7 +3358,93 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* V10 voter account invitation consent popup */}
+      {/* V11 participant account invitation consent popup */}
+      <AnimatePresence>
+        {currentPendingParticipantInvite && (
+          <div
+            className="fixed inset-0 z-[100] bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="participant-account-invite-title"
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 12 }}
+              className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-indigo-200 overflow-hidden"
+            >
+              <div className="bg-indigo-950 px-6 py-5 text-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black tracking-[0.18em] text-indigo-200">PARTICIPANT INVITATION</p>
+                    <h2 id="participant-account-invite-title" className="text-xl font-black mt-1">참여자로 초대받았습니다.</h2>
+                  </div>
+                  {pendingAccountInvites.length > 1 && (
+                    <span className="shrink-0 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-bold text-slate-200">
+                      대기 {pendingAccountInvites.length}건
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-6 space-y-5">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 divide-y divide-slate-200">
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">회의실</span>
+                    <span className="text-sm font-extrabold text-slate-900 text-right">{currentPendingParticipantInvite.roomTitle}</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">초대한 사람</span>
+                    <span className="text-sm font-bold text-slate-800 text-right">{currentPendingParticipantInvite.invitedBy}</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">초대 역할</span>
+                    <span className="text-sm font-black text-indigo-700">참여자</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 px-4 py-3">
+                    <span className="text-xs font-bold text-slate-500">현재 진행 단계</span>
+                    <span className="text-sm font-bold text-slate-800 text-right">{getRoomStageLabel(currentPendingParticipantInvite.roomStatus)}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700">입장 시 사용할 닉네임 <span className="text-rose-500">*</span></label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={participantInviteNicknameInput}
+                    onChange={event => setParticipantInviteNicknameInput(event.target.value.slice(0, 6))}
+                    placeholder="닉네임 입력 (1~6자)"
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-900"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    disabled={isRespondingAccountInvite}
+                    onClick={() => void handleRespondParticipantAccountInvite(currentPendingParticipantInvite, 'DECLINE')}
+                    className="py-3.5 rounded-2xl border border-slate-300 bg-white text-slate-700 text-sm font-extrabold hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    거절
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRespondingAccountInvite || participantInviteNicknameInput.trim().length < 1}
+                    onClick={() => void handleRespondParticipantAccountInvite(currentPendingParticipantInvite, 'ACCEPT')}
+                    className="py-3.5 rounded-2xl bg-indigo-950 text-white text-sm font-extrabold hover:bg-indigo-900 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isRespondingAccountInvite ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    수락
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* V10 voter account invitation consent popup, queued by V11 */}
       <AnimatePresence>
         {currentPendingVoterInvite && (
           <div
@@ -3200,9 +3465,9 @@ export default function App() {
                     <p className="text-[10px] font-black tracking-[0.18em] text-amber-300">VOTER INVITATION</p>
                     <h2 id="voter-account-invite-title" className="text-xl font-black mt-1">투표자로 초대받았습니다.</h2>
                   </div>
-                  {pendingVoterAccountInvites.length > 1 && (
+                  {pendingAccountInvites.length > 1 && (
                     <span className="shrink-0 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-bold text-slate-200">
-                      대기 {pendingVoterAccountInvites.length}건
+                      대기 {pendingAccountInvites.length}건
                     </span>
                   )}
                 </div>
@@ -3237,7 +3502,7 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
-                    disabled={isRespondingVoterAccountInvite}
+                    disabled={isRespondingAccountInvite}
                     onClick={() => void handleRespondVoterAccountInvite(currentPendingVoterInvite, 'DECLINE')}
                     className="py-3.5 rounded-2xl border border-slate-300 bg-white text-slate-700 text-sm font-extrabold hover:bg-slate-50 disabled:opacity-50"
                   >
@@ -3245,11 +3510,11 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    disabled={isRespondingVoterAccountInvite}
+                    disabled={isRespondingAccountInvite}
                     onClick={() => void handleRespondVoterAccountInvite(currentPendingVoterInvite, 'ACCEPT')}
                     className="py-3.5 rounded-2xl bg-slate-950 text-amber-300 text-sm font-extrabold hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {isRespondingVoterAccountInvite ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    {isRespondingAccountInvite ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                     수락
                   </button>
                 </div>
@@ -3527,6 +3792,14 @@ export default function App() {
                         : `${landingInviteData.participantCount} / ${landingInviteData.maxParticipants}명 (최대 6명)`}
                     </span>
                   </div>
+                  <div className="space-y-1">
+                    <span className="text-slate-400 font-bold block">초대 역할</span>
+                    <span className="font-extrabold text-slate-900">{landingInviteData.inviteType === 'VOTER' ? '투표자' : '참여자'}</span>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-slate-400 font-bold block">현재 진행 단계</span>
+                    <span className="font-extrabold text-slate-900">{landingInviteData.room?.status ? getRoomStageLabel(landingInviteData.room.status) : '-'}</span>
+                  </div>
                 </div>
 
                 {/* Nickname Input for joining */}
@@ -3547,6 +3820,8 @@ export default function App() {
                     type="button"
                     onClick={() => handleJoinRoomViaInvite(landingInviteToken)}
                     disabled={joiningInvite || inviteSecondsLeft <= 0 || (
+                      landingInviteData.inviteType === 'PARTICIPANT' && landingNicknameInput.trim().length < 1
+                    ) || (
                       landingInviteData.inviteType !== 'VOTER' &&
                       (landingInviteData.participantCount || 0) >= (landingInviteData.maxParticipants || 6) &&
                       !landingInviteData.canJoinAsVoter
@@ -3569,7 +3844,7 @@ export default function App() {
                     ) : (
                       <>
                         <Users className="w-4 h-4" />
-                        <span>회의실 참가하기</span>
+                        <span>참여하기</span>
                       </>
                     )}
                   </button>
@@ -3579,11 +3854,12 @@ export default function App() {
                     onClick={() => {
                       setLandingInviteToken(null);
                       setLandingInviteData(null);
+                      setLandingNicknameInput('');
                       window.history.replaceState({}, '', '/');
                     }}
                     className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-600 transition text-center"
                   >
-                    취소하고 메인 로비로 이동
+                    {landingInviteData.inviteType === 'PARTICIPANT' ? '취소' : '취소하고 메인 로비로 이동'}
                   </button>
                 </div>
               </div>

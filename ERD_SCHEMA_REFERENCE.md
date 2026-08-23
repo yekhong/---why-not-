@@ -1,7 +1,7 @@
-# WhyNot ERD·스키마 기준서 (V9)
+# WhyNot ERD·스키마 기준서 (V11)
 
-> 기준일: 2026-08-21
-> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260821_account_invite_voter_capacity_v9.sql`
+> 기준일: 2026-08-23
+> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260823_participant_invite_session_navigation_v11.sql`
 
 ## 1. 핵심 관계
 
@@ -55,7 +55,9 @@ erDiagram
 | 최종 투표 | `final_roulette_consents` | 동률 룰렛 동의 |
 | 최종 투표 | `final_roulette_draws` | 순차 룰렛 결과 |
 
-## 3. V9 핵심 컬럼
+V11 세션은 마지막 실제 사용자 활동 기준 24시간의 슬라이딩 만료를 사용합니다. 클릭·키 입력·터치·화면 복귀만 `/api/auth/activity`를 통해 만료 시각을 연장하고, 초대/방 상태 폴링은 세션을 연장하지 않습니다. 일반 재접속은 이전 회의실 ID를 자동 복원하지 않고 로비에서 시작하며, 새로고침과 명시적 `roomId` URL만 현재 회의실을 복원합니다.
+
+## 3. V11 핵심 컬럼
 
 ### `rooms`
 
@@ -73,6 +75,9 @@ erDiagram
 | `final_vote_status` | `TEXT` | 최종 투표 진행 상태 |
 
 `rooms_external_voter_settings_check`는 외부 투표 비활성 시 필요 인원을 0으로, 활성 시 1~30명으로 제한합니다.
+V11의 `rooms_enforce_participant_reserved_capacity_v11` 트리거는 `max_participants`를 현재 참여자 수 + `PENDING` 참여자 계정 초대 예약 수보다 작게 낮추는 변경을 거절합니다. 초대 생성·링크 입장·계정 초대 수락과 같은 방 행 잠금 순서를 사용하므로 동시 요청에서도 예약 좌석이 유실되지 않습니다.
+
+V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrations_expire_conflicting_account_invite_v11` 트리거는 공유 링크 등으로 반대 역할에 먼저 등록된 경우 같은 방의 충돌하는 `PENDING` 계정 초대를 즉시 `EXPIRED` 처리해 역할 중복과 유령 예약을 막습니다.
 
 ### `participants`
 
@@ -111,7 +116,7 @@ erDiagram
 | `accepted_at` | `TIMESTAMPTZ` | 초대 수락 완료 시각 |
 | `responded_at` | `TIMESTAMPTZ` | 수락·거절·취소·만료 등 초대 응답/종료 시각 |
 
-대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 초대는 좌석을 예약하며 로그인 시 자동 수락되고 1단계가 끝나면 자동 만료됩니다. 투표자 계정 초대는 좌석만 예약하며 초대받은 사용자가 명시적으로 수락해야 `room_voter_registrations`에 등록되고, 거절 시 예약 좌석을 즉시 반환합니다.
+대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 계정 초대는 좌석을 예약하지만 로그인만으로 자동 수락하지 않습니다. 초대받은 사용자가 초대 내용을 확인하고 1~6자의 회의실 닉네임을 정한 뒤 명시적으로 수락해야 `participants`에 등록됩니다. 거절하면 `DECLINED`, 아이디어 등록 단계가 끝나면 `EXPIRED`로 종료되어 예약 좌석을 반환합니다. 투표자 계정 초대도 명시적으로 수락해야 `room_voter_registrations`에 등록되며 거절 시 예약 좌석을 즉시 반환합니다. 모든 `PENDING`→종료 상태 변경은 V11 트리거가 `responded_at`을 보장합니다.
 
 ### `room_voter_registrations`
 
@@ -173,6 +178,8 @@ erDiagram
 
 프론트엔드는 `get_room_state_v9` 단일 RPC를 사용하는 가벼운 상태 API로 접근 권한과 버전을 함께 확인하고, 값이 달라졌을 때 상세 데이터를 다시 조회합니다.
 
+계정 초대 팝업은 `list_pending_account_invites_v11`로 현재 로그인한 사용자 본인의 `PENDING` 초대만 조회합니다. 다른 초대 대상자나 회의 상세 데이터는 반환하지 않습니다.
+
 ## 5. 권한·삭제·무결성 원칙
 
 - 신규 초대·투표자 테이블은 RLS를 켜고 `anon`, `authenticated`의 직접 접근을 제거합니다.
@@ -182,13 +189,13 @@ erDiagram
 - 평가·최종 투표의 완료 결과는 회차 스냅샷을 기준으로 재사용하며 과거 투표지를 새 회차에 재사용하지 않습니다.
 - 외부 투표자는 1·2차 평가 정족수와 최소 응답 정족수에 포함하지 않습니다.
 
-## 6. V10 데이터 조작 요약
+## 6. V11 데이터 조작 요약
 
 | 동작 | 주요 테이블 | 조작 |
 |---|---|---|
 | 방 생성 | `rooms`, `participants`, `room_invites` | 단일 RPC `INSERT` |
 | 계정 초대 | `room_account_invites` | 좌석 확인 후 `INSERT` |
-| 참여자 로그인 자동 입장 | `room_account_invites`, `participants` | `UPDATE` + `UPSERT` |
+| 참여자 계정 초대 수락·거절 | `room_account_invites`, `participants` | 명시적 응답 후 `UPDATE` + 필요 시 `UPSERT` |
 | 투표자 초대 수락·거절 | `room_account_invites`, `room_voter_registrations` | 명시적 응답 후 `UPDATE` + 필요 시 `UPSERT` |
 | 링크 입장 | `participants` 또는 `room_voter_registrations` | 잠금 후 `UPSERT` |
 | 최종 투표 시작 | `participants`, `room_voter_registrations`, `room_phase_participants`, `rooms` | 명단 활성화·고정 |
