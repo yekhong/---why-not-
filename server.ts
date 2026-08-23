@@ -4018,9 +4018,7 @@ app.post('/api/rooms/:id/pin', async (req: AuthenticatedRequest, res) => {
 app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   if (!SUPABASE_CONFIGURED) {
     const room = rooms.get(req.params.id);
-    if (!room || room.status !== 'CLOSED') {
-      return res.status(409).json({ error: '완료된 회의실만 보관할 수 있습니다.' });
-    }
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
     return res.json({ success: true, archived: true });
   }
   const { data, error } = await supabase.rpc('set_room_archive_v12', {
@@ -4035,9 +4033,7 @@ app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
 app.delete('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   if (!SUPABASE_CONFIGURED) {
     const room = rooms.get(req.params.id);
-    if (!room || room.status !== 'CLOSED') {
-      return res.status(409).json({ error: '완료된 회의실만 보관 목록에서 복원할 수 있습니다.' });
-    }
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
     return res.json({ success: true, archived: false });
   }
   const { data, error } = await supabase.rpc('set_room_archive_v12', {

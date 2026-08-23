@@ -1,7 +1,7 @@
-# WhyNot ERD·스키마 기준서 (V12)
+# WhyNot ERD·스키마 기준서 (V12.1)
 
 > 기준일: 2026-08-23
-> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260823_participant_invite_session_navigation_v11.sql`, `supabase/migrations/20260823_participant_voter_archive_schedule_v12.sql`
+> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260823_participant_invite_session_navigation_v11.sql`, `supabase/migrations/20260823_participant_voter_archive_schedule_v12.sql`, `supabase/migrations/20260823_archive_all_room_states_v12_1.sql`
 
 ## 1. 핵심 관계
 
@@ -129,7 +129,7 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | `source` | `TEXT` | `ACCOUNT`, `LINK`, `PARTICIPANT_FALLBACK` |
 | `status` | `TEXT` | `WAITING`, `ACTIVE`, `CANCELED` |
 | `activated_at` | `TIMESTAMPTZ` | 최종 명단 포함 시각 |
-| `hidden_at` | `TIMESTAMPTZ` | CLOSED 회의를 해당 사용자 개인 목록에서 보관한 시각 |
+| `hidden_at` | `TIMESTAMPTZ` | 회의 진행 상태와 무관하게 해당 사용자 개인 목록에서 보관한 시각 |
 
 `(room_id, user_id)`가 PK입니다. 동일 계정의 중복 등록을 막고 최종 투표 시작 전까지 대기 상태로 관리합니다.
 
@@ -221,12 +221,12 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 - `final_vote_roster_locked_at`이 설정되었거나 최종 투표 상태/회차가 시작된 뒤에는 취소할 수 없습니다.
 - 취소 즉시 `CANCELED`가 되어 투표자 좌석을 반환하며 기존 방장 전용 투표자 관리 함수의 권한은 완화하지 않습니다.
 
-### 완료방 개인 보관
+### 개인 보관
 
-- 새 보관 시스템을 중복 생성하지 않고 기존 개인 숨김 의미를 `CLOSED` 전용 보관으로 표준화합니다.
+- 새 보관 시스템을 중복 생성하지 않고 기존 `hidden_at`을 개인 목록 정리용 보관 상태로 사용합니다. 보관은 회의 진행 상태와 무관하게 가능합니다.
 - 방장·참여자는 `participants.hidden_at`, 투표자-only 사용자는 `room_voter_registrations.hidden_at`을 사용합니다.
-- `set_room_archive_v12`가 CLOSED 여부와 해당 사용자의 방 관계를 서버에서 다시 확인합니다.
-- 보관은 방 자체나 다른 사용자의 데이터를 삭제하지 않으며 복원 가능합니다. V12 적용 시 과거에 숨겨 둔 비완료 방의 `hidden_at`은 해제합니다.
+- `set_room_archive_v12`가 해당 사용자의 방 관계를 서버에서 다시 확인합니다. 보관 상태는 참여·투표 자격, 회의 단계, 데이터에 영향을 주지 않습니다.
+- 보관은 방 자체나 다른 사용자의 데이터를 삭제하지 않으며 복원 가능합니다. 진행 중 방을 보관해도 탈퇴·회의 종료·단계 변경으로 처리하지 않습니다.
 
 ### 2차 투표 예정 시간
 

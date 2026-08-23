@@ -433,7 +433,7 @@ export default function App() {
   const filteredRoomsList = useMemo(() => {
     return roomsList.filter(room => {
       if (showHiddenRooms) {
-        return Boolean(room.isHidden) && room.status === 'CLOSED';
+        return Boolean(room.isHidden);
       }
       if (room.isHidden) return false;
 
@@ -2135,7 +2135,7 @@ export default function App() {
     }
   };
 
-  // Archive a completed room from My Dashboard (personal view only; room data is preserved)
+  // Archive a room from My Dashboard (personal view only; membership and room data are preserved)
   const handleHideRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
     if (!userId) return;
@@ -2145,13 +2145,13 @@ export default function App() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 저장하지 못했습니다.');
       await fetchRooms();
-      triggerToast('완료된 회의실을 보관했습니다.');
+      triggerToast('회의실을 보관했습니다.');
     } catch (err) {
       triggerToast(err instanceof Error ? err.message : '회의실을 보관하지 못했습니다.', 'error');
     }
   };
 
-  // Restore an archived completed room to the normal final-selection list
+  // Restore an archived room to the normal room list
   const handleRestoreRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
     if (!userId) return;
@@ -2161,7 +2161,7 @@ export default function App() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 해제하지 못했습니다.');
       await fetchRooms();
-      triggerToast('보관된 회의실을 최종 선정 목록으로 복원했습니다.');
+      triggerToast('보관된 회의실을 일반 목록으로 복원했습니다.');
     } catch (err) {
       triggerToast(err instanceof Error ? err.message : '회의실 숨김 상태를 해제하지 못했습니다.', 'error');
     }
@@ -4438,7 +4438,7 @@ export default function App() {
             {/* Dashboard Rooms Grid & Filter Tabs */}
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                {/* Ownership Filter Tabs: 일반 목록과 완료방 보관함을 분리 */}
+                {/* Ownership Filter Tabs: 일반 목록과 개인 보관함을 분리 */}
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start">
                   <button
                     onClick={() => { setRoomOwnershipFilter('ALL'); setShowHiddenRooms(false); }}
@@ -4547,14 +4547,14 @@ export default function App() {
                   <div className="space-y-1">
                     <h3 className="text-base font-bold text-slate-900">
                       {showHiddenRooms
-                        ? '보관된 완료 회의실이 없습니다.'
+                        ? '보관된 회의실이 없습니다.'
                         : roomsList.length === 0
                           ? '아직 생성하거나 참여한 회의실이 없습니다.'
                           : '현재 조건에 맞는 회의실이 없습니다.'}
                     </h3>
                     <p className="text-xs text-slate-500 leading-relaxed px-6">
                       {showHiddenRooms
-                        ? '완료된 회의를 보관하면 이곳에서 다시 확인하고 복원할 수 있습니다.'
+                        ? '회의실을 보관하면 진행 상태와 관계없이 이곳에서 다시 확인하고 복원할 수 있습니다.'
                         : roomsList.length === 0
                           ? '새로운 회의실을 만들거나 초대 코드로 참여해 보세요.'
                           : '진행 상태 또는 회의실 구분을 변경해 다른 목록을 확인해 보세요.'}
@@ -4634,29 +4634,29 @@ export default function App() {
                               </div>
 
                               <div className="flex items-center gap-1">
-                                {/* Completed-room archive is personal and never deletes shared room data. */}
+                                {/* Personal archive only hides the room from this user's normal list; it never leaves, ends, or deletes the room. */}
                                 {room.isHidden ? (
                                   <button
                                     onClick={(e) => handleRestoreRoom(e, room.id)}
-                                    title="최종 선정 목록으로 복원하기"
+                                    title="일반 목록으로 복원하기"
                                     className="p-1.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 transition flex items-center text-[10px] font-bold border border-amber-300 gap-0.5 px-2"
                                   >
                                     <span>👁️ 목록으로 복원</span>
                                   </button>
-                                ) : room.status === 'CLOSED' ? (
+                                ) : (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (window.confirm('완료된 회의실을 보관하시겠습니까?\n회의 내용과 결과는 삭제되지 않으며 내 일반 목록에서만 숨겨집니다.')) {
+                                      if (window.confirm('이 회의실을 보관하시겠습니까?\n보관은 내 일반 목록에서만 숨기는 기능이며 참여 상태, 회의 진행, 데이터에는 영향을 주지 않습니다.')) {
                                         void handleHideRoom(e, room.id);
                                       }
                                     }}
-                                    title="완료된 회의실 보관하기"
+                                    title="회의실 보관하기"
                                     className="p-1.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200 hover:text-amber-800 hover:bg-amber-50 hover:border-amber-200 transition flex items-center gap-1 px-2"
                                   >
                                     <span className="text-[10px] font-bold">📦 보관</span>
                                   </button>
-                                ) : null}
+                                )}
 
                                 {!room.isHidden && (
                                   <button
