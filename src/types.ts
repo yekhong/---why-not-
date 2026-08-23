@@ -279,6 +279,17 @@ export interface AccountRoomInvite {
   respondedAt?: string;
 }
 
+export interface PendingParticipantAccountInvite {
+  id: string;
+  roomId: string;
+  roomTitle: string;
+  invitedBy: string;
+  role: 'PARTICIPANT';
+  status: 'PENDING';
+  roomStatus: RoomStatus;
+  createdAt: string;
+}
+
 export interface PendingVoterAccountInvite {
   id: string;
   roomId: string;
@@ -290,6 +301,8 @@ export interface PendingVoterAccountInvite {
   finalVoteStatus?: FinalVoteStatus;
   createdAt: string;
 }
+
+export type PendingAccountInvite = PendingParticipantAccountInvite | PendingVoterAccountInvite;
 
 export interface ScoreRoundResult {
   roundId: string;
