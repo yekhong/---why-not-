@@ -3593,6 +3593,8 @@ app.use(async (req: AuthenticatedRequest, res, next) => {
       const activeFinalVoter = await isActivatedFinalVoter(roomId, actorId);
       const voterAllowed =
         req.method === 'GET' && (roomSuffix === '' || roomSuffix === 'state') ||
+        req.method === 'DELETE' && roomSuffix === 'voter-registration' ||
+        (req.method === 'POST' || req.method === 'DELETE') && roomSuffix === 'hide' ||
         activeFinalVoter && req.method === 'POST' && (
           roomSuffix === 'star-vote' ||
           roomSuffix === 'star-vote/reopen' ||
@@ -3612,6 +3614,82 @@ app.use(async (req: AuthenticatedRequest, res, next) => {
     next();
   });
 });
+
+function normalizeRoomDeadlines(rawDeadlines: unknown): Room['deadlines'] {
+  const source = rawDeadlines && typeof rawDeadlines === 'object' && !Array.isArray(rawDeadlines)
+    ? { ...(rawDeadlines as Record<string, unknown>) }
+    : {};
+  const normalized = source as Room['deadlines'];
+  if (!normalized.finalVoteStartAt && typeof source.voteStartTime === 'string') {
+    normalized.finalVoteStartAt = source.voteStartTime;
+  }
+  if (!normalized.finalVoteEndAt && typeof source.evaluationAt === 'string') {
+    normalized.finalVoteEndAt = source.evaluationAt;
+  }
+  return normalized;
+}
+
+function normalizeFinalVoteScheduleValue(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || value.trim().length > 64) {
+    throw new Error(`${label} 형식이 올바르지 않습니다.`);
+  }
+  const normalized = value.trim();
+  if (Number.isNaN(Date.parse(normalized))) {
+    throw new Error(`${label} 형식이 올바르지 않습니다.`);
+  }
+  return normalized;
+}
+
+function buildFinalVoteScheduleDeadlines(rawDeadlines: unknown, baseDeadlines?: Room['deadlines']): Room['deadlines'] {
+  const incoming = rawDeadlines && typeof rawDeadlines === 'object' && !Array.isArray(rawDeadlines)
+    ? rawDeadlines as Record<string, unknown>
+    : {};
+  const next = normalizeRoomDeadlines(baseDeadlines || {});
+  const hasStart = Object.prototype.hasOwnProperty.call(incoming, 'finalVoteStartAt') ||
+    Object.prototype.hasOwnProperty.call(incoming, 'voteStartTime');
+  const hasEnd = Object.prototype.hasOwnProperty.call(incoming, 'finalVoteEndAt') ||
+    Object.prototype.hasOwnProperty.call(incoming, 'evaluationAt');
+
+  if (hasStart) {
+    const start = normalizeFinalVoteScheduleValue(
+      incoming.finalVoteStartAt ?? incoming.voteStartTime,
+      '2차 투표 예정 시작 일시'
+    );
+    if (start) next.finalVoteStartAt = start;
+    else delete next.finalVoteStartAt;
+    delete next.voteStartTime;
+  }
+  if (hasEnd) {
+    const end = normalizeFinalVoteScheduleValue(
+      incoming.finalVoteEndAt ?? incoming.evaluationAt,
+      '2차 투표 예정 마감 일시'
+    );
+    if (end) next.finalVoteEndAt = end;
+    else delete next.finalVoteEndAt;
+    // V11 used evaluationAt for the final-vote end time. Once V12 explicitly
+    // writes the schedule, remove that ambiguous legacy key.
+    delete next.evaluationAt;
+  }
+
+  if (next.finalVoteStartAt && next.finalVoteEndAt) {
+    const startMs = Date.parse(next.finalVoteStartAt);
+    const endMs = Date.parse(next.finalVoteEndAt);
+    if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs <= startMs) {
+      throw new Error('2차 투표 예정 마감 일시는 시작 일시보다 뒤여야 합니다.');
+    }
+  }
+  return next;
+}
+
+function hasFinalVoteStartedServer(room: Room): boolean {
+  return Boolean(
+    room.finalVoteRosterLockedAt ||
+    room.currentFinalVoteCycleId ||
+    room.status === 'CLOSED' ||
+    (room.finalVoteStatus && room.finalVoteStatus !== 'NOT_STARTED')
+  );
+}
 
 function mapRoomRow(row: any): Room {
   const finalVoteStatus: FinalVoteStatus =
@@ -3640,7 +3718,7 @@ function mapRoomRow(row: any): Room {
     status: row.status || 'IDEA_SUBMISSION',
     minResponseThreshold: row.min_response_threshold || 1,
     eliminationConfig: row.elimination_config || { countPerRound: 1, tieBreak: 'random' },
-    deadlines: row.deadlines || {},
+    deadlines: normalizeRoomDeadlines(row.deadlines),
     createdAt: row.created_at || new Date().toISOString(),
     engineVersion: Number(row.engine_version || 1),
     decisionMode: row.decision_mode === 'QUICK' ? 'QUICK' : 'STRUCTURED',
@@ -3938,31 +4016,97 @@ app.post('/api/rooms/:id/pin', async (req: AuthenticatedRequest, res) => {
 });
 
 app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
-  const { data, error } = SUPABASE_CONFIGURED
-    ? await supabase
-        .from('participants')
-        .update({ hidden_at: new Date().toISOString() })
-        .eq('room_id', req.params.id)
-        .eq('user_id', req.auth!.userId)
-        .select('user_id')
-    : { data: [{ user_id: req.auth!.userId }], error: null };
-  if (error) return res.status(503).json({ error: '회의실 숨김 상태를 저장하지 못했습니다.' });
-  if (!data || data.length !== 1) return res.status(409).json({ error: '참여자 정보를 찾지 못했습니다.' });
-  return res.json({ success: true });
+  if (!SUPABASE_CONFIGURED) {
+    const room = rooms.get(req.params.id);
+    if (!room || room.status !== 'CLOSED') {
+      return res.status(409).json({ error: '완료된 회의실만 보관할 수 있습니다.' });
+    }
+    return res.json({ success: true, archived: true });
+  }
+  const { data, error } = await supabase.rpc('set_room_archive_v12', {
+    p_room_id: req.params.id,
+    p_user_id: req.auth!.userId,
+    p_hidden: true
+  });
+  if (error) return res.status(error.code === 'P0001' ? 409 : 503).json({ error: error.message || '회의실을 보관하지 못했습니다.' });
+  return res.json(data || { success: true, archived: true });
 });
 
 app.delete('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
-  const { data, error } = SUPABASE_CONFIGURED
-    ? await supabase
-        .from('participants')
-        .update({ hidden_at: null })
-        .eq('room_id', req.params.id)
-        .eq('user_id', req.auth!.userId)
-        .select('user_id')
-    : { data: [{ user_id: req.auth!.userId }], error: null };
-  if (error) return res.status(503).json({ error: '회의실 숨김 상태를 해제하지 못했습니다.' });
-  if (!data || data.length !== 1) return res.status(409).json({ error: '참여자 정보를 찾지 못했습니다.' });
-  return res.json({ success: true });
+  if (!SUPABASE_CONFIGURED) {
+    const room = rooms.get(req.params.id);
+    if (!room || room.status !== 'CLOSED') {
+      return res.status(409).json({ error: '완료된 회의실만 보관 목록에서 복원할 수 있습니다.' });
+    }
+    return res.json({ success: true, archived: false });
+  }
+  const { data, error } = await supabase.rpc('set_room_archive_v12', {
+    p_room_id: req.params.id,
+    p_user_id: req.auth!.userId,
+    p_hidden: false
+  });
+  if (error) return res.status(error.code === 'P0001' ? 409 : 503).json({ error: error.message || '회의실 보관 상태를 해제하지 못했습니다.' });
+  return res.json(data || { success: true, archived: false });
+});
+
+app.delete('/api/rooms/:id/leave', async (req: AuthenticatedRequest, res) => {
+  const { id } = req.params;
+  const userId = req.auth!.userId;
+  if (!SUPABASE_CONFIGURED) {
+    const room = rooms.get(id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    if (room.hostId === userId) return res.status(409).json({ error: '방장은 회의실에서 탈퇴할 수 없습니다.' });
+    if (room.status !== 'IDEA_SUBMISSION') return res.status(409).json({ error: '참여자는 아이디어 등록 단계에서만 탈퇴할 수 있습니다.' });
+    participants.get(id)?.delete(userId);
+    participantRolesMap.get(id)?.delete(userId);
+    ideaCompletedUsersMap.get(id)?.delete(userId);
+    ideas.set(id, (ideas.get(id) || []).filter(idea => idea.submitterId !== userId));
+    phaseParticipantSnapshots.get(id)?.forEach(snapshot => snapshot.delete(userId));
+    return res.json({ success: true });
+  }
+
+  const { data, error } = await supabase.rpc('leave_room_participant_v12', {
+    p_room_id: id,
+    p_user_id: userId
+  });
+  if (error) {
+    const statusCode = /찾을 수 없습니다/i.test(error.message || '') ? 404 : error.code === 'P0001' ? 409 : 503;
+    return res.status(statusCode).json({ error: error.message || '회의실 탈퇴를 처리하지 못했습니다.' });
+  }
+  participants.get(id)?.delete(userId);
+  participantRolesMap.get(id)?.delete(userId);
+  ideaCompletedUsersMap.get(id)?.delete(userId);
+  ideas.set(id, (ideas.get(id) || []).filter(idea => idea.submitterId !== userId));
+  phaseParticipantSnapshots.get(id)?.forEach(snapshot => snapshot.delete(userId));
+  return res.json(data || { success: true });
+});
+
+app.delete('/api/rooms/:id/voter-registration', async (req: AuthenticatedRequest, res) => {
+  const { id } = req.params;
+  const userId = req.auth!.userId;
+  if (!SUPABASE_CONFIGURED) {
+    const room = rooms.get(id);
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    if (hasFinalVoteStartedServer(room)) return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 투표자 등록을 취소할 수 없습니다.' });
+    if (participantRolesMap.get(id)?.get(userId) !== 'VOTER') return res.status(409).json({ error: '취소할 투표자 등록을 찾을 수 없습니다.' });
+    participantRolesMap.get(id)?.delete(userId);
+    participants.get(id)?.delete(userId);
+    return res.json({ success: true });
+  }
+
+  const { data, error } = await supabase.rpc('cancel_my_voter_registration_v12', {
+    p_room_id: id,
+    p_user_id: userId
+  });
+  if (error) {
+    const statusCode = /찾을 수 없습니다/i.test(error.message || '') ? 404 : error.code === 'P0001' ? 409 : 503;
+    return res.status(statusCode).json({ error: error.message || '투표자 등록을 취소하지 못했습니다.' });
+  }
+  if (participantRolesMap.get(id)?.get(userId) === 'VOTER') {
+    participantRolesMap.get(id)?.delete(userId);
+    participants.get(id)?.delete(userId);
+  }
+  return res.json(data || { success: true });
 });
 
 app.patch('/api/rooms/:id/me', async (req: AuthenticatedRequest, res) => {
@@ -4524,7 +4668,11 @@ app.post('/api/rooms/:id/status', async (req: AuthenticatedRequest, res) => {
   }
 
   if (room.status === 'IDEA_SUBMISSION' && status === 'CRITERIA_PROPOSAL') {
-    const eligibleParticipants = new Set(participants.get(id)?.keys() || []);
+    const eligibleParticipants = new Set(
+      Array.from(participants.get(id)?.keys() || []).filter(
+        participantId => (participantRolesMap.get(id)?.get(participantId) || 'PARTICIPANT') === 'PARTICIPANT'
+      )
+    );
     if (eligibleParticipants.size < 2) {
       return res.status(409).json({ error: '종합점수 평가는 서로 다른 참여자 2명 이상이 필요합니다.' });
     }
@@ -5047,13 +5195,25 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
         memberRows = mRowsWithHide;
       }
 
-      const { data: waitingVoterRows, error: waitingVoterError } = await supabase
+      let waitingVoterRows: any[] | null = null;
+      const { data: voterRowsWithArchive, error: voterArchiveError } = await supabase
         .from('room_voter_registrations')
-        .select('room_id,status')
+        .select('room_id,status,hidden_at')
         .eq('user_id', reqUserId)
         .in('status', ['WAITING', 'ACTIVE']);
-      if (waitingVoterError) {
-        return res.status(503).json({ error: '외부 투표자로 등록된 회의실을 불러오지 못했습니다.' });
+      if (voterArchiveError) {
+        // Deployment-order fallback: V12 adds hidden_at to voter registrations.
+        const { data: voterRowsLegacy, error: voterLegacyError } = await supabase
+          .from('room_voter_registrations')
+          .select('room_id,status')
+          .eq('user_id', reqUserId)
+          .in('status', ['WAITING', 'ACTIVE']);
+        if (voterLegacyError) {
+          return res.status(503).json({ error: '외부 투표자로 등록된 회의실을 불러오지 못했습니다.' });
+        }
+        waitingVoterRows = (voterRowsLegacy || []).map((row: any) => ({ ...row, hidden_at: null }));
+      } else {
+        waitingVoterRows = voterRowsWithArchive;
       }
 
       const voterStatusByRoom = new Map((waitingVoterRows || []).map((row: any) => [
@@ -5086,11 +5246,33 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
         }
       }
 
-      const hiddenByRoom = new Map(effectiveMemberRows.map((row: any) => [row.room_id, row.hidden_at]));
+      const hiddenByRoom = new Map(effectiveMemberRows.map((row: any) => [String(row.room_id), row.hidden_at]));
+      const voterHiddenByRoom = new Map((waitingVoterRows || []).map((row: any) => [String(row.room_id), row.hidden_at]));
       const memberRoleByRoom = new Map(effectiveMemberRows.map((row: any) => [
-        row.room_id,
+        String(row.room_id),
         row.role === 'VOTER' ? 'VOTER' : 'PARTICIPANT'
       ]));
+      const winnerTitlesByRoom = new Map<string, string[]>();
+      const closedRoomIds = memberRoomRows
+        .filter((row: any) => row.status === 'CLOSED')
+        .map((row: any) => String(row.id));
+      if (closedRoomIds.length) {
+        const { data: winnerRows, error: winnerError } = await supabase
+          .from('ideas')
+          .select('room_id,title,created_at')
+          .in('room_id', closedRoomIds)
+          .eq('status', 'WINNER')
+          .order('created_at', { ascending: true });
+        if (winnerError) {
+          return res.status(503).json({ error: '최종 선정 아이디어를 불러오지 못했습니다.' });
+        }
+        (winnerRows || []).forEach((winner: any) => {
+          const roomId = String(winner.room_id);
+          const titles = winnerTitlesByRoom.get(roomId) || [];
+          titles.push(String(winner.title || '').trim());
+          winnerTitlesByRoom.set(roomId, titles.filter(Boolean));
+        });
+      }
       const counts = new Map<string, number>();
       if (roomIds.length) {
         const { data: participantRows, error: participantCountError } = await supabase
@@ -5131,7 +5313,8 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
               ? '투표자'
               : '참여자',
           waitingForFinalVote: voterStatusByRoom.get(String(row.id)) === 'WAITING',
-          isHidden: Boolean(hiddenByRoom.get(row.id))
+          winnerTitles: winnerTitlesByRoom.get(String(row.id)) || [],
+          isHidden: Boolean(hiddenByRoom.get(String(row.id)) || voterHiddenByRoom.get(String(row.id)))
         }))
       );
     } catch (err) {
@@ -5161,6 +5344,9 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
       isHost: r.hostId === reqUserId,
       isJoined: true,
       myRole: r.hostId === reqUserId ? '방장' : '참여자',
+      winnerTitles: r.status === 'CLOSED'
+        ? (ideas.get(r.id) || []).filter(idea => idea.status === 'WINNER').map(idea => idea.title)
+        : [],
       isHidden: false
     }));
   return res.json(list);
@@ -5183,6 +5369,13 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
   }
   if (category !== undefined && category !== '기획' && category !== '디자인') {
     return res.status(400).json({ error: '지원하지 않는 회의실 분류입니다.' });
+  }
+
+  let normalizedDeadlines: Room['deadlines'];
+  try {
+    normalizedDeadlines = buildFinalVoteScheduleDeadlines(deadlines || {});
+  } catch (error) {
+    return res.status(400).json({ error: error instanceof Error ? error.message : '2차 투표 예정 시간 형식이 올바르지 않습니다.' });
   }
 
   const normalizedDecisionMode: DecisionMode = decisionMode === 'QUICK' ? 'QUICK' : 'STRUCTURED';
@@ -5221,7 +5414,7 @@ app.post('/api/rooms', async (req: AuthenticatedRequest, res) => {
       ratioPerRound: eliminationConfig?.ratioPerRound,
       tieBreak: eliminationConfig?.tieBreak || 'random',
     },
-    deadlines: deadlines || {},
+    deadlines: normalizedDeadlines,
     createdAt: createdAt.toISOString(),
     engineVersion: normalizedDecisionMode === 'STRUCTURED' ? 8 : 7,
     decisionMode: normalizedDecisionMode,
@@ -5385,7 +5578,7 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
 
   const {
     title, description, category, maxParticipants, targetWinnerCount, minResponseThreshold,
-    externalVotersEnabled, requiredVoterCount
+    externalVotersEnabled, requiredVoterCount, deadlines
   } = req.body;
 
   if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 120)) {
@@ -5393,6 +5586,24 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   }
   if (description !== undefined && (typeof description !== 'string' || description.length > 5000)) {
     return res.status(400).json({ error: '방 설명은 5,000자 이내로 입력해 주세요.' });
+  }
+  if (category !== undefined && category !== '기획' && category !== '디자인') {
+    return res.status(400).json({ error: '지원하지 않는 회의실 분류입니다.' });
+  }
+
+  const incomingDeadlines = deadlines && typeof deadlines === 'object' && !Array.isArray(deadlines)
+    ? deadlines as Record<string, unknown>
+    : null;
+  const changesFinalVoteSchedule = Boolean(
+    incomingDeadlines && (
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'finalVoteStartAt') ||
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'finalVoteEndAt') ||
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'voteStartTime') ||
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'evaluationAt')
+    )
+  );
+  if (changesFinalVoteSchedule && hasFinalVoteStartedServer(room)) {
+    return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 2차 투표 예정 시간을 변경할 수 없습니다.' });
   }
 
   const changesDecisionRules =
@@ -5404,7 +5615,7 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   }
   if (
     (externalVotersEnabled !== undefined || requiredVoterCount !== undefined) &&
-    room.finalVoteRosterLockedAt
+    hasFinalVoteStartedServer(room)
   ) {
     return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 외부 투표자 설정을 변경할 수 없습니다.' });
   }
@@ -5442,6 +5653,13 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   } else {
     updatedRoom.requiredVoterCount = 0;
   }
+  if (changesFinalVoteSchedule && incomingDeadlines) {
+    try {
+      updatedRoom.deadlines = buildFinalVoteScheduleDeadlines(incomingDeadlines, room.deadlines);
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : '2차 투표 예정 시간 형식이 올바르지 않습니다.' });
+    }
+  }
 
   if (SUPABASE_CONFIGURED && updatedRoom.externalVotersEnabled &&
       (externalVotersEnabled !== undefined || requiredVoterCount !== undefined)) {
@@ -5462,7 +5680,7 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
   }
 
   if (SUPABASE_CONFIGURED) {
-    const { data: changedRows, error } = await supabase.from('rooms').update({
+    let updateQuery = supabase.from('rooms').update({
       title: updatedRoom.title,
       description: updatedRoom.description,
       category: updatedRoom.category,
@@ -5470,8 +5688,18 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       target_winner_count: updatedRoom.targetWinnerCount,
       min_response_threshold: updatedRoom.minResponseThreshold,
       external_voters_enabled: updatedRoom.externalVotersEnabled,
-      required_voter_count: updatedRoom.requiredVoterCount
-    }).eq('id', id).eq('host_id', reqUserId).select('id');
+      required_voter_count: updatedRoom.requiredVoterCount,
+      deadlines: updatedRoom.deadlines
+    }).eq('id', id).eq('host_id', reqUserId);
+    if (changesFinalVoteSchedule) {
+      // Atomic race guard: if the final vote starts while the settings modal is open,
+      // this update affects zero rows instead of overwriting a now-locked schedule.
+      updateQuery = updateQuery
+        .is('final_vote_roster_locked_at', null)
+        .eq('final_vote_status', 'NOT_STARTED')
+        .is('current_final_vote_cycle_id', null);
+    }
+    const { data: changedRows, error } = await updateQuery.select('id');
     if (error) {
       if (/참여자와 예약 좌석|예약 좌석.*최대 참여/i.test(error.message || '')) {
         return res.status(409).json({ error: error.message });
@@ -5479,7 +5707,11 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       return res.status(503).json({ error: '방 설정을 안전하게 저장하지 못했습니다.' });
     }
     if (!changedRows || changedRows.length !== 1) {
-      return res.status(409).json({ error: '회의실이 다른 요청에서 변경되거나 삭제되었습니다. 새로고침해 주세요.' });
+      return res.status(409).json({
+        error: changesFinalVoteSchedule
+          ? '최종 투표가 이미 시작되었거나 회의실 상태가 변경되어 예정 시간을 저장하지 못했습니다. 새로고침해 주세요.'
+          : '회의실이 다른 요청에서 변경되거나 삭제되었습니다. 새로고침해 주세요.'
+      });
     }
   } else if (IS_PRODUCTION) {
     return res.status(503).json({ error: '방 설정 저장소를 사용할 수 없습니다.' });
@@ -7276,7 +7508,11 @@ app.post('/api/rooms/:id/criteria/confirm', async (req: AuthenticatedRequest, re
   }
 
   const evaluationCandidates = (ideas.get(id) || []).filter(idea => idea.status === 'ACTIVE');
-  const eligibleEvaluators = new Set(participants.get(id)?.keys() || []);
+  const eligibleEvaluators = new Set(
+    Array.from(participants.get(id)?.keys() || []).filter(
+      participantId => (participantRolesMap.get(id)?.get(participantId) || 'PARTICIPANT') === 'PARTICIPANT'
+    )
+  );
   if (eligibleEvaluators.size < 2) {
     return res.status(409).json({ error: '종합점수 평가는 서로 다른 참여자 2명 이상이 필요합니다.' });
   }
@@ -7835,7 +8071,11 @@ app.post('/api/rooms/:id/quick/start-vote', async (req: AuthenticatedRequest, re
       return res.status(400).json({ error: '빠른 결정을 시작하려면 선택지가 최소 2개 필요합니다.' });
     }
 
-    const eligible = new Set(participants.get(id)?.keys() || []);
+    const eligible = new Set(
+      Array.from(participants.get(id)?.keys() || []).filter(
+        participantId => (participantRolesMap.get(id)?.get(participantId) || 'PARTICIPANT') === 'PARTICIPANT'
+      )
+    );
     if (SUPABASE_CONFIGURED) {
       const { data: completionRows, error: completionError } = await supabase
         .from('phase_completions')

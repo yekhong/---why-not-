@@ -1,7 +1,7 @@
-# WhyNot ERD·스키마 기준서 (V11)
+# WhyNot ERD·스키마 기준서 (V12)
 
 > 기준일: 2026-08-23
-> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260823_participant_invite_session_navigation_v11.sql`
+> 기준 파일: `supabase_master_migration_full.sql`, `supabase/migrations/20260823_participant_invite_session_navigation_v11.sql`, `supabase/migrations/20260823_participant_voter_archive_schedule_v12.sql`
 
 ## 1. 핵심 관계
 
@@ -115,6 +115,7 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | `created_by` | `TEXT` | 초대를 만든 방장 ID |
 | `accepted_at` | `TIMESTAMPTZ` | 초대 수락 완료 시각 |
 | `responded_at` | `TIMESTAMPTZ` | 수락·거절·취소·만료 등 초대 응답/종료 시각 |
+| `membership_left_at` | `TIMESTAMPTZ` | ACCEPTED 초대 후 실제 참여 관계(참여자 탈퇴 또는 투표자 등록 취소)가 종료된 시각. 초대 이력은 보존 |
 
 대기 중인 계정 초대는 사용자·방 단위로 중복 생성되지 않습니다. 참여자 계정 초대는 좌석을 예약하지만 로그인만으로 자동 수락하지 않습니다. 초대받은 사용자가 초대 내용을 확인하고 1~6자의 회의실 닉네임을 정한 뒤 명시적으로 수락해야 `participants`에 등록됩니다. 거절하면 `DECLINED`, 아이디어 등록 단계가 끝나면 `EXPIRED`로 종료되어 예약 좌석을 반환합니다. 투표자 계정 초대도 명시적으로 수락해야 `room_voter_registrations`에 등록되며 거절 시 예약 좌석을 즉시 반환합니다. 모든 `PENDING`→종료 상태 변경은 V11 트리거가 `responded_at`을 보장합니다.
 
@@ -128,6 +129,7 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | `source` | `TEXT` | `ACCOUNT`, `LINK`, `PARTICIPANT_FALLBACK` |
 | `status` | `TEXT` | `WAITING`, `ACTIVE`, `CANCELED` |
 | `activated_at` | `TIMESTAMPTZ` | 최종 명단 포함 시각 |
+| `hidden_at` | `TIMESTAMPTZ` | CLOSED 회의를 해당 사용자 개인 목록에서 보관한 시각 |
 
 `(room_id, user_id)`가 PK입니다. 동일 계정의 중복 등록을 막고 최종 투표 시작 전까지 대기 상태로 관리합니다.
 
@@ -201,3 +203,38 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | 최종 투표 시작 | `participants`, `room_voter_registrations`, `room_phase_participants`, `rooms` | 명단 활성화·고정 |
 | 미완료 회차 취소 | `final_vote_cycles`, `room_phase_participants`, `room_voter_registrations`, `rooms` | 이전 투표지 보존, 새 회차용 명단 재구성 |
 | 최종 확정 | `ideas`, `rooms` | 단일 RPC 일괄 `UPDATE` |
+
+
+## 7. V12 참여 해제·보관·예정 시간 정책
+
+### 참여자 실제 탈퇴
+
+- `IDEA_SUBMISSION`에서만 일반 참여자가 본인 탈퇴를 요청할 수 있으며 방장은 탈퇴할 수 없습니다.
+- `leave_room_participant_v12`가 `rooms` 행을 잠근 뒤 본인의 아이디어, `IDEA_SUBMISSION` 완료 기록, 참여자 행을 하나의 트랜잭션에서 정리해 좌석을 즉시 반환합니다.
+- 수락된 계정 초대는 `ACCEPTED` 이력으로 보존하고 `membership_left_at`으로 실제 참여 관계 종료를 구분합니다.
+- 탈퇴는 방 단계를 자동 이동시키지 않습니다. 남은 실제 `PARTICIPANT` 2명 이상, 필요한 아이디어 수, 전원 완료 조건이 충족되면 기존과 동일하게 방장의 다음 단계 버튼만 활성화됩니다.
+- `advance_idea_submission_v8`은 V12부터 `participants.role = 'PARTICIPANT'`만 단계 정족수와 완료 조건에 포함합니다. 외부 투표자는 Stage-1 진행 조건에 포함되지 않습니다.
+
+### 외부 투표자 본인 등록 취소
+
+- `cancel_my_voter_registration_v12`는 본인의 `WAITING` 등록만 취소합니다.
+- `final_vote_roster_locked_at`이 설정되었거나 최종 투표 상태/회차가 시작된 뒤에는 취소할 수 없습니다.
+- 취소 즉시 `CANCELED`가 되어 투표자 좌석을 반환하며 기존 방장 전용 투표자 관리 함수의 권한은 완화하지 않습니다.
+
+### 완료방 개인 보관
+
+- 새 보관 시스템을 중복 생성하지 않고 기존 개인 숨김 의미를 `CLOSED` 전용 보관으로 표준화합니다.
+- 방장·참여자는 `participants.hidden_at`, 투표자-only 사용자는 `room_voter_registrations.hidden_at`을 사용합니다.
+- `set_room_archive_v12`가 CLOSED 여부와 해당 사용자의 방 관계를 서버에서 다시 확인합니다.
+- 보관은 방 자체나 다른 사용자의 데이터를 삭제하지 않으며 복원 가능합니다. V12 적용 시 과거에 숨겨 둔 비완료 방의 `hidden_at`은 해제합니다.
+
+### 2차 투표 예정 시간
+
+`rooms.deadlines`의 V12 표준 키는 다음과 같습니다.
+
+| 키 | 의미 | 자동 실행 여부 |
+|---|---|---|
+| `finalVoteStartAt` | 2차/최종 별 투표 예정 시작 일시 | 자동 시작하지 않음 |
+| `finalVoteEndAt` | 2차/최종 별 투표 예정 마감 일시 | 자동 마감·자동 확정하지 않음 |
+
+V11의 `voteStartTime`과 `evaluationAt`은 호환 읽기 후 표준 키로 정규화합니다. 예정 시간은 운영 안내용이며 기존의 `고정 명단 전원 제출 후 결과 공개` 정책을 바꾸지 않습니다. 최종 투표가 시작되면 프론트와 서버 모두 시간 변경을 거부합니다.

@@ -88,9 +88,31 @@ function getRoomStageLabel(status: RoomStatus): string {
     case 'EVALUATION_ROUND_2': return '2차 평가';
     case 'ELIMINATION':
     case 'FINAL_VOTE': return '최종 별 투표';
-    case 'CLOSED': return '회의 종료';
+    case 'CLOSED': return '최종 결과';
     default: return status;
   }
+}
+
+function toDateTimeLocalValue(value?: string): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(trimmed)) {
+    return trimmed.slice(0, 16);
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return trimmed.slice(0, 16);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
+function hasFinalVoteStarted(room?: Room | null): boolean {
+  if (!room) return false;
+  return Boolean(
+    room.finalVoteRosterLockedAt ||
+    room.currentFinalVoteCycleId ||
+    room.status === 'CLOSED' ||
+    (room.finalVoteStatus && room.finalVoteStatus !== 'NOT_STARTED')
+  );
 }
 
 
@@ -401,12 +423,36 @@ export default function App() {
   // Room Navigation / Filter / Pinning State (ENTRY-01 ~ ENTRY-04)
   // ----------------------------------------------------------------
   const [roomsList, setRoomsList] = useState<any[]>([]);
-  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'ACTIVE' | 'CLOSED'>('ACTIVE');
+  const [roomFilterStatus, setRoomFilterStatus] = useState<'ALL' | 'IDEA_SUBMISSION' | 'EVALUATION' | 'CLOSED'>('ALL');
   const [roomOwnershipFilter, setRoomOwnershipFilter] = useState<'ALL' | 'CREATED_BY_ME' | 'JOINED_BY_ME'>('ALL');
   const [showHiddenRooms, setShowHiddenRooms] = useState<boolean>(false);
   const [isFetchRoomsLoading, setIsFetchRoomsLoading] = useState<boolean>(false);
   const [fetchRoomsError, setFetchRoomsError] = useState<boolean>(false);
   const [isJoinCodeModalOpen, setIsJoinCodeModalOpen] = useState(false);
+
+  const filteredRoomsList = useMemo(() => {
+    return roomsList.filter(room => {
+      if (showHiddenRooms) {
+        return Boolean(room.isHidden) && room.status === 'CLOSED';
+      }
+      if (room.isHidden) return false;
+
+      if (roomOwnershipFilter === 'CREATED_BY_ME') {
+        if (room.hostId !== userId && !room.isHost) return false;
+      } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
+        if (room.hostId === userId || room.isHost) return false;
+      }
+
+      if (roomFilterStatus === 'IDEA_SUBMISSION') {
+        return room.status === 'IDEA_SUBMISSION' || room.status === 'DRAFT';
+      }
+      if (roomFilterStatus === 'EVALUATION') {
+        return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'EVALUATION_ROUND_2', 'ELIMINATION', 'FINAL_VOTE'].includes(room.status);
+      }
+      if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
+      return true;
+    });
+  }, [roomsList, showHiddenRooms, roomOwnershipFilter, roomFilterStatus, userId]);
   const [inputJoinCode, setInputJoinCode] = useState('');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
@@ -671,7 +717,11 @@ export default function App() {
   const [editRoomMinThreshold, setEditRoomMinThreshold] = useState(3);
   const [editExternalVotersEnabled, setEditExternalVotersEnabled] = useState(false);
   const [editRequiredVoterCount, setEditRequiredVoterCount] = useState(1);
+  const [editFinalVoteStartAt, setEditFinalVoteStartAt] = useState('');
+  const [editFinalVoteEndAt, setEditFinalVoteEndAt] = useState('');
   const [isUpdatingRoomSettings, setIsUpdatingRoomSettings] = useState(false);
+  const [isLeavingRoomMembership, setIsLeavingRoomMembership] = useState(false);
+  const [isCancelingMyVoterRegistration, setIsCancelingMyVoterRegistration] = useState(false);
   // On-Demand Demo Seed Data Handler
   const [isGeneratingDemo, setIsGeneratingDemo] = useState(false);
 
@@ -703,6 +753,12 @@ export default function App() {
     setEditRoomMinThreshold(roomDetails.room.minResponseThreshold || 3);
     setEditExternalVotersEnabled(Boolean(roomDetails.room.externalVotersEnabled));
     setEditRequiredVoterCount(Math.max(1, roomDetails.room.requiredVoterCount || 1));
+    setEditFinalVoteStartAt(toDateTimeLocalValue(
+      roomDetails.room.deadlines?.finalVoteStartAt || roomDetails.room.deadlines?.voteStartTime
+    ));
+    setEditFinalVoteEndAt(toDateTimeLocalValue(
+      roomDetails.room.deadlines?.finalVoteEndAt || roomDetails.room.deadlines?.evaluationAt
+    ));
     setShowRoomSettingsModal(true);
   };
 
@@ -717,6 +773,11 @@ export default function App() {
       triggerToast('필요 투표자 수는 1명부터 30명까지 설정할 수 있습니다.', 'error');
       return;
     }
+    const finalVoteStarted = hasFinalVoteStarted(roomDetails.room);
+    if (!finalVoteStarted && editFinalVoteStartAt && editFinalVoteEndAt && editFinalVoteEndAt <= editFinalVoteStartAt) {
+      triggerToast('2차 투표 예정 마감 일시는 시작 일시보다 뒤여야 합니다.', 'error');
+      return;
+    }
 
     setIsUpdatingRoomSettings(true);
     try {
@@ -728,11 +789,19 @@ export default function App() {
           title: editRoomTitle.trim(),
           description: editRoomDesc.trim(),
           category: editRoomCategory,
-          maxParticipants: editRoomMaxParticipants,
-          targetWinnerCount: editRoomTargetWinnerCount,
-          minResponseThreshold: editRoomMinThreshold,
-          externalVotersEnabled: editExternalVotersEnabled,
-          requiredVoterCount: editExternalVotersEnabled ? editRequiredVoterCount : 0
+          ...(roomDetails.room.status === 'IDEA_SUBMISSION' ? {
+            maxParticipants: editRoomMaxParticipants,
+            targetWinnerCount: editRoomTargetWinnerCount,
+            minResponseThreshold: editRoomMinThreshold
+          } : {}),
+          ...(finalVoteStarted ? {} : {
+            externalVotersEnabled: editExternalVotersEnabled,
+            requiredVoterCount: editExternalVotersEnabled ? editRequiredVoterCount : 0,
+            deadlines: {
+              finalVoteStartAt: editFinalVoteStartAt || null,
+              finalVoteEndAt: editFinalVoteEndAt || null
+            }
+          })
         })
       });
 
@@ -1960,6 +2029,11 @@ export default function App() {
       return;
     }
 
+    if (newRoomVoteStartTime && newRoomVoteEndTime && newRoomVoteEndTime <= newRoomVoteStartTime) {
+      triggerToast('2차 투표 예정 마감 일시는 시작 일시보다 뒤여야 합니다.', 'error');
+      return;
+    }
+
     const hostNick = newRoomHostNickname.trim().slice(0, 6) || nickname.slice(0, 6) || '방장';
     localStorage.setItem('why_not_room_nickname', hostNick);
     setNickname(hostNick);
@@ -1981,8 +2055,8 @@ export default function App() {
           minResponseThreshold: 1,
           eliminationConfig: { countPerRound: 1, tieBreak: 'random' },
           deadlines: {
-            evaluationAt: newRoomVoteEndTime || undefined,
-            voteStartTime: newRoomVoteStartTime || undefined
+            finalVoteStartAt: newRoomVoteStartTime || undefined,
+            finalVoteEndAt: newRoomVoteEndTime || undefined
           }
         })
       });
@@ -2061,7 +2135,7 @@ export default function App() {
     }
   };
 
-  // Hide Room from My Dashboard (Only affects active user, preserves room & other participants)
+  // Archive a completed room from My Dashboard (personal view only; room data is preserved)
   const handleHideRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
     if (!userId) return;
@@ -2071,13 +2145,13 @@ export default function App() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 저장하지 못했습니다.');
       await fetchRooms();
-      triggerToast('회의실이 내 목록에서 숨겨졌습니다.');
+      triggerToast('완료된 회의실을 보관했습니다.');
     } catch (err) {
-      triggerToast(err instanceof Error ? err.message : '회의실 숨김 상태를 저장하지 못했습니다.', 'error');
+      triggerToast(err instanceof Error ? err.message : '회의실을 보관하지 못했습니다.', 'error');
     }
   };
 
-  // Restore Room to My Dashboard
+  // Restore an archived completed room to the normal final-selection list
   const handleRestoreRoom = async (e: React.MouseEvent, roomId: string) => {
     e.stopPropagation();
     if (!userId) return;
@@ -2087,9 +2161,67 @@ export default function App() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || '회의실 숨김 상태를 해제하지 못했습니다.');
       await fetchRooms();
-      triggerToast('회의실이 다시 로비 목록에 복원되었습니다.');
+      triggerToast('보관된 회의실을 최종 선정 목록으로 복원했습니다.');
     } catch (err) {
       triggerToast(err instanceof Error ? err.message : '회의실 숨김 상태를 해제하지 못했습니다.', 'error');
+    }
+  };
+
+  const handleLeaveCurrentRoomMembership = async () => {
+    if (!activeRoomId || !roomDetails || isLeavingRoomMembership) return;
+    if (roomDetails.room.hostId === userId) {
+      triggerToast('방장은 회의실에서 탈퇴할 수 없습니다.', 'error');
+      return;
+    }
+    if (roomDetails.room.status !== 'IDEA_SUBMISSION' || roomDetails.myParticipantRole !== 'PARTICIPANT') {
+      triggerToast('참여자는 아이디어 등록 단계에서만 회의실에서 탈퇴할 수 있습니다.', 'error');
+      return;
+    }
+    if (!window.confirm('회의실에서 탈퇴하시겠습니까?\n내가 등록한 아이디어와 아이디어 등록 완료 상태가 함께 삭제되며, 참여자 좌석이 즉시 반환됩니다.')) {
+      return;
+    }
+
+    const roomId = activeRoomId;
+    setIsLeavingRoomMembership(true);
+    try {
+      const response = await apiFetch(`/api/rooms/${roomId}/leave`, { method: 'DELETE' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '회의실 탈퇴를 처리하지 못했습니다.');
+      clearActiveRoomView('replace');
+      await fetchRooms();
+      void fetchPendingAccountInvites(false);
+      triggerToast('회의실에서 탈퇴했습니다. 참여자 좌석이 반환되었습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '회의실 탈퇴를 처리하지 못했습니다.', 'error');
+    } finally {
+      setIsLeavingRoomMembership(false);
+    }
+  };
+
+  const handleCancelMyVoterRegistration = async () => {
+    if (!activeRoomId || !roomDetails || isCancelingMyVoterRegistration) return;
+    if (roomDetails.myParticipantRole !== 'VOTER' || roomDetails.room.finalVoteRosterLockedAt || hasFinalVoteStarted(roomDetails.room)) {
+      triggerToast('최종 투표가 시작된 뒤에는 투표자 등록을 취소할 수 없습니다.', 'error');
+      return;
+    }
+    if (!window.confirm('이번 회의의 투표자 등록을 취소하시겠습니까?\n취소하면 투표자 좌석이 즉시 반환됩니다.')) {
+      return;
+    }
+
+    const roomId = activeRoomId;
+    setIsCancelingMyVoterRegistration(true);
+    try {
+      const response = await apiFetch(`/api/rooms/${roomId}/voter-registration`, { method: 'DELETE' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(data?.error || '투표자 등록을 취소하지 못했습니다.');
+      clearActiveRoomView('replace');
+      await fetchRooms();
+      void fetchPendingAccountInvites(false);
+      triggerToast('투표자 등록을 취소했습니다. 투표자 좌석이 반환되었습니다.');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '투표자 등록을 취소하지 못했습니다.', 'error');
+    } finally {
+      setIsCancelingMyVoterRegistration(false);
     }
   };
 
@@ -3579,7 +3711,7 @@ export default function App() {
                   {roomDetails.room.status === 'EVALUATION' && '3단계: 1차 종합점수 및 익명 피드백 중'}
                   {roomDetails.room.status === 'EVALUATION_ROUND_2' && '4단계: 2차 종합점수 평가 중'}
                   {roomDetails.room.status === 'ELIMINATION' && ((roomDetails.room.engineVersion || 1) >= 7 ? '5단계: 최종 별 투표 중' : (roomDetails.room.finalVoteStatus === 'NOT_STARTED' ? '3단계: 1차 평가 결과' : '4단계: 2차 익명 투표 중'))}
-                  {roomDetails.room.status === 'CLOSED' && '종료 (최종 선정 완료)'}
+                  {roomDetails.room.status === 'CLOSED' && '완료 (최종 선정)'}
                 </span>
               </div>
             )}
@@ -3630,6 +3762,17 @@ export default function App() {
                   회원가입
                 </button>
               </div>
+            )}
+
+            {activeRoomId && roomDetails?.myParticipantRole === 'PARTICIPANT' && roomDetails.room.hostId !== userId && roomDetails.room.status === 'IDEA_SUBMISSION' && (
+              <button
+                type="button"
+                onClick={() => void handleLeaveCurrentRoomMembership()}
+                disabled={isLeavingRoomMembership}
+                className="text-xs font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition py-1.5 px-3.5 rounded-full disabled:opacity-50"
+              >
+                {isLeavingRoomMembership ? '탈퇴 처리 중...' : '회의실 탈퇴'}
+              </button>
             )}
 
             {activeRoomId && (
@@ -4246,26 +4389,29 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* 2차 투표 가능 시간 (시작~마감 일시) */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">2차 투표 시작 일시 (선택)</label>
-                        <input
-                          type="datetime-local"
-                          value={newRoomVoteStartTime}
-                          onChange={e => setNewRoomVoteStartTime(e.target.value)}
-                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
-                        />
+                    {/* 2차 투표 예정 시간 (운영 참고용; 시스템 자동 마감 없음) */}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">2차 투표 예정 시작 일시 (선택)</label>
+                          <input
+                            type="datetime-local"
+                            value={newRoomVoteStartTime}
+                            onChange={e => setNewRoomVoteStartTime(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-700">2차 투표 예정 마감 일시 (선택)</label>
+                          <input
+                            type="datetime-local"
+                            value={newRoomVoteEndTime}
+                            onChange={e => setNewRoomVoteEndTime(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-700">2차 투표 마감 일시 (선택)</label>
-                        <input
-                          type="datetime-local"
-                          value={newRoomVoteEndTime}
-                          onChange={e => setNewRoomVoteEndTime(e.target.value)}
-                          className="w-full px-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium text-slate-700"
-                        />
-                      </div>
+                      <p className="text-[10px] text-slate-500">예정 시간은 회의 운영을 위한 안내 값이며, 시간이 되었다고 시스템이 투표를 자동 시작하거나 마감하지 않습니다.</p>
                     </div>
 
                     <div className="flex gap-2 pt-2 justify-end">
@@ -4292,7 +4438,7 @@ export default function App() {
             {/* Dashboard Rooms Grid & Filter Tabs */}
             <div className="space-y-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                {/* Ownership Filter Tabs: 전체 | 내가 만든 방 | 초대받은 방 | 🙈 숨긴 회의실 */}
+                {/* Ownership Filter Tabs: 일반 목록과 완료방 보관함을 분리 */}
                 <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start">
                   <button
                     onClick={() => { setRoomOwnershipFilter('ALL'); setShowHiddenRooms(false); }}
@@ -4313,45 +4459,53 @@ export default function App() {
                     🙋 초대받은 방
                   </button>
                   <button
-                    onClick={() => setShowHiddenRooms(prev => !prev)}
+                    onClick={() => {
+                      setShowHiddenRooms(true);
+                      setRoomOwnershipFilter('ALL');
+                      setRoomFilterStatus('ALL');
+                    }}
                     className={`px-3 py-1.5 rounded-lg transition ${showHiddenRooms ? 'bg-amber-500 text-slate-950 font-extrabold shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    🗑️ 삭제/숨긴 회의실
+                    📦 보관된 회의실
                   </button>
                 </div>
 
-                {/* Status Filter buttons */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-bold text-slate-500 mr-1">진행 상태:</span>
-                  <button
-                    onClick={() => setRoomFilterStatus('ALL')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    전체
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    아이디어 모집
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('EVALUATION')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    평가 중
-                  </button>
-                  <button
-                    onClick={() => setRoomFilterStatus('CLOSED')}
-                    className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    최종 선정
-                  </button>
-                </div>
+                {!showHiddenRooms && (
+                  <>
+                    {/* Status Filter buttons: archived rooms are separated from normal progress filters */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-bold text-slate-500 mr-1">진행 상태:</span>
+                      <button
+                        onClick={() => setRoomFilterStatus('ALL')}
+                        className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'ALL' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                      >
+                        전체
+                      </button>
+                      <button
+                        onClick={() => setRoomFilterStatus('IDEA_SUBMISSION')}
+                        className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'IDEA_SUBMISSION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                      >
+                        아이디어 모집
+                      </button>
+                      <button
+                        onClick={() => setRoomFilterStatus('EVALUATION')}
+                        className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'EVALUATION' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                      >
+                        평가 중
+                      </button>
+                      <button
+                        onClick={() => setRoomFilterStatus('CLOSED')}
+                        className={`text-xs font-bold px-3 py-1 rounded-lg transition ${roomFilterStatus === 'CLOSED' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                      >
+                        최종 선정
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Dashboard Content: Loading / Error / Empty / Grid */}
@@ -4384,59 +4538,52 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-              ) : roomsList.length === 0 ? (
+              ) : filteredRoomsList.length === 0 ? (
                 /* Empty State UI */
                 <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 space-y-4 max-w-lg mx-auto shadow-sm my-6">
                   <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto border border-indigo-100">
                     <Lock className="w-6 h-6 text-indigo-600" />
                   </div>
                   <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-900">아직 생성하거나 참여한 회의실이 없습니다.</h3>
+                    <h3 className="text-base font-bold text-slate-900">
+                      {showHiddenRooms
+                        ? '보관된 완료 회의실이 없습니다.'
+                        : roomsList.length === 0
+                          ? '아직 생성하거나 참여한 회의실이 없습니다.'
+                          : '현재 조건에 맞는 회의실이 없습니다.'}
+                    </h3>
                     <p className="text-xs text-slate-500 leading-relaxed px-6">
-                      새로운 회의실을 만들거나 초대 코드로 참여해 보세요.
+                      {showHiddenRooms
+                        ? '완료된 회의를 보관하면 이곳에서 다시 확인하고 복원할 수 있습니다.'
+                        : roomsList.length === 0
+                          ? '새로운 회의실을 만들거나 초대 코드로 참여해 보세요.'
+                          : '진행 상태 또는 회의실 구분을 변경해 다른 목록을 확인해 보세요.'}
                     </p>
                   </div>
-                  <div className="flex items-center justify-center gap-3 pt-2">
-                    <button
-                      onClick={() => setIsJoinCodeModalOpen(true)}
-                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Share2 className="w-4 h-4 text-indigo-600" />
-                      <span>초대 코드로 참여하기</span>
-                    </button>
+                  {!showHiddenRooms && roomsList.length === 0 && (
+                    <div className="flex items-center justify-center gap-3 pt-2">
+                      <button
+                        onClick={() => setIsJoinCodeModalOpen(true)}
+                        className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Share2 className="w-4 h-4 text-indigo-600" />
+                        <span>초대 코드로 참여하기</span>
+                      </button>
 
-                    <button
-                      onClick={() => setIsCreatingRoom(true)}
-                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>새 회의실 만들기</span>
-                    </button>
-                  </div>
+                      <button
+                        onClick={() => setIsCreatingRoom(true)}
+                        className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition shadow-md flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>새 회의실 만들기</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 /* Room Cards Grid */
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {roomsList
-                    .filter(room => {
-                      // Hide filter: If showHiddenRooms is false, exclude hidden rooms. If true, show only hidden rooms.
-                      if (!showHiddenRooms && room.isHidden) return false;
-                      if (showHiddenRooms && !room.isHidden) return false;
-
-                      // Ownership Filter
-                      const curUserId = userId;
-                      if (roomOwnershipFilter === 'CREATED_BY_ME') {
-                        if (room.hostId !== curUserId && !room.isHost) return false;
-                      } else if (roomOwnershipFilter === 'JOINED_BY_ME') {
-                        if (room.hostId === curUserId || room.isHost) return false;
-                      }
-
-                      // Status Filter
-                      if (roomFilterStatus === 'IDEA_SUBMISSION') return room.status === 'IDEA_SUBMISSION' || room.status === 'SETUP';
-                      if (roomFilterStatus === 'EVALUATION') return ['CRITERIA_PROPOSAL', 'CRITERIA_REVIEW', 'EVALUATION', 'ELIMINATION', 'EVALUATION_ROUND_2'].includes(room.status);
-                      if (roomFilterStatus === 'CLOSED') return room.status === 'CLOSED';
-                      return true;
-                    })
+                  {filteredRoomsList
                     .sort((a, b) => {
                       if (a.isPinned && !b.isPinned) return -1;
                       if (!a.isPinned && b.isPinned) return 1;
@@ -4487,46 +4634,47 @@ export default function App() {
                               </div>
 
                               <div className="flex items-center gap-1">
-                                {/* Hide / Restore icon button */}
+                                {/* Completed-room archive is personal and never deletes shared room data. */}
                                 {room.isHidden ? (
                                   <button
                                     onClick={(e) => handleRestoreRoom(e, room.id)}
-                                    title="로비 목록으로 복원하기"
+                                    title="최종 선정 목록으로 복원하기"
                                     className="p-1.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 transition flex items-center text-[10px] font-bold border border-amber-300 gap-0.5 px-2"
                                   >
-                                    <span>👁️ 복원</span>
+                                    <span>👁️ 목록으로 복원</span>
                                   </button>
-                                ) : (
+                                ) : room.status === 'CLOSED' ? (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (window.confirm('이 회의실을 내 목록에서 삭제하시겠습니까?\n(다른 참여자의 회의 내용 및 데이터는 보호됩니다)')) {
-                                        handleHideRoom(e, room.id);
+                                      if (window.confirm('완료된 회의실을 보관하시겠습니까?\n회의 내용과 결과는 삭제되지 않으며 내 일반 목록에서만 숨겨집니다.')) {
+                                        void handleHideRoom(e, room.id);
                                       }
                                     }}
-                                    title="내 목록에서 삭제 (참여자 회의 내용 보존)"
-                                    className="p-1.5 rounded-full bg-slate-50 text-slate-400 border border-slate-200 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition"
+                                    title="완료된 회의실 보관하기"
+                                    className="p-1.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200 hover:text-amber-800 hover:bg-amber-50 hover:border-amber-200 transition flex items-center gap-1 px-2"
                                   >
-                                    <Trash2 className="w-3.5 h-3.5 text-rose-500 hover:text-rose-700" />
+                                    <span className="text-[10px] font-bold">📦 보관</span>
+                                  </button>
+                                ) : null}
+
+                                {!room.isHidden && (
+                                  <button
+                                    onClick={(e) => handleTogglePin(e, room.id)}
+                                    title={room.isPinned ? '상단 고정 해제' : '상단 고정'}
+                                    className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
+                                      ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
+                                      : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
+                                      }`}
+                                  >
+                                    <Star
+                                      className={`w-3.5 h-3.5 ${room.isPinned
+                                        ? 'fill-amber-400 text-amber-500'
+                                        : 'text-slate-400 fill-slate-200'
+                                        }`}
+                                    />
                                   </button>
                                 )}
-
-                                {/* Star Pin icon button */}
-                                <button
-                                  onClick={(e) => handleTogglePin(e, room.id)}
-                                  title={room.isPinned ? '상단 고정 해제' : '상단 고정'}
-                                  className={`p-1.5 rounded-full transition flex items-center gap-1 text-xs font-bold border ${room.isPinned
-                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 shadow-xs'
-                                    : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-amber-500 hover:bg-amber-50'
-                                    }`}
-                                >
-                                  <Star
-                                    className={`w-3.5 h-3.5 ${room.isPinned
-                                      ? 'fill-amber-400 text-amber-500'
-                                      : 'text-slate-400 fill-slate-200'
-                                      }`}
-                                  />
-                                </button>
                               </div>
                             </div>
 
@@ -4536,6 +4684,18 @@ export default function App() {
                             <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
                               {room.description || '작성된 설명이 없습니다.'}
                             </p>
+                            {room.status === 'CLOSED' && (
+                              <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 space-y-1">
+                                <p className="text-[10px] font-black text-amber-900">🏆 최종 선정 아이디어</p>
+                                {Array.isArray(room.winnerTitles) && room.winnerTitles.length > 0 ? (
+                                  room.winnerTitles.map((winnerTitle: string, winnerIndex: number) => (
+                                    <p key={`${winnerTitle}-${winnerIndex}`} className="text-xs font-extrabold text-slate-900 truncate">{winnerTitle}</p>
+                                  ))
+                                ) : (
+                                  <p className="text-[11px] font-semibold text-slate-500">최종 결과에서 확인</p>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           <div className="border-t border-slate-100 mt-4 pt-3 space-y-3">
@@ -4619,9 +4779,21 @@ export default function App() {
                   <p className="text-sm font-extrabold text-slate-900 mt-1">{roomDetails.room.title}</p>
                   <p className="text-[11px] text-slate-500 mt-2">현재 단계: {getRoomStageLabel(roomDetails.room.status)}</p>
                 </div>
-                <button type="button" onClick={() => activeRoomId && fetchRoomDetails(activeRoomId, true)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold">
-                  상태 다시 확인
-                </button>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
+                  <button type="button" onClick={() => activeRoomId && fetchRoomDetails(activeRoomId, true)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold">
+                    상태 다시 확인
+                  </button>
+                  {!hasFinalVoteStarted(roomDetails.room) && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelMyVoterRegistration()}
+                      disabled={isCancelingMyVoterRegistration}
+                      className="px-5 py-2.5 bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-bold disabled:opacity-50"
+                    >
+                      {isCancelingMyVoterRegistration ? '등록 취소 중...' : '투표 참여 취소'}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -4824,7 +4996,7 @@ export default function App() {
 
                           const ideasCountMet = (roomDetails.ideas || []).length >= 2;
                           const participantQuorumMet = ideaCompletedCount >= targetTotalCount;
-                          const isIdeaGateMinMet = ideasCountMet && participantQuorumMet;
+                          const isIdeaGateMinMet = targetTotalCount >= 2 && ideasCountMet && participantQuorumMet;
 
                           return (
                             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm text-center space-y-6 max-w-2xl mx-auto py-8">
@@ -4840,16 +5012,20 @@ export default function App() {
                                 <h3 className="text-lg font-bold text-slate-900">
                                   {isIdeaGateMinMet
                                     ? '팀 내 최소 응답 수 및 아이디어 등록 충족 완료!'
-                                    : participantQuorumMet && !ideasCountMet
-                                      ? '선택지(아이디어) 추가 등록이 필요합니다'
-                                      : '다른 구성원들의 참가를 기다리는 중'}
+                                    : targetTotalCount < 2
+                                      ? '참여자 2명 이상이 필요합니다'
+                                      : participantQuorumMet && !ideasCountMet
+                                        ? '선택지(아이디어) 추가 등록이 필요합니다'
+                                        : '다른 구성원들의 참가를 기다리는 중'}
                                 </h3>
                                 <p className="text-xs text-slate-500 leading-relaxed max-w-md mx-auto">
                                   {isIdeaGateMinMet
                                     ? roomDetails.room.decisionMode === 'QUICK'
                                       ? '선택지가 모두 모였습니다. 다른 사람의 선택을 보지 않는 익명 투표를 시작할 수 있습니다.'
                                       : '최소 응답 정족수가 달성되어, 안전하게 2단계 평가 기준 설정 단계로 진입할 준비가 완료되었습니다.'
-                                    : '등록 내용을 동시에 공개하기 위해 현재 참여자 전원이 완료를 눌러야 다음 단계로 진행할 수 있습니다.'}
+                                    : targetTotalCount < 2
+                                      ? '한 명이 탈퇴했거나 아직 참여자가 부족합니다. 새 참여자가 합류한 뒤 남은 참여자 전원이 완료하면 방장이 다음 단계로 진행할 수 있습니다.'
+                                      : '등록 내용을 동시에 공개하기 위해 현재 참여자 전원이 완료를 눌러야 다음 단계로 진행할 수 있습니다.'}
                                 </p>
                                 {participantQuorumMet && !ideasCountMet && (
                                   <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 leading-relaxed max-w-md mx-auto mt-2">
@@ -8109,6 +8285,12 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 leading-relaxed">외부 투표자는 최종 별 투표에만 참여합니다. 그 전에는 대기 화면만 표시됩니다.</p>
+                  {roomDetails.room.finalVoteRosterLockedAt && (
+                    <div className="rounded-xl border border-slate-300 bg-slate-900 px-3 py-2 text-white">
+                      <p className="text-xs font-extrabold">🔒 최종 투표 참여자 명단 확정</p>
+                      <p className="text-[10px] text-slate-300 mt-0.5">최종 투표가 시작되어 투표자 구성과 등록을 변경할 수 없습니다.</p>
+                    </div>
+                  )}
                   {(roomDetails.voterSetup?.remainingCount ?? 0) <= 0 && (
                     <p className="rounded-xl border border-amber-300 bg-amber-100 px-3 py-2 text-xs font-extrabold text-amber-900">
                       투표 정원이 마감되었습니다.
@@ -8718,9 +8900,6 @@ export default function App() {
                     >
                       <option value="기획">💡 기획 / 신규 비즈니스</option>
                       <option value="디자인">🎨 디자인 / UX·UI</option>
-                      <option value="개발">💻 개발 / IT 파이프라인</option>
-                      <option value="마케팅">📢 마케팅 / 바이럴</option>
-                      <option value="기타">📂 기타</option>
                     </select>
                   </div>
 
@@ -8728,8 +8907,9 @@ export default function App() {
                     <label className="text-xs font-bold text-slate-700">최종 우승작 선정 개수</label>
                     <select
                       value={editRoomTargetWinnerCount}
+                      disabled={roomDetails?.room.status !== 'IDEA_SUBMISSION'}
                       onChange={e => setEditRoomTargetWinnerCount(Number(e.target.value))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white disabled:bg-slate-100 disabled:text-slate-400"
                     >
                       <option value={1}>🏆 1개 아이디어 확정</option>
                       <option value={2}>🏆 2개 아이디어 확정</option>
@@ -8743,11 +8923,12 @@ export default function App() {
                     <label className="text-xs font-bold text-slate-700">최대 정원 (최대 6명)</label>
                     <input
                       type="number"
-                      min={1}
+                      min={2}
                       max={6}
+                      disabled={roomDetails?.room.status !== 'IDEA_SUBMISSION'}
                       value={editRoomMaxParticipants}
                       onChange={e => setEditRoomMaxParticipants(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400"
                     />
                   </div>
 
@@ -8757,19 +8938,61 @@ export default function App() {
                       type="number"
                       min={1}
                       max={6}
+                      disabled={roomDetails?.room.status !== 'IDEA_SUBMISSION'}
                       value={editRoomMinThreshold}
                       onChange={e => setEditRoomMinThreshold(Number(e.target.value))}
-                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100 disabled:text-slate-400"
                     />
                   </div>
                 </div>
+                {roomDetails?.room.status !== 'IDEA_SUBMISSION' && (
+                  <p className="text-[10px] text-slate-500">참여 인원·최종 선정 수·최소 정족수는 아이디어 등록 단계가 끝난 뒤에는 변경할 수 없습니다.</p>
+                )}
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                  <div>
+                    <h4 className="text-xs font-extrabold text-slate-900">2차 투표 예정 시간</h4>
+                    <p className="text-[10px] text-slate-500 mt-1">최종 투표가 시작되기 전까지만 수정할 수 있습니다. 예정 시간은 자동 시작·자동 마감 조건으로 사용되지 않습니다.</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700">예정 시작 일시</label>
+                      <input
+                        type="datetime-local"
+                        disabled={hasFinalVoteStarted(roomDetails?.room)}
+                        value={editFinalVoteStartAt}
+                        onChange={e => setEditFinalVoteStartAt(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700">예정 마감 일시</label>
+                      <input
+                        type="datetime-local"
+                        disabled={hasFinalVoteStarted(roomDetails?.room)}
+                        value={editFinalVoteEndAt}
+                        onChange={e => setEditFinalVoteEndAt(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                    </div>
+                  </div>
+                  {hasFinalVoteStarted(roomDetails?.room) && (
+                    <p className="text-[10px] font-bold text-rose-600">최종 투표가 이미 시작되어 예정 시간을 변경할 수 없습니다.</p>
+                  )}
+                </div>
 
                 <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 space-y-3">
-                  <label className={`flex items-start gap-3 ${roomDetails?.room.finalVoteRosterLockedAt ? 'opacity-60' : 'cursor-pointer'}`}>
+                  {roomDetails?.room.finalVoteRosterLockedAt && (
+                    <div className="rounded-xl border border-slate-300 bg-slate-900 px-3 py-2 text-white">
+                      <p className="text-xs font-extrabold">🔒 최종 투표 참여자 명단 확정</p>
+                      <p className="text-[10px] text-slate-300 mt-0.5">투표자 명단이 고정되어 외부 투표자 설정을 변경할 수 없습니다.</p>
+                    </div>
+                  )}
+                  <label className={`flex items-start gap-3 ${hasFinalVoteStarted(roomDetails?.room) ? 'opacity-60' : 'cursor-pointer'}`}>
                     <input
                       type="checkbox"
                       checked={editExternalVotersEnabled}
-                      disabled={Boolean(roomDetails?.room.finalVoteRosterLockedAt)}
+                      disabled={hasFinalVoteStarted(roomDetails?.room)}
                       onChange={e => setEditExternalVotersEnabled(e.target.checked)}
                       className="mt-0.5 w-4 h-4 accent-indigo-600"
                     />
@@ -8785,16 +9008,13 @@ export default function App() {
                         type="number"
                         min={1}
                         max={30}
-                        disabled={Boolean(roomDetails?.room.finalVoteRosterLockedAt)}
+                        disabled={hasFinalVoteStarted(roomDetails?.room)}
                         value={editRequiredVoterCount}
                         onChange={e => setEditRequiredVoterCount(Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
                         className="w-24 px-3 py-2 border border-indigo-200 rounded-xl text-xs font-bold bg-white disabled:bg-slate-100"
                       />
                       <span className="text-[10px] text-slate-500">최대 30명</span>
                     </div>
-                  )}
-                  {roomDetails?.room.finalVoteRosterLockedAt && (
-                    <p className="text-[10px] text-slate-500">현재 최종 투표 회차의 명단이 확정되어 이 설정을 변경할 수 없습니다.</p>
                   )}
                 </div>
 

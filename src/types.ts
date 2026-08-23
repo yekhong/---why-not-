@@ -29,7 +29,10 @@ export interface EliminationConfig {
 export interface Deadlines {
   ideaSubmissionAt?: string;
   criteriaProposalAt?: string;
-  evaluationAt?: string;
+  evaluationAt?: string; // legacy: V11 stored final-vote end time here
+  voteStartTime?: string; // legacy: V11 stored final-vote start time here
+  finalVoteStartAt?: string;
+  finalVoteEndAt?: string;
 }
 
 export interface Room {
