@@ -5598,8 +5598,26 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       Object.prototype.hasOwnProperty.call(incomingDeadlines, 'evaluationAt')
     )
   );
-  if (changesFinalVoteSchedule && hasFinalVoteStartedServer(room)) {
-    return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 2차 투표 예정 시간을 변경할 수 없습니다.' });
+  const changesFinalVoteStart = Boolean(
+    incomingDeadlines && (
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'finalVoteStartAt') ||
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'voteStartTime')
+    )
+  );
+  const changesFinalVoteEnd = Boolean(
+    incomingDeadlines && (
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'finalVoteEndAt') ||
+      Object.prototype.hasOwnProperty.call(incomingDeadlines, 'evaluationAt')
+    )
+  );
+  const finalVoteStarted = hasFinalVoteStartedServer(room);
+  const extendsFinalVoteEndAfterStart = finalVoteStarted && changesFinalVoteEnd;
+
+  if (finalVoteStarted && changesFinalVoteStart) {
+    return res.status(409).json({ error: '최종 투표가 시작된 뒤에는 2차 투표 예정 시작 일시를 변경할 수 없습니다.' });
+  }
+  if (extendsFinalVoteEndAfterStart && room.finalVoteStatus !== 'VOTING') {
+    return res.status(409).json({ error: '최종 투표 제출 단계가 끝난 뒤에는 2차 투표 예정 마감 일시를 변경할 수 없습니다.' });
   }
 
   const changesDecisionRules =
@@ -5655,6 +5673,25 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     } catch (error) {
       return res.status(400).json({ error: error instanceof Error ? error.message : '2차 투표 예정 시간 형식이 올바르지 않습니다.' });
     }
+
+    if (extendsFinalVoteEndAfterStart) {
+      const currentDeadlines = normalizeRoomDeadlines(room.deadlines);
+      const currentEnd = currentDeadlines.finalVoteEndAt;
+      const requestedEnd = updatedRoom.deadlines?.finalVoteEndAt;
+      const currentEndMs = currentEnd ? Date.parse(currentEnd) : Number.NaN;
+      const requestedEndMs = requestedEnd ? Date.parse(requestedEnd) : Number.NaN;
+
+      if (!currentEnd || !requestedEnd || Number.isNaN(currentEndMs) || Number.isNaN(requestedEndMs)) {
+        return res.status(409).json({
+          error: '최종 투표가 시작된 뒤에는 시작 전에 설정된 기존 마감 일시를 뒤로 연장하는 경우에만 변경할 수 있습니다.'
+        });
+      }
+      if (requestedEndMs <= currentEndMs) {
+        return res.status(409).json({
+          error: '최종 투표가 시작된 뒤에는 예정 마감 일시를 기존보다 뒤로 연장하는 경우에만 변경할 수 있습니다.'
+        });
+      }
+    }
   }
 
   if (SUPABASE_CONFIGURED && updatedRoom.externalVotersEnabled &&
@@ -5688,12 +5725,21 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
       deadlines: updatedRoom.deadlines
     }).eq('id', id).eq('host_id', reqUserId);
     if (changesFinalVoteSchedule) {
-      // Atomic race guard: if the final vote starts while the settings modal is open,
-      // this update affects zero rows instead of overwriting a now-locked schedule.
-      updateQuery = updateQuery
-        .is('final_vote_roster_locked_at', null)
-        .eq('final_vote_status', 'NOT_STARTED')
-        .is('current_final_vote_cycle_id', null);
+      // Use the room state version as an optimistic concurrency guard so two
+      // simultaneous settings saves cannot overwrite a newer schedule.
+      updateQuery = updateQuery.eq('state_version', Number(room.stateVersion || 1));
+
+      if (extendsFinalVoteEndAfterStart) {
+        // After actual voting starts, only the validated deadline extension is allowed.
+        // If the vote leaves VOTING before this write, the update safely affects zero rows.
+        updateQuery = updateQuery.eq('final_vote_status', 'VOTING');
+      } else {
+        // Before voting starts, prevent a stale settings modal from overwriting a newly locked schedule.
+        updateQuery = updateQuery
+          .is('final_vote_roster_locked_at', null)
+          .eq('final_vote_status', 'NOT_STARTED')
+          .is('current_final_vote_cycle_id', null);
+      }
     }
     const { data: changedRows, error } = await updateQuery.select('id');
     if (error) {
@@ -5705,7 +5751,9 @@ app.patch('/api/rooms/:id', async (req: AuthenticatedRequest, res) => {
     if (!changedRows || changedRows.length !== 1) {
       return res.status(409).json({
         error: changesFinalVoteSchedule
-          ? '최종 투표가 이미 시작되었거나 회의실 상태가 변경되어 예정 시간을 저장하지 못했습니다. 새로고침해 주세요.'
+          ? extendsFinalVoteEndAfterStart
+            ? '최종 투표 상태 또는 예정 마감 일시가 다른 요청에서 변경되어 연장하지 못했습니다. 새로고침해 주세요.'
+            : '최종 투표가 이미 시작되었거나 회의실 상태가 변경되어 예정 시간을 저장하지 못했습니다. 새로고침해 주세요.'
           : '회의실이 다른 요청에서 변경되거나 삭제되었습니다. 새로고침해 주세요.'
       });
     }
