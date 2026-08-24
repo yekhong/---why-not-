@@ -5186,6 +5186,9 @@ export default function App() {
                                           rows={4}
                                           className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                                         />
+                                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                                          AI가 더 적합한 평가 기준을 제안할 수 있도록 핵심 내용·대상·실행 방식을 구체적으로 작성해 주세요. 최소 글자 수는 강제하지 않습니다.
+                                        </p>
                                       </div>
 
                                       <div className="space-y-1">
@@ -5373,6 +5376,9 @@ export default function App() {
                                 rows={4}
                                 className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                               />
+                              <p className="text-[11px] text-slate-500 leading-relaxed">
+                                AI가 더 적합한 평가 기준을 제안할 수 있도록 핵심 내용·대상·실행 방식을 구체적으로 작성해 주세요. 최소 글자 수는 강제하지 않습니다.
+                              </p>
                               {ideaAiSuggestion && (
                                 <div className="mt-3 p-4 rounded-xl border border-indigo-200 bg-indigo-50/40 space-y-3">
                                   <div>
