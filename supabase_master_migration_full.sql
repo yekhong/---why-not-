@@ -353,42 +353,48 @@ ALTER TABLE public.decision_votes ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.ai_reports ENABLE ROW LEVEL SECURITY;
 
--- Permissive public policies for app interaction
+-- BFF-only security baseline.
+-- Browser roles must not read/write application tables directly. The Express
+-- server uses the service-role credential and performs authentication/authorization.
 DROP POLICY IF EXISTS "Public access on rooms" ON public.rooms;
-
-CREATE POLICY "Public access on rooms" ON public.rooms FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on participants" ON public.participants;
-
-CREATE POLICY "Public access on participants" ON public.participants FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on ideas" ON public.ideas;
-
-CREATE POLICY "Public access on ideas" ON public.ideas FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on criteria" ON public.criteria;
-
-CREATE POLICY "Public access on criteria" ON public.criteria FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on criterion_proposals" ON public.criterion_proposals;
-
-CREATE POLICY "Public access on criterion_proposals" ON public.criterion_proposals FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on evaluations" ON public.evaluations;
-
-CREATE POLICY "Public access on evaluations" ON public.evaluations FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on room_invites" ON public.room_invites;
-
-CREATE POLICY "Public access on room_invites" ON public.room_invites FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on phase_completions" ON public.phase_completions;
-
-CREATE POLICY "Public access on phase_completions" ON public.phase_completions FOR ALL USING (true);
-
 DROP POLICY IF EXISTS "Public access on room_phase_participants" ON public.room_phase_participants;
 
-CREATE POLICY "Public access on room_phase_participants" ON public.room_phase_participants FOR ALL USING (true);
+REVOKE ALL ON public.rooms FROM anon, authenticated;
+REVOKE ALL ON public.participants FROM anon, authenticated;
+REVOKE ALL ON public.ideas FROM anon, authenticated;
+REVOKE ALL ON public.criteria FROM anon, authenticated;
+REVOKE ALL ON public.criterion_proposals FROM anon, authenticated;
+REVOKE ALL ON public.evaluations FROM anon, authenticated;
+REVOKE ALL ON public.room_invites FROM anon, authenticated;
+REVOKE ALL ON public.phase_completions FROM anon, authenticated;
+REVOKE ALL ON public.room_phase_participants FROM anon, authenticated;
+
+ALTER TABLE public.rooms FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.participants FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.ideas FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.criteria FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.criterion_proposals FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.evaluations FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.room_invites FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.phase_completions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.room_phase_participants FORCE ROW LEVEL SECURITY;
+
+GRANT ALL ON public.rooms TO service_role;
+GRANT ALL ON public.participants TO service_role;
+GRANT ALL ON public.ideas TO service_role;
+GRANT ALL ON public.criteria TO service_role;
+GRANT ALL ON public.criterion_proposals TO service_role;
+GRANT ALL ON public.evaluations TO service_role;
+GRANT ALL ON public.room_invites TO service_role;
+GRANT ALL ON public.phase_completions TO service_role;
+GRANT ALL ON public.room_phase_participants TO service_role;
 
 COMMIT;
 
@@ -412,9 +418,8 @@ COMMIT;
 --   - Supabase SQL Editor에서 먼저 백업 후 실행한다.
 --   - 이 파일은 ADDITIVE migration이다. DROP TABLE, 기존 결과 UPDATE는 하지 않는다.
 --   - 신규 테이블은 BFF/백엔드(service_role) 전용이다.
---   - 현재 마스터 SQL의 기존 "Public access on ..." 정책은 별도 P0 보안 문제다.
---     이 파일은 기존 정책을 강제로 제거하지 않는다. BFF 전환 검증 없이 제거하면
---     현재 앱이 중단될 수 있기 때문이다.
+--   - 현재 마스터 SQL은 BFF-only 보안 기준으로 anon/authenticated의 직접 테이블 접근을
+--     허용하지 않는다. service_role을 사용하는 Express BFF만 데이터 접근을 수행한다.
 -- =============================================================================
 
 BEGIN;
@@ -1511,13 +1516,11 @@ ORDER BY tablename, policyname;
 -- 신규 테이블은 anon/authenticated 정책 없이 service_role BFF만 접근한다.
 
 -- =============================================================================
--- 별도 P0 보안 전환 안내 (이 파일에서는 실행하지 않음)
+-- P0 BFF 보안 기준 확인
 -- =============================================================================
--- 현재 마스터 SQL에는 기존 핵심 테이블에 USING(true)인 Public access 정책이 있다.
--- 따라서 기존 ideas/criteria/evaluations의 완전한 비공개는 아직 보장되지 않는다.
--- 프론트의 supabase.from()/rpc()/Realtime 직접 접근이 모두 BFF로 바뀌고,
--- 익명 사용자·참여자·방장 회귀 테스트가 통과한 뒤에만 별도 마이그레이션으로
--- 해당 Public access 정책과 공개 투표/공개 초대 경로를 제거해야 한다.
+-- 마스터 SQL의 핵심 테이블은 anon/authenticated 직접 접근 권한과 permissive
+-- Public access 정책을 두지 않는다. 브라우저는 Express BFF를 통해서만 접근한다.
+-- 이후 추가되는 신규 테이블도 동일한 BFF-only 원칙을 유지해야 한다.
 
 -- =============================================================================
 -- V5 SCORE + FEEDBACK SCREENING
@@ -6874,5 +6877,73 @@ COMMENT ON COLUMN public.ideas.pdf_attachment_name IS
   'V14: original PDF display name; server redacts it for non-authors to protect anonymity';
 COMMENT ON COLUMN public.ideas.pdf_attachment_size IS
   'V14: PDF size in bytes; max 10 MiB';
+
+COMMIT;
+
+
+-- =============================================================================
+-- WHYNOT V15 RELEASE STABILITY
+-- 1) Reassert BFF-only table access for core application tables.
+-- 2) Add voter lookup index used by lobby/access checks.
+--
+-- Production rule:
+-- - Run this forward migration only after code validation.
+-- - Do NOT run the full master migration on an existing production database.
+-- =============================================================================
+
+BEGIN;
+
+DROP POLICY IF EXISTS "Public access on rooms" ON public.rooms;
+DROP POLICY IF EXISTS "Public access on participants" ON public.participants;
+DROP POLICY IF EXISTS "Public access on ideas" ON public.ideas;
+DROP POLICY IF EXISTS "Public access on criteria" ON public.criteria;
+DROP POLICY IF EXISTS "Public access on criterion_proposals" ON public.criterion_proposals;
+DROP POLICY IF EXISTS "Public access on evaluations" ON public.evaluations;
+DROP POLICY IF EXISTS "Public access on room_invites" ON public.room_invites;
+DROP POLICY IF EXISTS "Public access on phase_completions" ON public.phase_completions;
+DROP POLICY IF EXISTS "Public access on room_phase_participants" ON public.room_phase_participants;
+
+REVOKE ALL ON public.rooms FROM anon, authenticated;
+REVOKE ALL ON public.participants FROM anon, authenticated;
+REVOKE ALL ON public.ideas FROM anon, authenticated;
+REVOKE ALL ON public.criteria FROM anon, authenticated;
+REVOKE ALL ON public.criterion_proposals FROM anon, authenticated;
+REVOKE ALL ON public.evaluations FROM anon, authenticated;
+REVOKE ALL ON public.room_invites FROM anon, authenticated;
+REVOKE ALL ON public.phase_completions FROM anon, authenticated;
+REVOKE ALL ON public.room_phase_participants FROM anon, authenticated;
+
+ALTER TABLE public.rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ideas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.criteria ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.criterion_proposals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.evaluations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.room_invites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.phase_completions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.room_phase_participants ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.rooms FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.participants FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.ideas FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.criteria FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.criterion_proposals FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.evaluations FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.room_invites FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.phase_completions FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.room_phase_participants FORCE ROW LEVEL SECURITY;
+
+GRANT ALL ON public.rooms TO service_role;
+GRANT ALL ON public.participants TO service_role;
+GRANT ALL ON public.ideas TO service_role;
+GRANT ALL ON public.criteria TO service_role;
+GRANT ALL ON public.criterion_proposals TO service_role;
+GRANT ALL ON public.evaluations TO service_role;
+GRANT ALL ON public.room_invites TO service_role;
+GRANT ALL ON public.phase_completions TO service_role;
+GRANT ALL ON public.room_phase_participants TO service_role;
+
+CREATE INDEX IF NOT EXISTS room_voter_registrations_user_status_idx
+  ON public.room_voter_registrations(user_id, status, room_id);
 
 COMMIT;
