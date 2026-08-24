@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -50,7 +50,9 @@ import {
   PendingAccountInvite,
   PendingParticipantAccountInvite,
   PendingVoterAccountInvite,
-  ParticipantRole
+  ParticipantRole,
+  FeedbackReconstructionItem,
+  FeedbackReconstructionResponse
 } from './types';
 
 type RefinementFeedbackDraft = {
@@ -456,6 +458,8 @@ export default function App() {
   const [inputJoinCode, setInputJoinCode] = useState('');
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomDetails, setRoomDetails] = useState<RoomDetails | null>(null);
+  const [feedbackReconstructionByIdea, setFeedbackReconstructionByIdea] = useState<Record<string, FeedbackReconstructionItem>>({});
+  const [feedbackReconstructionLoadingByIdea, setFeedbackReconstructionLoadingByIdea] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchRoomError, setFetchRoomError] = useState(false);
@@ -1743,6 +1747,138 @@ export default function App() {
   const triggerToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const loadFeedbackReconstruction = async (ideaId: string) => {
+    if (!activeRoomId || feedbackReconstructionLoadingByIdea[ideaId]) return;
+
+    setFeedbackReconstructionLoadingByIdea(previous => ({ ...previous, [ideaId]: true }));
+    try {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/feedback-reconstruction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data: FeedbackReconstructionResponse | { error?: string } =
+        (await response.json().catch(() => ({}))) || {};
+      if (!response.ok) {
+        throw new Error(('error' in data && data.error) || '피드백을 불러오지 못했습니다.');
+      }
+      const nextItems = (data as FeedbackReconstructionResponse).items || {};
+      setFeedbackReconstructionByIdea(previous => ({ ...previous, ...nextItems }));
+    } catch (error) {
+      setFeedbackReconstructionByIdea(previous => ({
+        ...previous,
+        [ideaId]: { status: 'UNAVAILABLE', comments: [] }
+      }));
+      console.warn('Feedback reconstruction load failed:', error);
+    } finally {
+      setFeedbackReconstructionLoadingByIdea(previous => ({ ...previous, [ideaId]: false }));
+    }
+  };
+
+  const renderScoreFeedbackDisclosure = (
+    ideaId: string,
+    survived: boolean,
+    rawFeedbackItems: string[],
+    feedbackKey: string,
+    survivorLabel: string
+  ) => {
+    const expanded = Boolean(expandedIdeaIds[feedbackKey]);
+
+    if (survived) {
+      if (rawFeedbackItems.length === 0) return null;
+      return (
+        <div className="border-t border-slate-100 pt-3">
+          <button
+            type="button"
+            onClick={() => toggleIdeaExpanded(feedbackKey)}
+            className="text-xs font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1"
+          >
+            {survivorLabel} {rawFeedbackItems.length}건 {expanded ? '접기' : '보기'}
+            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+          {expanded && (
+            <ul className="mt-3 space-y-2">
+              {rawFeedbackItems.map((feedback, index) => (
+                <li key={index} className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs text-slate-600 leading-relaxed">
+                  {feedback}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      );
+    }
+
+    const reconstruction = feedbackReconstructionByIdea[ideaId];
+    const loadingReconstruction = Boolean(feedbackReconstructionLoadingByIdea[ideaId]);
+    const status = loadingReconstruction && !reconstruction ? 'PROCESSING' : reconstruction?.status;
+
+    return (
+      <div className="border-t border-slate-100 pt-3">
+        <button
+          type="button"
+          onClick={() => {
+            const willOpen = !expanded;
+            toggleIdeaExpanded(feedbackKey);
+            if (
+              willOpen &&
+              (!reconstruction || reconstruction.status === 'PROCESSING' || reconstruction.status === 'UNAVAILABLE')
+            ) {
+              void loadFeedbackReconstruction(ideaId);
+            }
+          }}
+          aria-expanded={expanded}
+          aria-controls={`feedback-reconstruction-${ideaId}`}
+          className="w-full flex items-center justify-between gap-3 py-1 text-left group"
+        >
+          <span className="inline-flex items-center gap-2">
+            <span className="text-xs font-bold text-indigo-600 group-hover:text-indigo-800">
+              {expanded ? '피드백 접기' : '피드백 보기'}
+            </span>
+            <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">
+              AI 재구성
+            </span>
+          </span>
+          {expanded
+            ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+            : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
+        </button>
+
+        {expanded && (
+          <div id={`feedback-reconstruction-${ideaId}`} className="mt-3" aria-live="polite">
+            {status === 'READY' && reconstruction && reconstruction.comments.length > 0 ? (
+              <>
+                <ul className="space-y-2">
+                  {reconstruction.comments.map((comment, index) => (
+                    <li key={`${ideaId}-reconstructed-${index}`} className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs text-slate-600 leading-relaxed">
+                      {comment.text}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                  참여자가 작성한 원문은 공개하지 않으며, AI가 원문의 의미를 보존해 재구성한 내용입니다.
+                </p>
+              </>
+            ) : status === 'INSUFFICIENT_EVIDENCE' ? (
+              <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-xl p-3">
+                표시할 수 있는 피드백이 충분하지 않습니다.
+              </p>
+            ) : status === 'UNAVAILABLE' ? (
+              <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-xl p-3">
+                피드백을 안전하게 정리하지 못했습니다. 원문은 공개되지 않습니다.
+              </p>
+            ) : (
+              <div className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-xl p-3 flex items-center gap-2">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+                피드백을 정리하고 있습니다.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const DEFAULT_GOMINHAJO_ROOM: RoomDetails = {
@@ -6069,7 +6205,7 @@ export default function App() {
                                         className="w-full px-4 py-3 border border-slate-200 rounded-xl text-xs font-medium resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                       />
                                       <p className="text-[10px] text-emerald-700 font-medium">
-                                        작성자 정보는 공개되지 않으며, 결과 화면에는 원문과 AI 요약이 분리되어 제공됩니다.
+                                        탈락한 아이디어의 피드백 원문은 공개하지 않습니다. 결과 화면에는 익명성을 보호하기 위해 AI가 의미를 보존해 재구성한 내용만 제공됩니다.
                                       </p>
                                     </div>}
                                   </motion.div>
@@ -6626,8 +6762,6 @@ export default function App() {
                       const stats = latestRound?.scoreStats?.[ideaId];
                       const survived = latestRound ? survivorIds.has(ideaId) : idea.status !== 'ELIMINATED';
                       const feedbackItems = firstRound?.anonymousFeedbackByIdea?.[ideaId] || [];
-                      const feedbackKey = `v7_feedback_${latestRound?.roundId || 'final'}_${ideaId}`;
-                      const feedbackExpanded = Boolean(expandedIdeaIds[feedbackKey]);
                       const aiReason = latestAi
                         ? (survived ? latestAi.selectionReasons?.[ideaId] : latestAi.eliminationReasons?.[ideaId])
                         : '';
@@ -6657,24 +6791,12 @@ export default function App() {
                               {aiReason}
                             </div>
                           )}
-                          {feedbackItems.length > 0 && (
-                            <div className="border-t border-slate-100 pt-3">
-                              <button
-                                type="button"
-                                onClick={() => toggleIdeaExpanded(feedbackKey)}
-                                className="text-xs font-bold text-indigo-600 inline-flex items-center gap-1"
-                              >
-                                1차 익명 피드백 원문 {feedbackItems.length}건 {feedbackExpanded ? '접기' : '보기'}
-                                {feedbackExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                              </button>
-                              {feedbackExpanded && (
-                                <ul className="mt-3 space-y-2">
-                                  {feedbackItems.map((feedback, index) => (
-                                    <li key={index} className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs text-slate-600 leading-relaxed">{feedback}</li>
-                                  ))}
-                                </ul>
-                              )}
-                            </div>
+                          {renderScoreFeedbackDisclosure(
+                            idea.id,
+                            survived,
+                            feedbackItems,
+                            `v7_feedback_${latestRound?.roundId || 'final'}_${idea.id}`,
+                            '1차 익명 피드백 원문'
                           )}
                         </article>
                       );
@@ -6833,7 +6955,6 @@ export default function App() {
                       const renderScoreCard = (idea: Idea, survived: boolean) => {
                         const stats = roomDetails.aggregatedScores?.[idea.id];
                         const feedbackItems = roomDetails.anonymousFeedbackByIdea?.[idea.id] || [];
-                        const feedbackExpanded = Boolean(expandedIdeaIds[`score_feedback_${idea.id}`]);
                         const aiBoundaryReason = survived
                           ? aiTiebreak?.selectionReasons?.[idea.id]
                           : aiTiebreak?.eliminationReasons?.[idea.id];
@@ -6870,26 +6991,12 @@ export default function App() {
                               </div>
                             )}
 
-                            {feedbackItems.length > 0 && (
-                              <div className="border-t border-slate-100 pt-3">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleIdeaExpanded(`score_feedback_${idea.id}`)}
-                                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1"
-                                >
-                                  익명 피드백 원문 {feedbackItems.length}건 {feedbackExpanded ? '접기' : '보기'}
-                                  {feedbackExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                </button>
-                                {feedbackExpanded && (
-                                  <ul className="mt-3 space-y-2">
-                                    {feedbackItems.map((feedback, index) => (
-                                      <li key={index} className="text-xs text-slate-600 bg-slate-50 border border-slate-100 rounded-xl p-3 leading-relaxed">
-                                        {feedback}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
+                            {renderScoreFeedbackDisclosure(
+                              idea.id,
+                              survived,
+                              feedbackItems,
+                              `score_feedback_${idea.id}`,
+                              '익명 피드백 원문'
                             )}
                           </div>
                         );
@@ -7009,7 +7116,7 @@ export default function App() {
                                         </div>
                                       </div>
                                     ) : (
-                                      <p className="text-xs text-slate-500">AI 요약을 만들지 못했거나 반복 근거가 부족합니다. 후보별 익명 피드백 원문을 확인해 주세요.</p>
+                                      <p className="text-xs text-slate-500">AI 요약을 만들지 못했거나 반복 근거가 부족합니다.</p>
                                     )}
                                   </div>
 
@@ -9093,3 +9200,4 @@ export default function App() {
     </div>
   );
 }
+
