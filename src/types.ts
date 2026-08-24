@@ -375,6 +375,26 @@ export interface ScreeningSummary {
   aiAvailable: boolean;
 }
 
+export type FeedbackReconstructionStatus =
+  | 'PROCESSING'
+  | 'READY'
+  | 'INSUFFICIENT_EVIDENCE'
+  | 'UNAVAILABLE';
+
+export interface FeedbackReconstructionComment {
+  text: string;
+}
+
+export interface FeedbackReconstructionItem {
+  status: FeedbackReconstructionStatus;
+  comments: FeedbackReconstructionComment[];
+}
+
+export interface FeedbackReconstructionResponse {
+  roundId: string;
+  items: Record<string, FeedbackReconstructionItem>;
+}
+
 export interface AggregatedScore {
   score: number;
   totalScore?: number;
