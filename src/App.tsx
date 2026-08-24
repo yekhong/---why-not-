@@ -1487,7 +1487,7 @@ export default function App() {
     };
 
     void checkRoomState(false);
-    const pollDelay = roomDetails?.myParticipantRole === 'VOTER' ? 12000 : 3000;
+    const pollDelay = roomDetails?.myParticipantRole === 'VOTER' ? 12000 : 5000;
     const interval = setInterval(() => void checkRoomState(false), pollDelay);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -1769,9 +1769,15 @@ export default function App() {
       const parsed = new URL(normalized);
       const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
       const looksIpv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname);
+      const reservedSuffixes = ['localhost', 'local', 'internal', 'lan', 'home', 'test', 'example', 'invalid', 'onion'];
+      const reservedHostname =
+        reservedSuffixes.some(suffix => hostname === suffix || hostname.endsWith(`.${suffix}`)) ||
+        hostname === 'example.com' || hostname.endsWith('.example.com') ||
+        hostname === 'example.net' || hostname.endsWith('.example.net') ||
+        hostname === 'example.org' || hostname.endsWith('.example.org') ||
+        hostname === 'home.arpa' || hostname.endsWith('.home.arpa');
       if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
-      if (!hostname.includes('.') || hostname === 'localhost' || looksIpv4 || parsed.hostname.startsWith('[')) return null;
-      if (/(^|\.)(localhost|local|internal|lan|home|test|example|invalid)$/.test(hostname)) return null;
+      if (!hostname.includes('.') || looksIpv4 || hostname.includes(':') || reservedHostname) return null;
       const labels = hostname.split('.');
       if (labels.some(label => !label || label.length > 63 || !/^[a-z0-9-]+$/i.test(label) || label.startsWith('-') || label.endsWith('-'))) return null;
       const tld = labels[labels.length - 1];
@@ -5796,7 +5802,7 @@ export default function App() {
                                 value={ideaLink}
                                 onChange={e => setIdeaLink(e.target.value)}
                                 onBlur={() => setIdeaLink(value => normalizeReferenceLinkForInput(value))}
-                                placeholder="https://example.com/reference-board"
+                                placeholder="https://your-domain.com/reference"
                                 className="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
                               />
                               <div className="flex items-center justify-between gap-2 pt-1">
@@ -6408,9 +6414,43 @@ export default function App() {
                                         {originalExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                                       </button>
                                       {originalExpanded && (
-                                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1">
-                                          <p className="text-xs font-bold text-slate-800">{idea.title}</p>
-                                          <p className="text-xs text-slate-600 whitespace-pre-line leading-relaxed">{idea.description}</p>
+                                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                                          <div className="space-y-1">
+                                            <p className="text-xs font-bold text-slate-800">{idea.title}</p>
+                                            <p className="text-xs text-slate-600 whitespace-pre-line leading-relaxed">{idea.description}</p>
+                                          </div>
+                                          {(idea.attachmentUrl || idea.pdfAttachmentPath || idea.pdfAttachmentUrl) && (
+                                            <div className="border-t border-slate-200 pt-3 space-y-2">
+                                              <p className="text-[10px] font-black text-slate-500">평가 참고 자료</p>
+                                              <div className="flex flex-wrap gap-2">
+                                                {idea.attachmentUrl && (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => openReferencePreview(idea.attachmentUrl!)}
+                                                    className="min-h-9 px-3 py-2 rounded-xl border border-indigo-200 bg-white text-[11px] font-extrabold text-indigo-700 hover:bg-indigo-50"
+                                                  >
+                                                    참고 링크 · {getReferenceLinkHost(idea.attachmentUrl)} ↗
+                                                  </button>
+                                                )}
+                                                {idea.pdfAttachmentPath ? (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => openIdeaPdf(idea.id)}
+                                                    className="min-h-9 px-3 py-2 rounded-xl border border-slate-300 bg-white text-[11px] font-extrabold text-slate-700 hover:bg-slate-100"
+                                                  >
+                                                    PDF 참고 자료 열기 ↗
+                                                  </button>
+                                                ) : idea.pdfAttachmentUrl ? (
+                                                  <span className="min-h-9 px-3 py-2 rounded-xl border border-slate-200 bg-slate-100 text-[11px] font-bold text-slate-500">
+                                                    기존 PDF 기록 · 실제 파일 없음
+                                                  </span>
+                                                ) : null}
+                                              </div>
+                                              <p className="text-[10px] text-slate-400">
+                                                참고 자료는 점수 평가를 위한 보조 자료이며 최종 별 투표 화면에는 표시되지 않습니다.
+                                              </p>
+                                            </div>
+                                          )}
                                         </div>
                                       )}
                                     </div>
