@@ -70,7 +70,10 @@ export interface Idea {
   title: string;
   description: string;
   attachmentUrl?: string;
-  pdfAttachmentUrl?: string;
+  pdfAttachmentUrl?: string; // legacy filename-only field; V14 keeps it for old data compatibility
+  pdfAttachmentPath?: string;
+  pdfAttachmentName?: string;
+  pdfAttachmentSize?: number;
   tags?: string[];
   submitterId: string;
   submitterName: string;
@@ -310,6 +313,7 @@ export type PendingAccountInvite = PendingParticipantAccountInvite | PendingVote
 export interface ScoreRoundResult {
   roundId: string;
   roundNumber: number;
+  parentRoundId?: string;
   phase: 'FIRST' | 'SECOND';
   completed: boolean;
   candidateIdeaIds: string[];
