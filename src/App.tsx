@@ -475,6 +475,10 @@ export default function App() {
   const [isSubmittingRefinement, setIsSubmittingRefinement] = useState(false);
   const [isFinalizingScreening, setIsFinalizingScreening] = useState(false);
   const [showSecondScoreBallot, setShowSecondScoreBallot] = useState(false);
+  const [showBoundaryRunoffNotice, setShowBoundaryRunoffNotice] = useState(false);
+  const [boundaryRunoffSelections, setBoundaryRunoffSelections] = useState<string[]>([]);
+  const [isSubmittingBoundaryRunoff, setIsSubmittingBoundaryRunoff] = useState(false);
+  const boundaryRunoffNoticeShownRef = useRef<Set<string>>(new Set());
   const scoreDraftRoundKeyRef = useRef<string | null>(null);
 
   // ----------------------------------------------------------------
@@ -936,30 +940,58 @@ export default function App() {
   };
 
   const handleConfirmIdeaGateToStage2 = async () => {
-    if (!activeRoomId || !roomDetails) return;
-    if (roomDetails.room.decisionMode === 'QUICK') {
-      try {
-        const response = await apiFetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || '빠른 익명 투표를 시작하지 못했습니다.');
-        setShowIdeaSubmissionGate(false);
-        localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
-        triggerToast('다른 사람의 선택은 보이지 않는 상태로 익명 투표를 시작합니다.');
-        await fetchRoomDetails(activeRoomId);
-      } catch (error: any) {
-        setShowIdeaSubmissionGate(true);
-        triggerToast(error.message || '빠른 익명 투표를 시작하지 못했습니다.', 'error');
-      }
+    if (!activeRoomId || !roomDetails || isAdvancingIdeaStage) return;
+
+    const participantTotal = Math.max(1, Number((roomDetails as any).participantCount || 1));
+    const completedTotal = Number(roomDetails.completedParticipantsCount || 0);
+    const ideaCount = (roomDetails.ideas || []).length;
+    const targetWinnerCount = Math.max(1, Number(roomDetails.room.targetWinnerCount || 1));
+    const minimumIdeaCount = roomDetails.room.decisionMode === 'QUICK'
+      ? Math.max(2, targetWinnerCount)
+      : Math.max(2, targetWinnerCount + 1);
+
+    if (participantTotal < 2 || completedTotal < participantTotal) {
+      triggerToast(`현재 참여자 전원이 아이디어 등록을 완료해야 다음 단계로 이동할 수 있습니다. (${completedTotal}/${participantTotal}명 완료)`, 'error');
       return;
     }
-    const changed = await handleForceChangeStatus('CRITERIA_PROPOSAL');
-    if (changed) {
-      setShowIdeaSubmissionGate(false);
-      localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+    if (ideaCount < minimumIdeaCount) {
+      triggerToast(
+        roomDetails.room.decisionMode === 'QUICK'
+          ? `빠른 익명 투표를 시작하려면 아이디어가 최소 ${minimumIdeaCount}개 필요합니다.`
+          : `최종 ${targetWinnerCount}개를 선정하려면 아이디어가 최소 ${minimumIdeaCount}개 필요합니다.`,
+        'error'
+      );
+      return;
+    }
+
+    setIsAdvancingIdeaStage(true);
+    try {
+      if (roomDetails.room.decisionMode === 'QUICK') {
+        try {
+          const response = await apiFetch(`/api/rooms/${activeRoomId}/quick/start-vote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || '빠른 익명 투표를 시작하지 못했습니다.');
+          setShowIdeaSubmissionGate(false);
+          localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+          triggerToast('다른 사람의 선택은 보이지 않는 상태로 익명 투표를 시작합니다.');
+          await fetchRoomDetails(activeRoomId);
+        } catch (error: any) {
+          setShowIdeaSubmissionGate(true);
+          triggerToast(error.message || '빠른 익명 투표를 시작하지 못했습니다.', 'error');
+        }
+        return;
+      }
+      const changed = await handleForceChangeStatus('CRITERIA_PROPOSAL');
+      if (changed) {
+        setShowIdeaSubmissionGate(false);
+        localStorage.removeItem(`why_not_idea_step_gate_${activeRoomId}`);
+      }
+    } finally {
+      setIsAdvancingIdeaStage(false);
     }
   };
 
@@ -1453,14 +1485,22 @@ export default function App() {
 
   // Private room synchronization goes through the authenticated BFF.
   // Browser-side Supabase Realtime is intentionally not used here.
+  // During a boundary runoff, fetch the authoritative room details directly so
+  // ballot counts and deadline-based finalization are not blocked by state-version polling.
+  const boundaryRunoffPollingStatus = (roomDetails as any)?.boundaryRunoff?.status;
   useEffect(() => {
     if (!activeRoomId || !isLoggedIn) return;
 
     setAiSuggestedCriteria([]);
     const checkRoomState = async (forceDetails = false) => {
       if (document.visibilityState !== 'visible' || isCheckingRoomStateRef.current) return;
-      if (forceDetails || !roomStateVersionRef.current) {
-        await fetchRoomDetails(activeRoomId, forceDetails);
+      if (forceDetails || !roomStateVersionRef.current || boundaryRunoffPollingStatus === 'VOTING') {
+        isCheckingRoomStateRef.current = true;
+        try {
+          await fetchRoomDetails(activeRoomId, true);
+        } finally {
+          isCheckingRoomStateRef.current = false;
+        }
         return;
       }
       isCheckingRoomStateRef.current = true;
@@ -1495,7 +1535,7 @@ export default function App() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeRoomId, isLoggedIn, roomDetails?.myParticipantRole]);
+  }, [activeRoomId, isLoggedIn, roomDetails?.myParticipantRole, boundaryRunoffPollingStatus]);
 
   // Generate or refresh a participant/voter invite token.
   const handleGenerateNewInviteToken = async (
@@ -2200,6 +2240,26 @@ export default function App() {
         // The authenticated server response is authoritative. Preserving an
         // older local status or deleted rows here causes host/member divergence.
         setRoomDetails(data);
+        const boundaryRunoff = (data as any).boundaryRunoff;
+        if (boundaryRunoff?.status === 'VOTING') {
+          const runoffCandidateIds = Array.isArray(boundaryRunoff.candidateIdeaIds)
+            ? boundaryRunoff.candidateIdeaIds.map(String)
+            : [];
+          if (boundaryRunoff.myBallotSubmitted && Array.isArray(boundaryRunoff.mySelectedIdeaIds)) {
+            setBoundaryRunoffSelections(boundaryRunoff.mySelectedIdeaIds.map(String));
+          } else {
+            setBoundaryRunoffSelections(previous =>
+              previous.filter(ideaId => runoffCandidateIds.includes(ideaId))
+            );
+          }
+          if (!boundaryRunoffNoticeShownRef.current.has(String(boundaryRunoff.runoffId))) {
+            boundaryRunoffNoticeShownRef.current.add(String(boundaryRunoff.runoffId));
+            setShowBoundaryRunoffNotice(true);
+          }
+        } else {
+          setBoundaryRunoffSelections([]);
+          setShowBoundaryRunoffNotice(false);
+        }
         const isScoreRound = (
           data.room.status === 'EVALUATION' ||
           data.room.status === 'EVALUATION_ROUND_2'
@@ -2775,6 +2835,8 @@ export default function App() {
   const [aiSuggestedCriteria, setAiSuggestedCriteria] = useState<{ name: string; description: string }[]>([]);
   const [isGeneratingAiSuggestions, setIsGeneratingAiSuggestions] = useState(false);
   const [isClusteringLoading, setIsClusteringLoading] = useState(false);
+  const [isAdvancingIdeaStage, setIsAdvancingIdeaStage] = useState(false);
+  const [isConfirmingCriteria, setIsConfirmingCriteria] = useState(false);
 
   const autoRegisterAiProposals = async (suggestions: any[]) => {
     if (!suggestions || suggestions.length === 0 || !activeRoomId) return;
@@ -3079,6 +3141,16 @@ export default function App() {
 
   // Trigger AI Clustering (Host only)
   const handleTriggerClustering = async () => {
+    if (!activeRoomId || !roomDetails || isClusteringLoading) return;
+    if (!roomDetails.criteriaProposalsRevealed) {
+      triggerToast('모든 참여자의 기준 제안이 완료된 뒤 AI 기준 정리를 시작할 수 있습니다.', 'error');
+      return;
+    }
+    if ((roomDetails.proposalsCount || 0) < 1) {
+      triggerToast('정리할 평가 기준 제안이 없습니다.', 'error');
+      return;
+    }
+
     setIsClusteringLoading(true);
     try {
       const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/cluster`, {
@@ -3090,10 +3162,13 @@ export default function App() {
         throw new Error('서버에서 정리된 평가 기준을 받지 못했습니다.');
       }
       setEditableCriteria(data.candidates);
-      await fetchRoomDetails(activeRoomId!, false);
-      triggerToast('수집된 의견을 바탕으로 핵심 평가 기준을 정리했습니다!');
+      await fetchRoomDetails(activeRoomId, false);
+      triggerToast(data.alreadyCompleted
+        ? '이미 평가 기준 검토 단계로 이동되어 최신 기준을 불러왔습니다.'
+        : '수집된 의견을 바탕으로 핵심 평가 기준을 정리했습니다!');
     } catch (err) {
       triggerToast(err instanceof Error ? err.message : '평가 기준을 정리하지 못했습니다.', 'error');
+      await fetchRoomDetails(activeRoomId, true);
     } finally {
       setIsClusteringLoading(false);
     }
@@ -3101,12 +3176,14 @@ export default function App() {
 
   // Confirm Criteria (Host only)
   const handleConfirmCriteria = async () => {
-    const targetCriteria = editableCriteria.length > 0 ? editableCriteria : (roomDetails?.criteria || []);
+    if (!activeRoomId || !roomDetails || isConfirmingCriteria) return;
+    const targetCriteria = editableCriteria.length > 0 ? editableCriteria : (roomDetails.criteria || []);
     if (targetCriteria.length === 0) {
       triggerToast('최소 하나 이상의 기준이 등록되어야 합니다.', 'error');
       return;
     }
 
+    setIsConfirmingCriteria(true);
     try {
       const res = await apiFetch(`/api/rooms/${activeRoomId}/criteria/confirm`, {
         method: 'POST',
@@ -3115,12 +3192,14 @@ export default function App() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || '평가 기준 확정에 실패했습니다.');
-      await fetchRoomDetails(activeRoomId!, false);
-      triggerToast('평가 기준이 확정되었습니다. 3단계 종합점수 및 익명 피드백을 시작합니다.');
+      await fetchRoomDetails(activeRoomId, false);
+      triggerToast(data?.message || '평가 기준이 확정되었습니다. 3단계 종합점수 및 익명 피드백을 시작합니다.');
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 기준 확정에 실패했습니다.';
       triggerToast(message, 'error');
-      await fetchRoomDetails(activeRoomId!, true);
+      await fetchRoomDetails(activeRoomId, true);
+    } finally {
+      setIsConfirmingCriteria(false);
     }
   };
 
@@ -3230,15 +3309,21 @@ export default function App() {
           submissions,
         }),
       });
+      const data = await res.json().catch(() => null);
       if (res.ok) {
         setIsReEditingEvaluation(false);
-        triggerToast(isSecondScoreRound
-          ? '2차 종합점수를 모두 제출했습니다.'
-          : '1차 종합점수와 익명 피드백을 모두 제출했습니다.');
+        if (res.status === 202 || data?.aggregationPending) {
+          triggerToast(data?.runoffPending
+            ? '2차 점수는 저장되었습니다. 4위 경계 동점 결선을 준비했습니다.'
+            : '평가는 저장되었습니다. 최종 후보 확정 처리를 계속 진행합니다.');
+        } else {
+          triggerToast(isSecondScoreRound
+            ? '2차 종합점수를 모두 제출했습니다.'
+            : '1차 종합점수와 익명 피드백을 모두 제출했습니다.');
+        }
         await fetchRoomDetails(activeRoomId!, false);
         return;
       }
-      const data = await res.json().catch(() => null);
       throw new Error(data?.error || '평가 제출에 실패했습니다.');
     } catch (err) {
       const message = err instanceof Error ? err.message : '평가 제출에 실패했습니다.';
@@ -3259,12 +3344,64 @@ export default function App() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || `${phaseLabel} 평가 집계를 완료하지 못했습니다.`);
-      triggerToast(`${phaseLabel} 평가 집계와 다음 단계 후보 확정이 완료되었습니다.`);
+      if (response.status === 202 || data?.runoffPending) {
+        triggerToast('2차 점수 집계는 완료되었고, 4위 경계 동점 결선이 필요합니다.');
+      } else {
+        triggerToast(`${phaseLabel} 평가 집계와 다음 단계 후보 확정이 완료되었습니다.`);
+      }
       await fetchRoomDetails(activeRoomId, true);
     } catch (error) {
       triggerToast(error instanceof Error ? error.message : `${phaseLabel} 평가 집계를 완료하지 못했습니다.`, 'error');
     } finally {
       setIsFinalizingScreening(false);
+    }
+  };
+
+  const handleToggleBoundaryRunoffCandidate = (ideaId: string) => {
+    const runoff = (roomDetails as any)?.boundaryRunoff;
+    if (!runoff || runoff.status !== 'VOTING' || runoff.myBallotSubmitted || !runoff.canVote) return;
+    const remainingSlots = Math.max(1, Number(runoff.remainingSlots || 1));
+    setBoundaryRunoffSelections(previous => {
+      if (previous.includes(ideaId)) return previous.filter(id => id !== ideaId);
+      if (previous.length >= remainingSlots) {
+        triggerToast(`동점 후보 중 정확히 ${remainingSlots}개만 선택할 수 있습니다.`, 'error');
+        return previous;
+      }
+      return [...previous, ideaId];
+    });
+  };
+
+  const handleSubmitBoundaryRunoff = async () => {
+    const runoff = (roomDetails as any)?.boundaryRunoff;
+    if (!activeRoomId || !runoff || runoff.status !== 'VOTING') return;
+    const remainingSlots = Math.max(1, Number(runoff.remainingSlots || 1));
+    if (!runoff.canVote) {
+      triggerToast('현재 계정은 이 동점 결선의 중립 투표 대상이 아닙니다.', 'error');
+      return;
+    }
+    if (boundaryRunoffSelections.length !== remainingSlots) {
+      triggerToast(`동점 후보 중 정확히 ${remainingSlots}개를 선택해 주세요.`, 'error');
+      return;
+    }
+
+    setIsSubmittingBoundaryRunoff(true);
+    try {
+      const response = await apiFetch(`/api/rooms/${activeRoomId}/screening/runoff`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectedIdeaIds: boundaryRunoffSelections })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || '동점 결선 투표를 제출하지 못했습니다.');
+      triggerToast(data?.runoffCompleted
+        ? '동점 결선이 완료되어 최종 후보를 확정했습니다.'
+        : '동점 결선 투표를 제출했습니다. 다른 중립 참여자의 제출을 기다립니다.');
+      await fetchRoomDetails(activeRoomId, true);
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : '동점 결선 투표를 제출하지 못했습니다.', 'error');
+      await fetchRoomDetails(activeRoomId, true);
+    } finally {
+      setIsSubmittingBoundaryRunoff(false);
     }
   };
 
@@ -5326,8 +5463,12 @@ export default function App() {
                         {(() => {
                           const ideaCompletedCount = roomDetails.completedParticipantsCount || 0;
                           const targetTotalCount = Math.max(1, Number((roomDetails as any).participantCount || 1));
-
-                          const ideasCountMet = (roomDetails.ideas || []).length >= 2;
+                          const targetWinnerCount = Math.max(1, Number(roomDetails.room.targetWinnerCount || 1));
+                          const minimumIdeaCount = roomDetails.room.decisionMode === 'QUICK'
+                            ? Math.max(2, targetWinnerCount)
+                            : Math.max(2, targetWinnerCount + 1);
+                          const currentIdeaCount = (roomDetails.ideas || []).length;
+                          const ideasCountMet = currentIdeaCount >= minimumIdeaCount;
                           const participantQuorumMet = ideaCompletedCount >= targetTotalCount;
                           const isIdeaGateMinMet = targetTotalCount >= 2 && ideasCountMet && participantQuorumMet;
 
@@ -5362,7 +5503,9 @@ export default function App() {
                                 </p>
                                 {participantQuorumMet && !ideasCountMet && (
                                   <p className="text-xs font-bold text-amber-700 bg-amber-50 p-3 rounded-xl border border-amber-200 leading-relaxed max-w-md mx-auto mt-2">
-                                    ⚠️ 참여자 완료 수({ideaCompletedCount}/{targetTotalCount}명)는 달성되었으나, 투표를 진행하기 위한 선택지(아이디어)가 현재 1개뿐입니다. [이전 단계로 되돌아가기] 버튼을 눌러 최소 2개 이상의 아이디어를 등록해 주세요!
+                                    ⚠️ 참여자 완료 수({ideaCompletedCount}/{targetTotalCount}명)는 충족되었지만 현재 아이디어는 {currentIdeaCount}개입니다. {roomDetails.room.decisionMode === 'QUICK'
+                                      ? `빠른 익명 투표에는 최소 ${minimumIdeaCount}개가 필요합니다.`
+                                      : `최종 ${targetWinnerCount}개를 선정하려면 최소 ${minimumIdeaCount}개가 필요합니다.`} [이전 단계로 되돌아가기]에서 아이디어를 추가해 주세요.
                                   </p>
                                 )}
                               </div>
@@ -5389,15 +5532,25 @@ export default function App() {
                                   <button
                                     type="button"
                                     onClick={handleConfirmIdeaGateToStage2}
-                                    className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+                                    disabled={isAdvancingIdeaStage}
+                                    className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-2xl text-xs font-black transition shadow-sm flex items-center gap-1.5 cursor-pointer"
                                   >
-                                    <Sparkles className="w-4 h-4 text-slate-950" />
-                                    <span>
-                                      {roomDetails.room.decisionMode === 'QUICK'
-                                        ? '2단계: 익명 투표 시작하기'
-                                        : '2단계: 평가 기준 설정하러 가기'}
-                                    </span>
-                                    <ArrowRight className="w-4 h-4" />
+                                    {isAdvancingIdeaStage ? (
+                                      <>
+                                        <RefreshCw className="w-4 h-4 animate-spin" />
+                                        <span>다음 단계로 이동 중...</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Sparkles className="w-4 h-4 text-slate-950" />
+                                        <span>
+                                          {roomDetails.room.decisionMode === 'QUICK'
+                                            ? '2단계: 익명 투표 시작하기'
+                                            : '2단계: 평가 기준 설정하러 가기'}
+                                        </span>
+                                        <ArrowRight className="w-4 h-4" />
+                                      </>
+                                    )}
                                   </button>
                                 )}
                               </div>
@@ -5410,24 +5563,6 @@ export default function App() {
 
                       {/* Left: Ideas List (Anonymous Labels) */}
                       <div className="lg:col-span-7 space-y-4">
-                        {/* Host stage 2 trigger banner when ideas >= 2 */}
-                        {roomDetails.room.hostId === userId && (roomDetails.ideas || []).length >= 2 && (
-                          <div className="bg-gradient-to-r from-amber-400 to-amber-300 text-slate-950 p-4 rounded-2xl shadow-xs flex flex-wrap items-center justify-between gap-3 border border-amber-300">
-                            <div className="flex items-center gap-2 text-xs font-black">
-                              <Sparkles className="w-4 h-4 text-slate-950 shrink-0" />
-                              <span>등록 완료 현황: 모든 선택지(아이디어 {(roomDetails.ideas || []).length}개) 등록이 준비되었습니다!</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={handleConfirmIdeaGateToStage2}
-                              className="px-4 py-2 bg-slate-950 hover:bg-slate-900 text-amber-400 rounded-xl text-xs font-black transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <span>{roomDetails.room.decisionMode === 'QUICK' ? '2단계: 익명 투표 시작하기' : '2단계 진행하기'}</span>
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-
                         <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                           <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
                             제출된 아이디어 목록 ({(roomDetails.ideas || []).length}개)
@@ -6054,7 +6189,7 @@ export default function App() {
                               (roomDetails.proposals || []).map((p: any, idx: number) => {
                                 const isHost = roomDetails.room.hostId === userId;
                                 const isAi = Boolean(p.isAiSuggested || (p.id && p.id.startsWith('prop-ai-')) || p.proposerId === 'gemini-ai' || p.sourceType === 'ai');
-                                const isAuthor = p.proposerId === userId && !isAi;
+                                const isAuthor = p.proposerId === userId;
                                 const canEditOrDelete = isAuthor;
                                 const isEditing = editingProposalId === p.id;
 
@@ -6237,10 +6372,20 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={handleConfirmCriteria}
-                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 shrink-0"
+                                disabled={isConfirmingCriteria}
+                                className="px-5 py-2.5 bg-amber-400 text-slate-950 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-xs font-black transition shadow-sm flex items-center gap-1.5 shrink-0"
                               >
-                                <Check className="w-3.5 h-3.5" />
-                                다음 단계로 진행
+                                {isConfirmingCriteria ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    평가 단계 준비 중...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Check className="w-3.5 h-3.5" />
+                                    다음 단계로 진행
+                                  </>
+                                )}
                               </button>
                             </div>
                           ) : (
@@ -6253,13 +6398,122 @@ export default function App() {
                     </div>
                   )}
 
+                  {roomDetails.room.status === 'EVALUATION_ROUND_2' &&
+                    (roomDetails as any).boundaryRunoff?.status === 'VOTING' && (() => {
+                      const runoff = (roomDetails as any).boundaryRunoff;
+                      const candidateIds = Array.isArray(runoff.candidateIdeaIds) ? runoff.candidateIdeaIds.map(String) : [];
+                      const candidates = candidateIds
+                        .map((ideaId: string) => roomDetails.ideas.find(idea => idea.id === ideaId))
+                        .filter(Boolean) as Idea[];
+                      const remainingSlots = Math.max(1, Number(runoff.remainingSlots || 1));
+                      const mySubmitted = Boolean(runoff.myBallotSubmitted);
+                      const canVote = Boolean(runoff.canVote);
+                      const deadlineText = runoff.deadlineAt
+                        ? new Date(runoff.deadlineAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+                        : '';
+
+                      return (
+                        <div className="space-y-6">
+                          <div className="bg-indigo-950 text-white p-5 md:p-6 rounded-3xl border border-indigo-800 shadow-lg space-y-4">
+                            <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-[10px] font-black tracking-widest uppercase text-amber-300">4단계 · 2차 점수 평가</span>
+                                  <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-white/10 border border-white/15 text-indigo-100">경계 동점 결선</span>
+                                </div>
+                                <h2 className="text-xl font-black">최종 후보 남은 자리를 추가 결선으로 결정합니다</h2>
+                                <p className="text-xs text-indigo-100/90 leading-relaxed max-w-2xl">
+                                  4위 경계에서 점수가 같았고 AI가 방 내부 자료만으로 충분한 판정 근거를 확보하지 못했거나 기술적으로 판정을 완료하지 못했습니다.
+                                  기존 2차 점수는 그대로 잠긴 상태이며, 동점 후보만 다시 비교합니다.
+                                </p>
+                              </div>
+                              <div className="shrink-0 rounded-2xl bg-white/10 border border-white/15 px-4 py-3 text-xs font-bold space-y-1 min-w-44">
+                                <p>결선 후보 {candidateIds.length}개</p>
+                                <p>남은 자리 {remainingSlots}개</p>
+                                <p>제출 {Number(runoff.submittedCount || 0)} / {Number(runoff.expectedCount || 0)}명</p>
+                                {deadlineText && <p className="text-amber-300">마감 {deadlineText}</p>}
+                              </div>
+                            </div>
+                            <div className="rounded-2xl bg-indigo-900/60 border border-indigo-700 px-4 py-3 text-[11px] leading-relaxed text-indigo-100">
+                              동점 후보의 작성자는 중립성을 위해 이 결선 투표에서 제외됩니다. 중립 투표자가 2명 미만이면 서버가 동일 조건 후보 중 무작위로 확정하며,
+                              결선에서도 마지막 경계가 다시 동점이면 그 경계 후보만 무작위로 결정합니다. 중간 득표수는 공개하지 않습니다.
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {candidates.map((idea, index) => {
+                              const selected = boundaryRunoffSelections.includes(idea.id);
+                              const selectionLocked = mySubmitted || !canVote;
+                              return (
+                                <button
+                                  key={idea.id}
+                                  type="button"
+                                  onClick={() => handleToggleBoundaryRunoffCandidate(idea.id)}
+                                  disabled={selectionLocked}
+                                  className={`text-left p-5 rounded-2xl border transition shadow-sm ${selected
+                                    ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-500/15'
+                                    : 'bg-white border-slate-200 hover:border-indigo-300'} ${selectionLocked ? 'cursor-default' : 'cursor-pointer'}`}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <span className="text-[10px] font-black text-indigo-600">동점 후보 #{index + 1}</span>
+                                      <h3 className="text-sm font-extrabold text-slate-900 mt-1">{idea.title}</h3>
+                                      <p className="text-xs text-slate-600 mt-2 leading-relaxed whitespace-pre-line">{idea.description}</p>
+                                    </div>
+                                    <span className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 ${selected
+                                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                                      : 'bg-white border-slate-300 text-slate-300'}`}>
+                                      {selected ? <Check className="w-4 h-4" /> : null}
+                                    </span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {mySubmitted ? (
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center space-y-2">
+                              <CheckCircle className="w-8 h-8 text-emerald-600 mx-auto" />
+                              <p className="text-sm font-extrabold text-emerald-900">내 동점 결선 투표 제출 완료</p>
+                              <p className="text-xs text-emerald-700">다른 중립 참여자의 제출 또는 결선 마감을 기다리고 있습니다.</p>
+                            </div>
+                          ) : canVote ? (
+                            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <p className="text-xs font-bold text-slate-700">
+                                  동점 후보 {candidateIds.length}개 중 <strong className="text-indigo-700">정확히 {remainingSlots}개</strong>를 선택해 주세요.
+                                </p>
+                                <span className="text-xs font-black text-indigo-700">선택 {boundaryRunoffSelections.length} / {remainingSlots}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleSubmitBoundaryRunoff}
+                                disabled={boundaryRunoffSelections.length !== remainingSlots || isSubmittingBoundaryRunoff}
+                                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white text-sm font-extrabold transition flex items-center justify-center gap-2"
+                              >
+                                {isSubmittingBoundaryRunoff ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                                {isSubmittingBoundaryRunoff ? '결선 투표 저장 중...' : '동점 결선 투표 제출'}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 text-center space-y-2">
+                              <Lock className="w-7 h-7 text-slate-500 mx-auto" />
+                              <p className="text-sm font-extrabold text-slate-800">중립 결선 참여자의 투표를 기다리는 중입니다</p>
+                              <p className="text-xs text-slate-500">동점 후보 작성자는 결선 결과에 직접 표를 행사하지 않습니다.</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                   {/* -----------------------------------------------------------
                     VIEW 4 (V5): OVERALL SCORE + REQUIRED ANONYMOUS FEEDBACK
                     ----------------------------------------------------------- */}
                   {(
                     roomDetails.room.status === 'EVALUATION' ||
                     (roomDetails.room.status === 'EVALUATION_ROUND_2' && showSecondScoreBallot)
-                  ) && (roomDetails.room.engineVersion || 1) >= 5 && (() => {
+                  ) && (roomDetails.room.engineVersion || 1) >= 5 &&
+                    (roomDetails as any).boundaryRunoff?.status !== 'VOTING' && (() => {
                       const isSecondScoreRound = roomDetails.room.status === 'EVALUATION_ROUND_2';
                       const requiresFeedback = !isSecondScoreRound;
                       const targetIdeas = (roomDetails.ideas || []).filter(idea =>
@@ -6283,25 +6537,45 @@ export default function App() {
 
                       return (
                         <div className="space-y-6">
-                          <div className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                              <div>
-                                <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                          <div className={`p-5 md:p-6 rounded-3xl border shadow-sm space-y-4 ${isSecondScoreRound
+                            ? 'bg-indigo-950 border-indigo-800 text-white'
+                            : 'bg-white border-slate-200'}`}>
+                            <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`text-[10px] font-black tracking-widest uppercase ${isSecondScoreRound ? 'text-amber-300' : 'text-indigo-600'}`}>
+                                    {isSecondScoreRound ? '4단계 · 2차 점수 평가' : '3단계 · 1차 익명 평가'}
+                                  </span>
+                                  <span className={`text-[10px] font-black px-2.5 py-1 rounded-full border ${isSecondScoreRound
+                                    ? 'bg-white/10 border-white/15 text-indigo-100'
+                                    : 'bg-indigo-50 border-indigo-100 text-indigo-700'}`}>
+                                    {isSecondScoreRound ? '최종 후보 압축' : '후보 탐색 · 의견 수집'}
+                                  </span>
+                                </div>
+                                <h2 className={`text-lg md:text-xl font-extrabold flex items-center gap-2 ${isSecondScoreRound ? 'text-white' : 'text-slate-900'}`}>
                                   {roomDetails.hasEvaluated && !isReEditingEvaluation
-                                    ? <CheckCircle className="w-5 h-5 text-emerald-600" />
-                                    : <Lock className="w-5 h-5 text-indigo-600" />}
-                                  {isSecondScoreRound ? '4단계: 2차 종합점수 평가' : '3단계: 1차 종합점수 및 익명 피드백'}
+                                    ? <CheckCircle className={`w-5 h-5 ${isSecondScoreRound ? 'text-emerald-300' : 'text-emerald-600'}`} />
+                                    : <Lock className={`w-5 h-5 ${isSecondScoreRound ? 'text-indigo-300' : 'text-indigo-600'}`} />}
+                                  {isSecondScoreRound ? '1차 통과 후보를 다시 비교합니다' : '모든 후보를 넓게 검토하고 의견을 남깁니다'}
                                 </h2>
-                                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                                <p className={`text-xs leading-relaxed max-w-2xl ${isSecondScoreRound ? 'text-indigo-100/90' : 'text-slate-500'}`}>
                                   {isSecondScoreRound
-                                    ? '1차에서 살아남은 다른 참여자의 아이디어에 1~10점의 종합점수를 다시 매겨 주세요.'
-                                    : '본인 아이디어를 제외한 모든 아이디어에 1~10점의 종합점수와 피드백을 남겨 주세요.'}
+                                    ? '1차 평가를 통과한 후보만 다시 비교합니다. 새로운 피드백은 작성하지 않고 최종 후보 선정을 위한 1~10점만 입력합니다. 최대 4개 후보가 최종 별 투표 단계로 진출합니다.'
+                                    : '본인 아이디어를 제외한 모든 아이디어에 1~10점과 익명 피드백을 함께 남겨 강점과 우려를 폭넓게 수집합니다.'}
                                 </p>
                               </div>
-                              <div className="text-xs font-extrabold text-slate-700 bg-slate-50 border border-slate-200 px-4 py-2 rounded-xl shrink-0">
+                              <div className={`text-xs font-extrabold px-4 py-2 rounded-xl shrink-0 ${isSecondScoreRound
+                                ? 'text-white bg-white/10 border border-white/15'
+                                : 'text-slate-700 bg-slate-50 border border-slate-200'}`}>
                                 제출 완료 {submittedCount} / {expectedCount}명
                               </div>
                             </div>
+
+                            {isSecondScoreRound && (
+                              <div className="rounded-2xl bg-indigo-900/60 border border-indigo-700 px-4 py-3 text-[11px] text-indigo-100 leading-relaxed">
+                                1차에서 의견 수집은 완료되었습니다. 이번 단계는 후보 간 우선순위를 압축하기 위한 재비교 단계이며, 기존 1차 평가 결과를 수정하지 않습니다.
+                              </div>
+                            )}
 
                             {roomDetails.lowReliabilityWarning && (
                               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900">
@@ -6353,7 +6627,7 @@ export default function App() {
                               </div>
                               {roomDetails.allEvaluationsCompleted && (
                                 <p className="text-[11px] text-slate-500">
-                                  전원 제출 후에는 평가를 수정할 수 없습니다. 화면이 이동하지 않았다면 방장이 집계를 다시 시도해 주세요.
+                                  전원 제출 후에는 평가를 수정할 수 없습니다. 후보 확정은 자동으로 진행되며, 일시적인 집계 오류가 남은 경우에만 방장이 재시도할 수 있습니다.
                                 </p>
                               )}
                             </div>
@@ -6381,11 +6655,15 @@ export default function App() {
                                     key={idea.id}
                                     initial={{ opacity: 0, y: 8 }}
                                     animate={{ opacity: 1, y: 0 }}
-                                    className="bg-white p-5 md:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5"
+                                    className={`p-5 md:p-6 rounded-2xl border shadow-sm space-y-5 ${isSecondScoreRound
+                                      ? 'bg-indigo-50/30 border-indigo-200'
+                                      : 'bg-white border-slate-200'}`}
                                   >
                                     <div className="space-y-3 border-b border-slate-100 pb-4">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-[10px] font-black text-indigo-600">익명 후보 #{ideaIndex + 1}</span>
+                                        <span className="text-[10px] font-black text-indigo-600">
+                                          {isSecondScoreRound ? `1차 통과 후보 #${ideaIndex + 1}` : `익명 후보 #${ideaIndex + 1}`}
+                                        </span>
                                         <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full border ${card?.source === 'AI'
                                           ? 'bg-indigo-50 text-indigo-700 border-indigo-100'
                                           : 'bg-slate-50 text-slate-500 border-slate-200'
@@ -6397,12 +6675,31 @@ export default function App() {
                                         <h3 className="text-base font-extrabold text-slate-900">{card?.title || idea.title}</h3>
                                         <p className="text-xs text-slate-600 mt-1 leading-relaxed">{card?.summary || idea.description}</p>
                                       </div>
-                                      {(card?.criteriaNotes || []).length > 0 && (
+                                      {(card?.criteriaNotes || []).length > 0 && !isSecondScoreRound && (
                                         <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-3 space-y-1.5">
                                           <p className="text-[10px] font-black text-indigo-700">확정 기준에 따른 검토 포인트</p>
                                           <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
                                             {(card?.criteriaNotes || []).map((note, noteIndex) => <li key={noteIndex}>{note}</li>)}
                                           </ul>
+                                        </div>
+                                      )}
+                                      {(card?.criteriaNotes || []).length > 0 && isSecondScoreRound && (
+                                        <div className="space-y-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleIdeaExpanded(`score_criteria_${idea.id}`)}
+                                            className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 inline-flex items-center gap-1"
+                                          >
+                                            1차 평가 기준 참고 {expandedIdeaIds[`score_criteria_${idea.id}`] ? '접기' : '보기'}
+                                            {expandedIdeaIds[`score_criteria_${idea.id}`] ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                          </button>
+                                          {expandedIdeaIds[`score_criteria_${idea.id}`] && (
+                                            <div className="bg-white border border-indigo-100 rounded-xl p-3">
+                                              <ul className="list-disc pl-4 text-xs text-slate-600 space-y-1">
+                                                {(card?.criteriaNotes || []).map((note, noteIndex) => <li key={noteIndex}>{note}</li>)}
+                                              </ul>
+                                            </div>
+                                          )}
                                         </div>
                                       )}
                                       <button
@@ -6457,7 +6754,7 @@ export default function App() {
 
                                     <div className="space-y-2">
                                       <label className="text-xs font-extrabold text-slate-800">
-                                        종합점수 <span className="text-rose-500">*</span>
+                                        {isSecondScoreRound ? '최종 비교 점수' : '종합점수'} <span className="text-rose-500">*</span>
                                       </label>
                                       <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
                                         {Array.from({ length: 10 }, (_, index) => index + 1).map(score => (
@@ -6520,7 +6817,7 @@ export default function App() {
                                   }`}
                                 >
                                   <CheckCircle className="w-4 h-4" />
-                                  {isSecondScoreRound ? '2차 종합점수 제출하기' : '1차 종합점수와 익명 피드백 제출하기'}
+                                  {isSecondScoreRound ? '최종 후보 선정을 위한 2차 점수 제출' : '1차 평가 및 익명 피드백 제출'}
                                 </button>
                               </div>
                             </div>
@@ -7016,7 +7313,7 @@ export default function App() {
                     VIEW 5 (V7): SCORE RESULTS + CUMULATIVE STAR FINAL
                     ----------------------------------------------------------- */}
                   {(
-                    (roomDetails.room.status === 'EVALUATION_ROUND_2' && !showSecondScoreBallot) ||
+                    (roomDetails.room.status === 'EVALUATION_ROUND_2' && !showSecondScoreBallot && (roomDetails as any).boundaryRunoff?.status !== 'VOTING') ||
                     roomDetails.room.status === 'ELIMINATION' ||
                     roomDetails.room.status === 'FINAL_VOTE'
                   ) && (roomDetails.room.engineVersion || 1) >= 7 && (() => {
@@ -7045,6 +7342,7 @@ export default function App() {
                     const latestAi = !isFirstResult && latestRound?.aiTiebreak?.used
                       ? latestRound.aiTiebreak
                       : null;
+                    const latestRunoff = !isFirstResult ? (latestRound as any)?.boundaryRunoff : null;
                     const resultTitle = latestRound
                       ? `${isFirstResult ? '1차' : '2차'} 점수 평가 결과`
                       : roomDetails.room.decisionMode === 'QUICK'
@@ -7123,6 +7421,19 @@ export default function App() {
                               <h3 className="text-sm font-extrabold flex items-center gap-2"><Sparkles className="w-4 h-4 text-amber-300" /> 4위 경계 동률 AI 판정</h3>
                               <p className="text-xs leading-relaxed">{latestAi.summary}</p>
                               <p className="text-[10px] text-indigo-300">확정 기준·아이디어 원문·방 내부 익명 피드백만 사용했으며 작성자 정보와 외부 데이터는 제공하지 않았습니다.</p>
+                            </div>
+                          )}
+                          {latestRunoff?.used && (
+                            <div className="bg-amber-50 border border-amber-200 text-amber-950 rounded-2xl p-4 space-y-2">
+                              <h3 className="text-sm font-extrabold flex items-center gap-2"><Users className="w-4 h-4" /> 4위 경계 동점 결선</h3>
+                              <p className="text-xs leading-relaxed">
+                                AI가 충분한 내부 근거로 경계를 판정하지 못했거나 기술적으로 판정을 완료하지 못해 기존 2차 점수는 그대로 보존하고 동점 후보만 추가 결선했습니다.
+                              </p>
+                              {Array.isArray(latestRunoff.randomSelectedIdeaIds) && latestRunoff.randomSelectedIdeaIds.length > 0 ? (
+                                <p className="text-[11px] font-bold">추가 결선에서도 마지막 경계가 동점이어서 해당 경계 후보만 무작위로 확정했습니다.</p>
+                              ) : (
+                                <p className="text-[11px] font-bold">중립 참여자 결선 결과로 최종 후보를 확정했습니다.</p>
+                              )}
                             </div>
                           )}
                           {isFirstResult && latestRound?.tieExpanded && (
@@ -9339,6 +9650,46 @@ export default function App() {
       </AnimatePresence>
 
       {/* Room Settings Edit Modal (Host Only) */}
+      <AnimatePresence>
+        {showBoundaryRunoffNotice && (roomDetails as any)?.boundaryRunoff?.status === 'VOTING' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] bg-slate-950/55 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              className="w-full max-w-lg rounded-3xl bg-white border border-amber-200 shadow-2xl p-6 space-y-5"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-slate-900">동점 결선이 필요합니다</h2>
+                  <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                    2차 점수의 4위 경계에서 동점이 발생했고, AI가 방 내부 자료만으로 충분한 판정 근거를 확보하지 못했거나 기술적으로 판정을 완료하지 못했습니다.
+                  </p>
+                  <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                    기존 2차 평가는 변경하지 않습니다. 동점 후보만 추가 결선하며, 결선에서도 마지막 경계가 다시 동점이면 그 경계 후보만 무작위로 결정합니다.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBoundaryRunoffNotice(false)}
+                className="w-full py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-black transition"
+              >
+                동점 결선 확인하기
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showRoomSettingsModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
