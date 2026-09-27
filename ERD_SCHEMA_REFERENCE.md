@@ -87,6 +87,7 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | `user_id` | `TEXT` | 회의 내부 사용자 ID |
 | `nickname` | `TEXT` | 회의 표시 이름 |
 | `role` | `TEXT` | `PARTICIPANT` 또는 `VOTER` |
+| `hidden_at` | `TIMESTAMPTZ` | 본인의 회의실 목록에서 보관한 시각 |
 
 기존 행은 모두 `PARTICIPANT`로 보정합니다. 외부 투표자는 최종 명단 확정 시에만 `participants`에 활성 역할로 반영됩니다.
 
@@ -238,3 +239,7 @@ V11의 `participants_expire_conflicting_account_invite_v11` 및 `voter_registrat
 | `finalVoteEndAt` | 2차/최종 별 투표 예정 마감 일시 | 자동 마감·자동 확정하지 않음 |
 
 V11의 `voteStartTime`과 `evaluationAt`은 호환 읽기 후 표준 키로 정규화합니다. 예정 시간은 운영 안내용이며 기존의 `고정 명단 전원 제출 후 결과 공개` 정책을 바꾸지 않습니다. 최종 투표가 시작되면 프론트와 서버 모두 시간 변경을 거부합니다.
+
+## 8. V17 계정 복구의 원자적 데이터 흐름
+
+`recover_user_account_with_session_v17`은 서비스 역할만 실행할 수 있습니다. 기존 복구 코드 해시로 `user_accounts` 행을 잠근 후 `password_hash`와 `recovery_code_hash`(모두 `TEXT`)를 `UPDATE`하고, 같은 트랜잭션에서 해당 계정의 `user_sessions` 행을 `DELETE`한 뒤 신규 `token_hash`(`TEXT`)와 `expires_at`(`TIMESTAMPTZ`)을 `INSERT`합니다. 실패하면 전부 롤백되어 기존 복구 코드가 유효하게 남습니다. 세션의 `user_id`(`UUID`)는 `user_accounts.id`(`UUID`)를 참조하고 계정 삭제 시 연쇄 삭제됩니다. DB 연동 서버는 매 인증 요청의 토큰 해시를 `SELECT`하여 다른 인스턴스에서 폐기한 세션도 거절합니다.

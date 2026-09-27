@@ -425,7 +425,6 @@ function createSessionMaterial(account: UserAccount) {
 async function issueSession(account: UserAccount, res: Response): Promise<void> {
   const { rawToken, tokenHash, expiresAt, session } = createSessionMaterial(account);
 
-  sessionStore.set(tokenHash, session);
   if (SUPABASE_CONFIGURED) {
     const { error } = await supabase.from('user_sessions').insert({
       token_hash: tokenHash,
@@ -434,12 +433,12 @@ async function issueSession(account: UserAccount, res: Response): Promise<void> 
       created_at: new Date().toISOString()
     });
     if (error) {
-      sessionStore.delete(tokenHash);
       throw new Error(`세션 저장 실패: ${error.message}`);
     }
   } else if (IS_PRODUCTION) {
-    sessionStore.delete(tokenHash);
     throw new Error('운영 환경에서는 영구 세션 저장소가 필요합니다.');
+  } else {
+    sessionStore.set(tokenHash, session);
   }
 
   setSessionCookie(res, rawToken);
@@ -449,7 +448,9 @@ async function resolveSession(req: Request): Promise<UserSession | null> {
   const rawToken = parseCookies(req)[SESSION_COOKIE_NAME];
   if (!rawToken) return null;
   const tokenHash = hashOpaqueSecret(rawToken);
-  const cached = sessionStore.get(tokenHash);
+  // A cached session on another server instance can outlive a DB revocation.
+  // With a configured database, validate every request against the source of truth.
+  const cached = SUPABASE_CONFIGURED ? undefined : sessionStore.get(tokenHash);
   if (cached) {
     const now = Date.now();
     const maxAllowedExpiry = now + SESSION_TTL_SECONDS * 1000;
@@ -489,7 +490,7 @@ async function resolveSession(req: Request): Promise<UserSession | null> {
     nickname: relatedAccount.nickname,
     expiresAt: effectiveExpiry
   };
-  sessionStore.set(tokenHash, session);
+  if (!SUPABASE_CONFIGURED) sessionStore.set(tokenHash, session);
   return session;
 }
 
@@ -529,7 +530,7 @@ async function refreshSessionActivity(req: AuthenticatedRequest, res: Response):
   }
 
   const refreshed = { ...session, expiresAt };
-  sessionStore.set(tokenHash, refreshed);
+  if (!SUPABASE_CONFIGURED) sessionStore.set(tokenHash, refreshed);
   req.auth = refreshed;
   setSessionCookie(res, rawToken);
   return expiresAt;
@@ -715,6 +716,7 @@ const evaluations = new Map<string, Evaluation[]>();
 const eliminationRounds = new Map<string, EliminationRound[]>();
 const participants = new Map<string, Map<string, string>>(); // room_id -> Map<user_id, nickname>
 const participantRolesMap = new Map<string, Map<string, ParticipantRole>>();
+const localHiddenRoomUsers = new Map<string, Set<string>>();
 type RoomInviteRecord = {
   id: string;
   roomId: string;
@@ -3729,7 +3731,6 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
 
   userAccountsMap.set(normalizedId, accountRecord);
   if (SUPABASE_CONFIGURED) {
-    sessionStore.set(signupSession.tokenHash, signupSession.session);
     setSessionCookie(res, signupSession.rawToken);
   } else {
     try {
@@ -3752,8 +3753,9 @@ app.post('/api/auth/signup', enforceAuthRateLimit, async (req, res) => {
 });
 
 // Alias for /api/auth/register
-app.post('/api/auth/register', enforceAuthRateLimit, (req, res, next) => {
+app.post('/api/auth/register', (req, res, next) => {
   req.url = '/api/auth/signup';
+  // Signup's middleware counts the internally forwarded request exactly once.
   app._router.handle(req, res, next);
 });
 
@@ -3858,33 +3860,48 @@ app.post('/api/auth/recover', enforceAuthRateLimit, async (req, res) => {
     legacyHashString(normalizedRecoveryCode)
   ];
 
-  // Search across memory accounts first
+  if (SUPABASE_CONFIGURED) {
+    // One database transaction locks the matching code, rotates both secrets,
+    // revokes old sessions and creates the replacement session. Process-local
+    // account caches are never evidence that an old code is still valid.
+    const newRecoveryCode = generateRecoveryCode();
+    const rawToken = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = hashOpaqueSecret(rawToken);
+    const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
+    const { data, error } = await supabase.rpc('recover_user_account_with_session_v17', {
+      p_recovery_code_hashes: enteredCodeHashes,
+      p_new_password_hash: hashPassword(newPassword),
+      p_new_recovery_code_hash: hashOpaqueSecret(newRecoveryCode),
+      p_session_token_hash: tokenHash,
+      p_session_expires_at: expiresAt
+    });
+    if (error) {
+      if (error.code === 'P0001') {
+        return res.status(400).json({ error: '올바르지 않거나 이미 사용된 복구 코드입니다.' });
+      }
+      if (error.code === 'P0002') {
+        return res.status(429).json({ error: '복구 코드 오류 시도 횟수를 초과(5회)했습니다. 관리자에게 문의해 주세요.' });
+      }
+      return res.status(503).json({ error: '계정 복구 결과를 안전하게 저장하지 못했습니다.' });
+    }
+    if (!data || typeof data !== 'object' || !data.id || !data.loginId || !data.nickname) {
+      return res.status(503).json({ error: '계정 복구 결과를 확인하지 못했습니다.' });
+    }
+    userAccountsMap.delete(String(data.loginId));
+    setSessionCookie(res, rawToken);
+    return res.json({
+      ok: true,
+      message: '비밀번호가 안전하게 재설정되었습니다.',
+      loginId: data.loginId,
+      user: { id: data.id, loginId: data.loginId, nickname: data.nickname },
+      newRecoveryCode
+    });
+  }
+
+  // Local development without a configured database uses only process memory.
   let foundAccount: UserAccount | undefined = Array.from(userAccountsMap.values()).find(
     acc => enteredCodeHashes.includes(acc.recoveryCodeHash)
   );
-
-  if (!foundAccount && SUPABASE_CONFIGURED) {
-      const { data: supaAcc, error } = await supabase
-        .from('user_accounts')
-        .select('*')
-        .in('recovery_code_hash', enteredCodeHashes)
-        .maybeSingle();
-      if (error) return res.status(503).json({ error: '계정 복구 정보를 확인하지 못했습니다.' });
-      if (supaAcc) {
-        foundAccount = {
-          id: supaAcc.id,
-          loginId: supaAcc.login_id,
-          passwordHash: supaAcc.password_hash,
-          nickname: supaAcc.nickname,
-          recoveryCodeHash: supaAcc.recovery_code_hash,
-          createdAt: supaAcc.created_at,
-          updatedAt: supaAcc.updated_at,
-          status: supaAcc.status || 'ACTIVE',
-          failedRecoveryAttempts: supaAcc.failed_recovery_attempts || 0
-        };
-        userAccountsMap.set(supaAcc.login_id, foundAccount);
-      }
-  }
 
   if (!foundAccount) {
     return res.status(400).json({ error: '올바르지 않거나 이미 사용된 복구 코드입니다.' });
@@ -3900,26 +3917,6 @@ app.post('/api/auth/recover', enforceAuthRateLimit, async (req, res) => {
   const newRecoveryCodeHash = hashOpaqueSecret(newRecoveryCode);
   const now = new Date().toISOString();
 
-  if (SUPABASE_CONFIGURED) {
-    const { error } = await supabase.from('user_accounts').update({
-      password_hash: newPasswordHash,
-      recovery_code_hash: newRecoveryCodeHash,
-      failed_recovery_attempts: 0,
-      updated_at: now
-    }).eq('id', foundAccount.id);
-    if (error) {
-      return res.status(503).json({ error: '계정 복구 결과를 안전하게 저장하지 못했습니다.' });
-    }
-
-    // A recovered account must invalidate every previous browser session.
-    const { error: sessionRevokeError } = await supabase
-      .from('user_sessions')
-      .delete()
-      .eq('user_id', foundAccount.id);
-    if (sessionRevokeError) {
-      return res.status(503).json({ error: '기존 로그인 세션을 종료하지 못했습니다.' });
-    }
-  }
   foundAccount.passwordHash = newPasswordHash;
   foundAccount.recoveryCodeHash = newRecoveryCodeHash;
   foundAccount.failedRecoveryAttempts = 0;
@@ -4102,7 +4099,7 @@ async function getRoomAccessContext(roomId: string, userId: string): Promise<Roo
       isMember: isHost || isKnownParticipant,
       isHost,
       role,
-      activeFinalVoter: role === 'VOTER'
+      activeFinalVoter: role === 'VOTER' && Boolean(inMemoryRoom?.finalVoteRosterLockedAt)
     };
   }
 
@@ -4464,15 +4461,24 @@ async function loadVoterSetupState(room: Room): Promise<VoterSetupState> {
     };
   }
   if (!SUPABASE_CONFIGURED) {
+    const voterIds = Array.from(participantRolesMap.get(room.id)?.entries() || [])
+      .filter(([, role]) => role === 'VOTER')
+      .map(([userId]) => userId);
+    const registeredCount = voterIds.length;
+    const activeCount = room.finalVoteRosterLockedAt ? registeredCount : 0;
     return {
       enabled: Boolean(room.externalVotersEnabled),
       requiredCount,
-      registeredCount: 0,
-      activeCount: 0,
+      registeredCount,
+      activeCount,
       pendingCount: 0,
-      remainingCount: requiredCount,
+      remainingCount: Math.max(0, requiredCount - registeredCount),
       rosterLocked: Boolean(room.finalVoteRosterLockedAt),
-      canStartFinalVote: !room.externalVotersEnabled
+      canStartFinalVote: !room.externalVotersEnabled || registeredCount === requiredCount,
+      registrations: voterIds.map(userId => ({
+        userId, nickname: participants.get(room.id)?.get(userId) || '투표자',
+        status: room.finalVoteRosterLockedAt ? 'ACTIVE' as const : 'WAITING' as const
+      }))
     };
   }
   const [registrationResult, pendingInviteResult] = await Promise.all([
@@ -4733,6 +4739,9 @@ app.post('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   if (!SUPABASE_CONFIGURED) {
     const room = rooms.get(req.params.id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    const hidden = localHiddenRoomUsers.get(room.id) || new Set<string>();
+    hidden.add(req.auth!.userId);
+    localHiddenRoomUsers.set(room.id, hidden);
     return res.json({ success: true, archived: true });
   }
   const { data, error } = await supabase.rpc('set_room_archive_v12', {
@@ -4748,6 +4757,7 @@ app.delete('/api/rooms/:id/hide', async (req: AuthenticatedRequest, res) => {
   if (!SUPABASE_CONFIGURED) {
     const room = rooms.get(req.params.id);
     if (!room) return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+    localHiddenRoomUsers.get(room.id)?.delete(req.auth!.userId);
     return res.json({ success: true, archived: false });
   }
   const { data, error } = await supabase.rpc('set_room_archive_v12', {
@@ -5289,11 +5299,34 @@ app.post('/api/invites/:token/join', async (req: AuthenticatedRequest, res) => {
       });
     }
   } else {
-    if (!isAlreadyMember && room.status !== 'IDEA_SUBMISSION') {
+    if (isAlreadyMember && inv.inviteType === 'PARTICIPANT' &&
+      participantRolesMap.get(inv.roomId)?.get(userId) === 'VOTER') {
+      return res.status(409).json({ error: '이미 외부 투표자로 등록된 계정입니다.' });
+    }
+    if (!isAlreadyMember && (inv.inviteType === 'PARTICIPANT' ||
+      ('hostId' in room && room.finalVoteRosterLockedAt)) && room.status !== 'IDEA_SUBMISSION') {
       return res.status(409).json({ error: '새 참여자는 아이디어 등록 단계에서만 참가할 수 있습니다.' });
     }
-    if (!isAlreadyMember && pMap.size >= maxCap) {
+    if (!isAlreadyMember && inv.inviteType === 'PARTICIPANT' &&
+      Array.from(pMap.keys()).filter(id => (participantRolesMap.get(inv.roomId)?.get(id) || 'PARTICIPANT') === 'PARTICIPANT').length >= maxCap) {
       return res.status(400).json({ error: `최대 참가 가능 인원(${maxCap}명)이 차서 참가할 수 없습니다.` });
+    }
+    if (inv.inviteType === 'VOTER') {
+      if (!('hostId' in room)) return res.status(409).json({ error: '외부 투표자 등록을 지원하지 않는 회의실입니다.' });
+      const voterSetup = await loadVoterSetupState(room);
+      if (!room.externalVotersEnabled || room.finalVoteRosterLockedAt ||
+        (!isAlreadyMember && voterSetup.remainingCount <= 0)) {
+        return res.status(409).json({ error: '외부 투표자 등록이 마감되었습니다.' });
+      }
+      if (isAlreadyMember && participantRolesMap.get(inv.roomId)?.get(userId) !== 'VOTER') {
+        return res.status(409).json({ error: '이미 참여자로 등록된 계정입니다.' });
+      }
+      pMap.set(userId, nickname);
+      if (!participantRolesMap.has(inv.roomId)) participantRolesMap.set(inv.roomId, new Map());
+      participantRolesMap.get(inv.roomId)!.set(userId, 'VOTER');
+      return res.json({ success: true, alreadyMember: isAlreadyMember, roomId: inv.roomId,
+        role: 'VOTER', waiting: true,
+        message: '외부 투표자로 등록되었습니다. 최종 별 투표가 시작될 때 참여할 수 있습니다.' });
     }
   }
   pMap.set(userId, nickname);
@@ -6308,11 +6341,12 @@ app.get('/api/rooms', async (req: AuthenticatedRequest, res) => {
       hostId: r.hostId,
       isHost: r.hostId === reqUserId,
       isJoined: true,
-      myRole: r.hostId === reqUserId ? '방장' : '참여자',
+      myRole: r.hostId === reqUserId ? '방장' : participantRolesMap.get(r.id)?.get(reqUserId) === 'VOTER' ? '투표자' : '참여자',
+      waitingForFinalVote: participantRolesMap.get(r.id)?.get(reqUserId) === 'VOTER' && !r.finalVoteRosterLockedAt,
       winnerTitles: r.status === 'CLOSED'
         ? (ideas.get(r.id) || []).filter(idea => idea.status === 'WINNER').map(idea => idea.title)
         : [],
-      isHidden: false
+      isHidden: Boolean(localHiddenRoomUsers.get(r.id)?.has(reqUserId))
     }));
   return res.json(list);
 });
@@ -9007,6 +9041,16 @@ async function ensureFinalVoteCycle(
       Object.fromEntries(candidateIdeas.map(idea => [idea.id, 'AUTO_ALL']))
     );
     return null;
+  }
+
+  if (!SUPABASE_CONFIGURED && room.externalVotersEnabled) {
+    const voterSetup = await loadVoterSetupState(room);
+    if (!voterSetup.canStartFinalVote) {
+      const error = new Error('필요한 외부 투표자 등록이 완료되지 않았습니다.');
+      (error as any).statusCode = 409;
+      throw error;
+    }
+    room.finalVoteRosterLockedAt = new Date().toISOString();
   }
 
   if (SUPABASE_CONFIGURED) {
