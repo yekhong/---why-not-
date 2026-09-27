@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "build:server": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "test:audit": "node --import tsx scripts/verify_audit_regressions.mjs && node --import tsx scripts/verify_auth_db_regressions.mjs && node scripts/verify_auth_sql.mjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
@@ -25,6 +26,7 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
